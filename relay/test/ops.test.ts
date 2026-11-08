@@ -170,3 +170,32 @@ describe("admin: robots of people without access", () => {
     expect((await post(`/admin/robots/${fine.robotId}/unlink`, kept, {}, e)).status).toBe(404);
   });
 });
+
+describe("review 9 fixes", () => {
+  it("admin unlink does nothing once the owner is invited again, and a normal unlink removes members", async () => {
+    const admin = await newUser("ops-admin2");
+    const e: Env = { ...testEnv, ALLOWED_GITHUB_LOGINS: "", ADMIN_GITHUB_IDS: admin.id };
+    const u = await newUser();
+    await testEnv.DB.prepare("INSERT INTO invites (user_id, login, name, robot_limit, invited_by, created_at) VALUES (?, 'x', NULL, NULL, ?, 0)").bind(u.id, admin.id).run();
+    const { robot } = await claimed(e, u);
+    const { unlinkRobot } = await import("../src/claim");
+    const { createProvisioner } = await import("../src/provisioner");
+    // Re-invited (still invited) owner: the guarded unlink refuses atomically.
+    expect(await unlinkRobot(e, createProvisioner(e), robot.robotId, { onlyIfOwnerNotInvited: true })).toBe(false);
+    expect((await selfBody(robot, e)).status).toBe("claimed");
+    expect(await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM members WHERE robot_id = ?").bind(robot.robotId).first()).toEqual({ n: 1 });
+    expect(await unlinkRobot(e, createProvisioner(e), robot.robotId)).toBe(true);
+    expect(await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM members WHERE robot_id = ?").bind(robot.robotId).first()).toEqual({ n: 0 });
+  });
+
+  it("refuses to add robots with a malformed token key, before the code is used", async () => {
+    const e = { ...testEnv, TUNNEL_TOKEN_KEY: "too-short" };
+    const u = await newUser();
+    const robot = await newRobot();
+    const { pairingCode } = (await (await register(robot, "k")).json()) as { pairingCode: string };
+    const res = await post("/claim", u, { code: pairingCode }, e);
+    expect(res.status).toBe(503);
+    expect(await testEnv.DB.prepare("SELECT 1 AS ok FROM pairing_codes WHERE robot_id = ?").bind(robot.robotId).first()).not.toBeNull();
+    expect((await post("/claim", u, { code: pairingCode }, { ...testEnv, TUNNEL_TOKEN_KEY: KEY })).status).toBe(303);
+  });
+});

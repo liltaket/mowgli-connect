@@ -25,6 +25,17 @@ function key(env: Env): Promise<CryptoKey> | null {
   return k;
 }
 
+/** False when TUNNEL_TOKEN_KEY is set but not 32 bytes of base64url (no key at all is usable). */
+export function tokenKeyUsable(env: Env): boolean {
+  const raw = env.TUNNEL_TOKEN_KEY;
+  if (!raw) return true;
+  try {
+    return b64urlDecode(raw.trim()).length === 32;
+  } catch {
+    return false;
+  }
+}
+
 const aad = (robotId: string) => new TextEncoder().encode(`mc-tunnel-token:${robotId}`);
 
 export function isSealed(stored: string): boolean {

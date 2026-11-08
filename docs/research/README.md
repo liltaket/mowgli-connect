@@ -32,5 +32,6 @@ record what was done.
 4. [security-review-5.md](security-review-5.md), [security-review-6.md](security-review-6.md) and [security-review-7.md](security-review-7.md): the egress lock, tested on real Cloudflare.
 5. [security-review-gemini.md](security-review-gemini.md) and [security-review-mistral.md](security-review-mistral.md): second opinions from other models.
 6. [security-review-8.md](security-review-8.md): the admin page, invites and robot limits (GPT-6.1 Sol and Gemini 4 Argon).
+7. [security-review-9.md](security-review-9.md): encrypted tunnel tokens, alerts, updates and admin unlink (GPT-6.1 Sol).
 
 To report a vulnerability, see [SECURITY.md](../../SECURITY.md).

@@ -1,7 +1,7 @@
 import { isUserAllowed, ownedRobots, robotLimit } from "./access";
 import { alert } from "./alerts";
 import type { Env } from "./env";
-import { sealToken } from "./tokenSeal";
+import { sealToken, tokenKeyUsable } from "./tokenSeal";
 import { hashPairingCode, normalizePairingCode } from "./pairing";
 import { HostnameInUseError, robotHostname, robotSubdomain, type TunnelProvisioner } from "./provisioner";
 import { nowSeconds } from "./util";
@@ -140,6 +140,10 @@ export async function claimRobot(
   }
   const full = await reachedLimit(env, userId);
   if (full !== null) return limitReached(full); // before the code is used, so it stays valid
+  if (!tokenKeyUsable(env)) {
+    await alert(env, "token_key_invalid", "TUNNEL_TOKEN_KEY is not valid (32 bytes, base64url), so no robot can be added. Set the secret again.");
+    return { ok: false, status: 503, message: "Robots cannot be added right now. Try again later." };
+  }
   const codeHash = await hashPairingCode(code);
   const now = nowSeconds();
 
@@ -176,8 +180,10 @@ export async function claimRobot(
   // the robot id. Each name is reserved on the robot row before any DNS change (hostname is
   // UNIQUE), so two robots can never be given the same name.
   let tunnel;
+  let sealed: string | null;
   try {
     tunnel = await provisionNamed(env, provisioner, robotId, label ?? status.name, status.hostname);
+    sealed = await sealToken(env, robotId, tunnel.token);
   } catch (e) {
     console.error("tunnel provisioning failed", robotId, e instanceof Error ? e.message : "unknown");
     await restoreCode(); // let the user retry with the same code
@@ -194,7 +200,7 @@ export async function claimRobot(
        WHERE robot_id = ?6 AND status = 'unclaimed'
          AND (?7 IS NULL OR (SELECT COUNT(*) FROM members m JOIN robots o ON o.robot_id = m.robot_id
                              WHERE m.user_id = ?8 AND m.role = 'owner' AND o.status = 'claimed') < ?7)`,
-    ).bind(tunnel.hostname, tunnel.tunnelId, tunnel.dnsRecordId, await sealToken(env, robotId, tunnel.token), now, robotId, limit, userId),
+    ).bind(tunnel.hostname, tunnel.tunnelId, tunnel.dnsRecordId, sealed, now, robotId, limit, userId),
     env.DB.prepare(
       "INSERT INTO members (robot_id, user_id, role, label, created_at) SELECT ?, ?, 'owner', ?, ? WHERE changes() > 0",
     ).bind(robotId, userId, label, now),
@@ -224,7 +230,12 @@ export async function claimRobot(
 }
 
 /** Owner-only. Access is revoked in D1 first; Cloudflare cleanup failures are retried by the cron. */
-export async function unlinkRobot(env: Env, provisioner: TunnelProvisioner, robotId: string): Promise<boolean> {
+export async function unlinkRobot(
+  env: Env,
+  provisioner: TunnelProvisioner,
+  robotId: string,
+  opts: { onlyIfOwnerNotInvited?: boolean } = {},
+): Promise<boolean> {
   const now = nowSeconds();
   const before = await env.DB.prepare("SELECT hostname, tunnel_id, dns_record_id FROM robots WHERE robot_id = ? AND status = 'claimed'")
     .bind(robotId)
@@ -232,10 +243,13 @@ export async function unlinkRobot(env: Env, provisioner: TunnelProvisioner, robo
   if (!before) return false;
   const [upd] = await env.DB.batch([
     env.DB.prepare(
-      `UPDATE robots SET status = 'revoked', session_epoch = session_epoch + 1, tunnel_token = NULL, updated_at = ?
-       WHERE robot_id = ? AND status = 'claimed'`,
-    ).bind(now, robotId),
-    env.DB.prepare("DELETE FROM members WHERE robot_id = ?").bind(robotId),
+      `UPDATE robots SET status = 'revoked', session_epoch = session_epoch + 1, tunnel_token = NULL, updated_at = ?1
+       WHERE robot_id = ?2 AND status = 'claimed'
+         AND (?3 = 0 OR NOT EXISTS (SELECT 1 FROM members m JOIN invites i ON i.user_id = m.user_id
+                                    WHERE m.robot_id = ?2 AND m.role = 'owner'))`,
+    ).bind(now, robotId, opts.onlyIfOwnerNotInvited ? 1 : 0),
+    // In the same transaction, and only if the robot was just revoked.
+    env.DB.prepare("DELETE FROM members WHERE robot_id = ? AND changes() > 0").bind(robotId),
   ]);
   if (upd?.meta.changes !== 1) return false;
   await cleanupRevoked(env, provisioner, robotId, { robotId, ...camel(before) });

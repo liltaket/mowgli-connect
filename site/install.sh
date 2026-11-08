@@ -83,6 +83,9 @@ ask AUTOUPDATE "Install updates automatically? (yes/no)" "yes"
 case $AUTOUPDATE in y | Y | yes | YES | Yes) AUTOUPDATE=yes ;; n | N | no | NO | No) AUTOUPDATE=no ;; *) die "--auto-update must be yes or no" ;; esac
 
 mkdir -p "$DIR"
+# Absolute, so the nightly update (which starts in the home directory) finds the same project.
+DIR=$(cd "$DIR" && pwd -P)
+case $DIR in *[!A-Za-z0-9/._-]*) die "the install directory $DIR has characters the update job cannot use" ;; esac
 if [ -f "$DIR/compose.yaml" ] && [ "$YES" != yes ] && [ -t 0 ]; then
 	printf 'Replace the existing %s/compose.yaml (the robot keeps its identity and pairing)? [y/N]: ' "$DIR"
 	read -r reply
@@ -135,7 +138,11 @@ if command -v crontab >/dev/null 2>&1; then
 	if [ "$AUTOUPDATE" = yes ]; then
 		min=$(($(od -An -N1 -tu1 /dev/urandom) % 60))
 		dk=$(command -v docker)
-		line="$min 3 * * * cd '$DIR' && $dk compose pull -q && $dk compose up -d >/dev/null 2>&1 $MARK"
+		# Both paths go into a cron line (run by sh), so only plain path characters are allowed.
+		case $dk in /*) ;; *) dk="" ;; esac
+		case $dk in *[!A-Za-z0-9/._-]*) dk="" ;; esac
+		[ -n "$dk" ] || die "cannot set up automatic updates: docker is not at a plain absolute path (use --auto-update no)"
+		line="$min 3 * * * cd '$DIR' && '$dk' compose pull -q && '$dk' compose up -d >/dev/null 2>&1 $MARK"
 		printf '%s\n%s\n' "$current" "$line" | sed '/^$/d' | crontab -
 		cron_note="  Automatic updates: on (nightly at 03:$(printf %02d "$min"), robot time)"
 	else

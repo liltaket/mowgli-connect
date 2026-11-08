@@ -60,6 +60,7 @@ or documented:
 - [security-review-6.md](docs/research/security-review-6.md)
 - [security-review-7.md](docs/research/security-review-7.md)
 - [security-review-8.md](docs/research/security-review-8.md) (admin page, invites, robot limits)
+- [security-review-9.md](docs/research/security-review-9.md) (encrypted tunnel tokens, alerts, updates)
 - [security-review-gemini.md](docs/research/security-review-gemini.md)
 - [security-review-mistral.md](docs/research/security-review-mistral.md)
 

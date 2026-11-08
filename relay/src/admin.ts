@@ -240,7 +240,7 @@ export async function handleAdmin(request: Request, env: Env, url: URL, user: Se
     // Only robots whose owner has lost access: the admin page is not a way into anyone's robot.
     const robotId = m[3];
     if (!isRobotId(robotId) || !(await orphanedRobots(env)).some((o) => o.robot_id === robotId)) return notFound();
-    if (!(await unlinkRobot(env, createProvisioner(env), robotId))) return notFound();
+    if (!(await unlinkRobot(env, createProvisioner(env), robotId, { onlyIfOwnerNotInvited: true }))) return notFound();
     console.log("admin: unlinked orphaned robot", robotId, "by", user.id);
     return redirect("/admin?notice=unlinked");
   }
@@ -273,7 +273,7 @@ export async function handleAdmin(request: Request, env: Env, url: URL, user: Se
       .bind(target)
       .all<{ robot_id: string }>();
     const prov = createProvisioner(env);
-    for (const r of owned.results) await unlinkRobot(env, prov, r.robot_id);
+    for (const r of owned.results) await unlinkRobot(env, prov, r.robot_id, { onlyIfOwnerNotInvited: true });
     console.log("admin: unlinked", owned.results.length, "robots of", target, "by", user.id);
     return redirect("/admin?notice=removed_unlinked");
   }
