@@ -189,6 +189,7 @@ func TestGrantValidation(t *testing.T) {
 		"too long":     f.grant(func(c map[string]any) { c["exp"] = f.now.Unix() + 3600 }),
 		"stale epoch":  f.grant(func(c map[string]any) { c["epoch"] = 2 }),
 		"non member":   f.grant(func(c map[string]any) { c["sub"] = "gh:999" }),
+		"short jti":    f.grant(func(c map[string]any) { c["jti"] = "only-21-characters-xx" }),
 		"before start": f.grant(func(c map[string]any) { c["iat"] = f.now.Unix() - 50; c["exp"] = f.now.Unix() + 5 }),
 	}
 	f.now = f.now.Add(10 * time.Second) // agent started 10 s before "now" for the before-start case

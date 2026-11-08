@@ -335,7 +335,7 @@ func (g *Gateway) redeemGrant(token string) (string, *session, error) {
 		return "", nil, grantError("wrong issuer")
 	case c.Aud != "mc-robot:"+g.cfg.RobotID:
 		return "", nil, grantError("wrong audience")
-	case c.Sub == "" || len(c.Jti) < 16:
+	case c.Sub == "" || len(c.Jti) < 22: // >= 128 bits, base64url (docs/protocol.md)
 		return "", nil, grantError("missing claims")
 	case exp.Sub(iat) > GrantMaxTTL || !exp.After(iat):
 		return "", nil, grantError("bad lifetime")
