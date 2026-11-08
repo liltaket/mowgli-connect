@@ -1,6 +1,6 @@
 import type { Env } from "./env";
 import { hashPairingCode, normalizePairingCode } from "./pairing";
-import type { TunnelProvisioner } from "./provisioner";
+import { robotHostname, robotSubdomain, type TunnelProvisioner } from "./provisioner";
 import { nowSeconds } from "./util";
 
 export const CLAIM_FAILURES_PER_HOUR = 10;
@@ -78,15 +78,39 @@ export async function claimRobot(
       .bind(codeHash, robotId, consumed.created_at, consumed.expires_at)
       .run();
 
-  const status = await env.DB.prepare("SELECT status FROM robots WHERE robot_id = ?").bind(robotId).first<{ status: string }>();
+  const status = await env.DB.prepare("SELECT status, name, hostname FROM robots WHERE robot_id = ?")
+    .bind(robotId)
+    .first<{ status: string; name: string | null; hostname: string | null }>();
   if (status?.status !== "unclaimed") {
     await recordClaimFailure(env, userId);
     return INVALID;
   }
 
+  // A readable hostname (front-lawn.<zone>) when the name is free. It is reserved on the robot
+  // row before any DNS change (hostname is UNIQUE), so two robots can never be given the same
+  // name; otherwise the robot id is used.
+  let hostLabel: string | undefined;
+  if (provisioner.assignsHostnames) {
+    const zone = (env.ROBOT_ZONE ?? "").replace(/^\.+|\.+$/g, "").toLowerCase();
+    const reserved = status.hostname && zone && status.hostname.endsWith(`.${zone}`) ? status.hostname.slice(0, -zone.length - 1) : null;
+    const wanted = robotSubdomain(label ?? status.name);
+    if (reserved && robotSubdomain(reserved) === reserved) {
+      hostLabel = reserved; // a previous attempt for this robot already holds a name
+    } else if (wanted && zone) {
+      try {
+        const r = await env.DB.prepare("UPDATE robots SET hostname = ? WHERE robot_id = ? AND status = 'unclaimed'")
+          .bind(robotHostname(wanted, zone), robotId)
+          .run();
+        if (r.meta.changes === 1) hostLabel = wanted;
+      } catch {
+        // UNIQUE: taken by another robot.
+      }
+    }
+  }
+
   let tunnel;
   try {
-    tunnel = await provisioner.provision(robotId);
+    tunnel = await provisioner.provision(robotId, hostLabel);
   } catch (e) {
     console.error("tunnel provisioning failed", robotId, e instanceof Error ? e.message : "unknown");
     await restoreCode(); // let the user retry with the same code

@@ -25,13 +25,13 @@ interface RobotRow {
   last_seen_at: number;
 }
 
-async function authenticate(
+function verifyAssertion(
   env: Env,
   request: Request,
   url: URL,
   resolveKey: (iss: string) => Promise<Uint8Array | null>,
 ): Promise<VerifiedAssertion> {
-  const a = await verifyRobotAssertion({
+  return verifyRobotAssertion({
     authorization: request.headers.get("Authorization"),
     method: request.method,
     htu: `${env.RELAY_ORIGIN}${url.pathname}`,
@@ -39,11 +39,24 @@ async function authenticate(
     now: nowSeconds(),
     resolveKey,
   });
-  // Single use. Stored until exp + skew so a replay inside the accepted window is still rejected.
+}
+
+// Single use. Stored until exp + skew so a replay inside the accepted window is still rejected.
+async function consumeJti(env: Env, a: VerifiedAssertion): Promise<void> {
   const res = await env.DB.prepare("INSERT OR IGNORE INTO jti_seen (robot_id, jti, expires_at) VALUES (?, ?, ?)")
     .bind(a.robotId, a.jti, a.exp + SKEW_SECONDS)
     .run();
   if (res.meta.changes !== 1) throw new AssertionError("replayed_jti");
+}
+
+async function authenticate(
+  env: Env,
+  request: Request,
+  url: URL,
+  resolveKey: (iss: string) => Promise<Uint8Array | null>,
+): Promise<VerifiedAssertion> {
+  const a = await verifyAssertion(env, request, url, resolveKey);
+  await consumeJti(env, a);
   return a;
 }
 
@@ -64,6 +77,9 @@ async function readJson(request: Request, max = 4096): Promise<Record<string, un
     return null;
   }
 }
+
+// A robot asks for a new pairing code when its code is about to expire (15 min) or on restart.
+const REREGISTER_MIN_SECONDS = 30;
 
 async function recentUnclaimed(env: Env, now: number): Promise<number> {
   const r = await env.DB.prepare("SELECT COUNT(*) AS n FROM robots WHERE status = 'unclaimed' AND created_at > ?")
@@ -93,8 +109,9 @@ export async function registerRobot(env: Env, request: Request, url: URL): Promi
     return json({ error: "bad_request", detail: "publicKey" }, 400);
   }
 
-  // Admission before authentication: a new identity beyond the hourly cap is refused before
-  // anything (not even its assertion jti) is written.
+  // Registration needs no account (self-signed keys), so every refusal below happens before
+  // anything is written, the assertion's jti included: a new identity beyond the hourly cap,
+  // and a known one asking for a new code more often than once per REREGISTER_MIN_SECONDS.
   const now = nowSeconds();
   const existing = await env.DB.prepare("SELECT robot_id, public_key, status, tunnel_id FROM robots WHERE robot_id = ?")
     .bind(await deriveRobotId(raw))
@@ -105,7 +122,7 @@ export async function registerRobot(env: Env, request: Request, url: URL): Promi
 
   let a: VerifiedAssertion;
   try {
-    a = await authenticate(env, request, url, async () => raw);
+    a = await verifyAssertion(env, request, url, async () => raw);
   } catch (e) {
     if (e instanceof AssertionError) return assertionFailure(e);
     throw e;
@@ -117,6 +134,16 @@ export async function registerRobot(env: Env, request: Request, url: URL): Promi
     if (existing.public_key !== publicKey) return json({ error: "key_mismatch" }, 409);
     if (existing.status === "claimed") return json({ error: "already_claimed" }, 409);
     if (existing.status === "revoked" && existing.tunnel_id) return json({ error: "cleanup_pending" }, 503, { "Retry-After": "60" });
+    const recent = await env.DB.prepare("SELECT 1 AS ok FROM pairing_codes WHERE robot_id = ? AND created_at > ?")
+      .bind(robotId, now - REREGISTER_MIN_SECONDS)
+      .first();
+    if (recent) return json({ error: "rate_limited" }, 429, { "Retry-After": String(REREGISTER_MIN_SECONDS) });
+    try {
+      await consumeJti(env, a);
+    } catch (e) {
+      if (e instanceof AssertionError) return assertionFailure(e);
+      throw e;
+    }
     await env.DB.prepare("UPDATE robots SET status = 'unclaimed', name = ?, updated_at = ?, last_seen_at = ? WHERE robot_id = ?")
       .bind(robotName, now, now, robotId)
       .run();
@@ -132,6 +159,12 @@ export async function registerRobot(env: Env, request: Request, url: URL): Promi
       .bind(robotId, publicKey, robotName, now, now, now, now - 3600, maxNewRobotsPerHour(env))
       .run();
     if (ins.meta.changes !== 1) return json({ error: "rate_limited" }, 429, { "Retry-After": "600" });
+    try {
+      await consumeJti(env, a);
+    } catch (e) {
+      if (e instanceof AssertionError) return assertionFailure(e);
+      throw e;
+    }
   }
 
   // Re-register invalidates any previous code.

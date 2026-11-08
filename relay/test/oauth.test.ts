@@ -56,6 +56,18 @@ describe("GitHub OAuth login", () => {
     expect(await count()).toBe(before);
   });
 
+  it("falls back to / for return paths too long for a cookie", async () => {
+    for (const long of ["/" + "x".repeat(4000), "/" + "å".repeat(2000)]) {
+      const { res, state, cookie } = await startLogin(long);
+      const set = setCookies(res).find((c) => c.startsWith("__Host-mcr_oauth="))!;
+      expect(set.length).toBeLessThan(2200);
+      stubGithub({ id: 4245, login: "octo-cat" });
+      const done = await call(`/auth/github/callback?code=long-${long.length}&state=${state}`, { headers: { Cookie: cookie }, redirect: "manual" });
+      expect(done.status).toBe(302);
+      expect(done.headers.get("Location")).toBe("/");
+    }
+  });
+
   it("rejects expired or malformed login cookies", async () => {
     const { state, cookie } = await startLogin();
     stubGithub({ id: 4244, login: "octo-cat" });

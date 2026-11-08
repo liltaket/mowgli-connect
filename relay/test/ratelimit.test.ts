@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertion, call, newRobot, testEnv } from "./helpers";
+import { agePairingCode, assertion, call, newRobot, testEnv } from "./helpers";
 import { nowSeconds, readBodyText } from "../src/util";
 
 describe("registration rate limit", () => {
@@ -24,6 +24,7 @@ describe("registration rate limit", () => {
     expect(limited.status).toBe(429);
     expect(await jtis()).toBe(before); // refused before anything is written
     expect(await limited.json()).toEqual({ error: "rate_limited" });
+    await agePairingCode(first.robotId);
     expect((await reg(first)).status).toBe(200); // existing robot: new pairing code, not a new row
   });
 });

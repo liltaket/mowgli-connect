@@ -95,6 +95,11 @@ export function post(
   return call(path, { method: "POST", headers, body: new URLSearchParams(form).toString(), redirect: "manual" });
 }
 
+/** Makes the robot's current pairing code look older, past the re-register interval. */
+export async function agePairingCode(robotId: string, seconds = 120): Promise<void> {
+  await testEnv.DB.prepare("UPDATE pairing_codes SET created_at = created_at - ? WHERE robot_id = ?").bind(seconds, robotId).run();
+}
+
 export function get(path: string, user: TestUser | null): Promise<Response> {
   return call(path, { headers: user ? { Cookie: user.cookie } : {}, redirect: "manual" });
 }

@@ -28,7 +28,11 @@ function encodeLoginState(s: LoginState, expiresAt: number): string {
   return [s.state, s.verifier, String(expiresAt), b64urlEncode(new TextEncoder().encode(s.returnTo))].join("~");
 }
 
+// Browsers drop cookies over 4096 bytes; a longer return path falls back to "/".
+const MAX_LOGIN_COOKIE = 2048;
+
 function decodeLoginState(raw: string | undefined, now: number): LoginState | null {
+  if (raw && raw.length > MAX_LOGIN_COOKIE) return null;
   const parts = raw?.split("~");
   if (!parts || parts.length !== 4) return null;
   const [state, verifier, exp, rt] = parts as [string, string, string, string];
@@ -44,7 +48,9 @@ export async function startLogin(env: Env, returnTo: string | null): Promise<Res
   const state = randomToken(32);
   const verifier = randomToken(32);
   const challenge = b64urlEncode(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
-  const cookieValue = encodeLoginState({ state, verifier, returnTo: safeReturnPath(returnTo) }, nowSeconds() + OAUTH_TTL_SECONDS);
+  const expiresAt = nowSeconds() + OAUTH_TTL_SECONDS;
+  let cookieValue = encodeLoginState({ state, verifier, returnTo: safeReturnPath(returnTo) }, expiresAt);
+  if (cookieValue.length > MAX_LOGIN_COOKIE) cookieValue = encodeLoginState({ state, verifier, returnTo: "/" }, expiresAt);
   const u = new URL("https://github.com/login/oauth/authorize");
   u.searchParams.set("client_id", env.GITHUB_CLIENT_ID);
   u.searchParams.set("redirect_uri", `${env.RELAY_ORIGIN}/auth/github/callback`);

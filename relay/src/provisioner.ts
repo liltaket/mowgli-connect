@@ -17,30 +17,65 @@ export interface TunnelRef {
 }
 
 /**
- * Hostname and origin service are always derived server-side from robotId and
- * configuration. No caller-supplied hostname or origin is ever accepted.
+ * Hostnames are one label under the robot zone: either the robot id or a name the relay chose
+ * and reserved with robotSubdomain(). No caller-supplied hostname or origin is ever accepted.
  */
 export interface TunnelProvisioner {
-  /** Idempotent: safe to call again for the same robot. */
-  provision(robotId: string): Promise<ProvisionedTunnel>;
+  /** Whether this provisioner creates `<label>.<zone>` hostnames (so the relay picks a label). */
+  readonly assignsHostnames: boolean;
+  /** Idempotent: safe to call again for the same robot. `label` must come from robotSubdomain(). */
+  provision(robotId: string, label?: string): Promise<ProvisionedTunnel>;
   /** Idempotent: missing resources count as success. */
   deprovision(ref: TunnelRef): Promise<void>;
 }
 
-export function robotHostname(robotId: string, zone: string): string {
-  return `${robotId}.${zone.replace(/^\.+|\.+$/g, "").toLowerCase()}`;
+export function robotHostname(label: string, zone: string): string {
+  return `${label}.${zone.replace(/^\.+|\.+$/g, "").toLowerCase()}`;
+}
+
+// Names that could be mistaken for a service of the zone itself.
+const RESERVED_LABELS = new Set(
+  ("www api app auth login logout signin account accounts admin connect relay mail smtp imap pop mx ns ns1 ns2 " +
+    "ftp cdn static assets dash dashboard status support help docs blog shop git dev test staging robots robot")
+    .split(" "),
+);
+
+/**
+ * A readable hostname label from the owner's label or the robot's name ("Front lawn" ->
+ * "front-lawn"), or null when none is usable. It can never look like a robot id, so it cannot
+ * collide with the fallback `<robotId>.<zone>` names.
+ */
+export function robotSubdomain(name: string | null | undefined): string | null {
+  if (!name) return null;
+  const s = name
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32)
+    .replace(/-+$/, "");
+  if (s.length < 3 || RESERVED_LABELS.has(s) || /^[a-z2-7]{16}$/.test(s) || s.startsWith("xn--")) return null;
+  return s;
+}
+
+function checkedLabel(robotId: string, label?: string): string {
+  if (label === undefined) return robotId;
+  if (robotSubdomain(label) !== label) throw new Error("invalid hostname label");
+  return label;
 }
 
 /** Deterministic, no network. For tests / local dev only (PROVISIONER=fake). */
 export class FakeProvisioner implements TunnelProvisioner {
+  readonly assignsHostnames = true;
   readonly provisioned: string[] = [];
   readonly deprovisioned: string[] = [];
   constructor(private readonly zone = "robots.invalid") {}
 
-  async provision(robotId: string): Promise<ProvisionedTunnel> {
+  async provision(robotId: string, label?: string): Promise<ProvisionedTunnel> {
     this.provisioned.push(robotId);
     return {
-      hostname: robotHostname(robotId, this.zone),
+      hostname: robotHostname(checkedLabel(robotId, label), this.zone),
       tunnelId: `fake-tunnel-${robotId}`,
       dnsRecordId: `fake-dns-${robotId}`,
       token: `fake-tunnel-token-${robotId}`,
@@ -58,6 +93,7 @@ export class FakeProvisioner implements TunnelProvisioner {
  * on Cloudflare, so there is no CF_API_TOKEN, zone or tunnel token.
  */
 export class QuickProvisioner implements TunnelProvisioner {
+  readonly assignsHostnames = false;
   async provision(_robotId: string): Promise<ProvisionedTunnel> {
     return { hostname: null, tunnelId: null, dnsRecordId: null, token: null };
   }
@@ -106,6 +142,7 @@ interface CfDnsRecord {
 }
 
 export class CloudflareTunnelProvisioner implements TunnelProvisioner {
+  readonly assignsHostnames = true;
   private readonly fetchFn: typeof fetch;
 
   constructor(private readonly cfg: CloudflareConfig) {
@@ -159,9 +196,9 @@ export class CloudflareTunnelProvisioner implements TunnelProvisioner {
     return list?.find((r) => r.type === "CNAME" && r.name.toLowerCase() === hostname) ?? null;
   }
 
-  async provision(robotId: string): Promise<ProvisionedTunnel> {
+  async provision(robotId: string, label?: string): Promise<ProvisionedTunnel> {
     const acct = this.cfg.accountId;
-    const hostname = robotHostname(robotId, this.cfg.robotZone);
+    const hostname = robotHostname(checkedLabel(robotId, label), this.cfg.robotZone);
 
     let tunnel = await this.findTunnel(robotId);
     if (!tunnel) {

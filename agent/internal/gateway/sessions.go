@@ -29,6 +29,7 @@ func (g *Gateway) loadSessions() {
 	if g.cfg.SessionFile == "" {
 		return
 	}
+	g.strictStart = true // until the previous run's consumed grants are known
 	b, err := os.ReadFile(g.cfg.SessionFile)
 	if err != nil {
 		return
@@ -41,9 +42,12 @@ func (g *Gateway) loadSessions() {
 		}
 	}
 	now := g.cfg.Now()
-	for jti, until := range f.Grants {
-		if exp := time.Unix(until, 0); now.Before(exp) && exp.Before(now.Add(GrantMaxTTL+2*ClockSkew)) && len(g.jtis) < maxSessions*4 {
-			g.jtis[jti] = exp
+	if f.Grants != nil && len(f.Grants) <= maxGrantIDs {
+		g.strictStart = false
+		for jti, until := range f.Grants {
+			if exp := time.Unix(until, 0); now.Before(exp) {
+				g.jtis[jti] = exp
+			}
 		}
 	}
 	for _, s := range f.Sessions {
@@ -58,10 +62,10 @@ func (g *Gateway) loadSessions() {
 	}
 }
 
-// persistLocked writes the session table atomically (mode 0600). Errors only cost convenience.
-func (g *Gateway) persistLocked() {
+// persistLocked writes the session table and consumed grants atomically (mode 0600).
+func (g *Gateway) persistLocked() error {
 	if g.cfg.SessionFile == "" {
-		return
+		return nil
 	}
 	f := sessionFile{Sessions: make([]storedSession, 0, len(g.sessions)), Grants: map[string]int64{}}
 	for k, s := range g.sessions {
@@ -80,6 +84,7 @@ func (g *Gateway) persistLocked() {
 	if err != nil {
 		g.cfg.Logger.Warn("persisting sessions", "err", err)
 	}
+	return err
 }
 
 func writeFileAtomic(path string, b []byte) error {
@@ -96,8 +101,19 @@ func writeFileAtomic(path string, b []byte) error {
 		tmp.Close()
 		return err
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return err
+	}
+	if d, err := os.Open(filepath.Dir(path)); err == nil {
+		_ = d.Sync()
+		d.Close()
+	}
+	return nil
 }

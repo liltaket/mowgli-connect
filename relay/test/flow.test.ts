@@ -2,9 +2,7 @@ import { describe, expect, it } from "vitest";
 import { b64urlDecode } from "../src/crypto";
 import { importEd25519Public, parseJws, verifyJws } from "../src/crypto";
 import { CLAIM_FAILURES_PER_HOUR } from "../src/claim";
-import {
-  call, decodeJws, get, newRobot, newUser, ORIGIN, post, register, registerAndClaim, self, testEnv,
-} from "./helpers";
+import { call, decodeJws, get, newRobot, newUser, ORIGIN, post, register, registerAndClaim, self, testEnv, agePairingCode } from "./helpers";
 import { nowSeconds } from "../src/util";
 
 interface SelfBody {
@@ -41,7 +39,7 @@ describe("register -> claim -> self", () => {
 
     const after = (await (await self(robot)).json()) as SelfBody;
     expect(after.status).toBe("claimed");
-    expect(after.hostname).toBe(`${robot.robotId}.robots.test`);
+    expect(after.hostname).toBe("front-lawn.robots.test"); // readable name from the owner's label
     expect(after.tunnelToken).toBe(`fake-tunnel-token-${robot.robotId}`);
     expect(after.members).toEqual([{ userId: user.id, role: "owner" }]);
     expect(after.sessionEpoch).toBe(2);
@@ -59,6 +57,13 @@ describe("register -> claim -> self", () => {
   it("re-register invalidates the previous pairing code", async () => {
     const robot = await newRobot();
     const first = (await (await register(robot)).json()) as { pairingCode: string };
+    const tooSoon = await register(robot);
+    expect(tooSoon.status).toBe(429);
+    const jtis = async () => (await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM jti_seen WHERE robot_id = ?").bind(robot.robotId).first<{ n: number }>())!.n;
+    const before = await jtis();
+    expect((await register(robot)).status).toBe(429);
+    expect(await jtis()).toBe(before); // refused without writing
+    await agePairingCode(robot.robotId);
     const second = (await (await register(robot)).json()) as { pairingCode: string };
     expect(second.pairingCode).not.toBe(first.pairingCode);
     const user = await newUser();

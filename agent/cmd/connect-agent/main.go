@@ -278,16 +278,15 @@ func run() error {
 	defer health.Stop()
 	started := time.Now()
 	var syncWaiters []chan struct{}
-	// The relay is polled only when nextPoll is due or the gateway asked for a resync; health
-	// checks and hostname reports wake the loop without an extra /self call.
-	var nextPoll time.Time
+	// Two independent schedules: the relay is polled (/self) when nextPoll is due or the
+	// gateway asked for a resync; a pending quick-tunnel hostname is reported when nextReport is
+	// due. Health checks wake the loop without triggering either.
+	var nextPoll, nextReport time.Time
 	for {
-		if pendingHost != "" && current != nil && current.Status == "claimed" {
+		if pendingHost != "" && current != nil && current.Status == "claimed" && !time.Now().Before(nextReport) {
 			if s, err := client.ReportHostname(ctx, pendingHost); err != nil {
 				log.Warn("reporting quick-tunnel hostname", "err", err)
-				if retry := time.Now().Add(10 * time.Second); retry.Before(nextPoll) {
-					nextPoll = retry
-				}
+				nextReport = time.Now().Add(10 * time.Second)
 			} else {
 				log.Info("quick tunnel ready", "url", "https://"+pendingHost+"/")
 				pendingHost, healthFails = "", 0
@@ -360,7 +359,7 @@ func run() error {
 		case err := <-errc:
 			return err
 		case h := <-hostCh:
-			pendingHost = h
+			pendingHost, nextReport = h, time.Time{}
 		case <-health.C:
 			if quick && pendingHost == "" && current != nil && current.Hostname != "" {
 				if selfCheck(ctx, current.Hostname) {
@@ -371,9 +370,18 @@ func run() error {
 					sup.Restart()
 				}
 			}
-		case <-time.After(time.Until(nextPoll)):
+		case <-time.After(time.Until(wake(nextPoll, nextReport, pendingHost != "" && current != nil && current.Status == "claimed"))):
 		}
 	}
+}
+
+// wake returns the earliest due deadline: the relay poll, or the hostname report while one is
+// pending.
+func wake(nextPoll, nextReport time.Time, reportPending bool) time.Time {
+	if reportPending && nextReport.Before(nextPoll) {
+		return nextReport
+	}
+	return nextPoll
 }
 
 // selfCheck fetches the agent's own health endpoint through the public tunnel.

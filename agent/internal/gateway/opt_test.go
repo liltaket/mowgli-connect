@@ -329,3 +329,28 @@ func TestLargeHTMLPassesThroughUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// If the consumed grant cannot be written, no session is issued; and without a readable record
+// of the previous run's grants, grants issued around startup are refused (security review 4,
+// MC4-01).
+func TestReplayStateFailsClosed(t *testing.T) {
+	f := newFixture(t, MowgliPolicy{})
+	f.gw.cfg.SessionFile = t.TempDir() + "/missing-dir/sessions.json"
+	if tok, status := f.login(f.grant(nil)); tok != "" || status != 401 {
+		t.Fatalf("session issued although it could not be persisted (status %d)", status)
+	}
+
+	cfg := f.gw.cfg
+	cfg.SessionFile = t.TempDir() + "/sessions.json" // no file yet: previous grants unknown
+	f.gw = New(cfg)
+	f.gw.UpdateState(f.state)
+	f.gw.MarkFresh()
+	f.srv.Config.Handler = f.gw
+	if tok, _ := f.login(f.grant(nil)); tok != "" {
+		t.Fatal("grant issued at startup accepted without replay records")
+	}
+	f.now = f.now.Add(ClockSkew + 2*time.Second)
+	if tok, _ := f.login(f.grant(nil)); tok == "" {
+		t.Fatal("grant issued after startup rejected")
+	}
+}

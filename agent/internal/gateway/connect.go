@@ -70,7 +70,7 @@ func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request, st State)
 			key := sha256.Sum256([]byte(c.Value))
 			g.mu.Lock()
 			delete(g.sessions, key)
-			g.persistLocked()
+			_ = g.persistLocked()
 			g.mu.Unlock()
 		}
 		http.SetCookie(w, &http.Cookie{Name: CookieName, Value: "", Path: "/", MaxAge: -1, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})

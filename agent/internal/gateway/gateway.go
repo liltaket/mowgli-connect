@@ -30,6 +30,7 @@ const (
 	GrantMaxTTL    = 60 * time.Second
 	ClockSkew      = 30 * time.Second
 	maxSessions    = 1024
+	maxGrantIDs    = 4096 // consumed grants remembered at once (each for ~90 s)
 	reservedPrefix = "/_connect/"
 )
 
@@ -78,7 +79,11 @@ type session struct {
 type Gateway struct {
 	cfg   Config
 	start time.Time
-	proxy *httputil.ReverseProxy
+	// strictStart: consumed grants of the previous run are unknown (no, unreadable or
+	// overfull session file), so grants issued around startup are refused instead of risking a
+	// replay; only grants issued after start + ClockSkew are accepted.
+	strictStart bool
+	proxy       *httputil.ReverseProxy
 
 	mu        sync.Mutex
 	state     State
@@ -164,7 +169,7 @@ func (g *Gateway) purgeLocked() {
 		}
 	}
 	if changed {
-		g.persistLocked()
+		_ = g.persistLocked()
 	}
 }
 
@@ -336,7 +341,7 @@ func (g *Gateway) redeemGrant(token string) (string, *session, error) {
 		return "", nil, grantError("bad lifetime")
 	case now.After(exp.Add(ClockSkew)) || iat.After(now.Add(ClockSkew)):
 		return "", nil, grantError("expired or not yet valid")
-	case iat.Before(g.start.Add(-ClockSkew)):
+	case iat.Before(g.start.Add(-ClockSkew)) || (g.strictStart && !iat.After(g.start.Add(ClockSkew))):
 		return "", nil, grantError("issued before agent start")
 	}
 	if (c.Epoch > st.Epoch || st.Members[c.Sub] == "") && g.resync() {
@@ -369,13 +374,21 @@ func (g *Gateway) redeemGrant(token string) (string, *session, error) {
 	if _, used := g.jtis[c.Jti]; used {
 		return "", nil, grantError("grant replayed")
 	}
+	if len(g.jtis) >= maxGrantIDs {
+		return "", nil, grantError("too many recent grants")
+	}
 	g.jtis[c.Jti] = exp.Add(ClockSkew)
 	g.purgeLocked()
 	if len(g.sessions) >= maxSessions {
 		return "", nil, grantError("too many sessions")
 	}
 	g.sessions[s.key] = s
-	g.persistLocked()
+	// The consumed grant must be on disk before the session is handed out, or a restart could
+	// accept the same grant again.
+	if err := g.persistLocked(); err != nil {
+		delete(g.sessions, s.key)
+		return "", nil, grantError("cannot record session: " + err.Error())
+	}
 	return tok, s, nil
 }
 
