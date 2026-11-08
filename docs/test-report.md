@@ -65,6 +65,34 @@ Not verified: the map page itself (the simulator has no GPS datum, so the GUI re
 onboarding), real robot grids, Safari/iOS (needs `DecompressionStream("deflate-raw")`, Safari 16.4+;
 older browsers get uncompressed frames).
 
+## Real mower (2026-11-08)
+
+The lab mower `automower` is a Raspberry Pi, arm64, running Debian 13, Docker 29 and Compose v5,
+with MowgliNext running. It was installed with the published `install.sh` and the GHCR arm64
+image, with the joystick off, and paired from Bruno's account as `mowgli.bronc.app`.
+
+- **Lock on real hardware:** the entrypoint locked egress. The agent ran as uid 65532 and reached
+  the GUI through the host gateway. The connector uid could not reach the GUI.
+- **Login:** a session was created for Bruno's GitHub account.
+- **Traffic through Cloudflare** was measured with the read-only meter, which only sends subscribe
+  messages, over 20–30 s windows. The real `mowProgress` grid is **872 KB per frame**.
+
+  | Topic set | As the GUI sends it (throttled, uncompressed) | Remote default (throttled + compressed) |
+  |---|---:|---:|
+  | Map page | ~357 KB/s | **~7 KB/s** |
+  | Dashboard | ~390 KB/s (payload) | **~13 KB/s** |
+
+  Per-message deflate compresses real grids about **57×**. Without the throttle, the GUI may
+  send this grid up to 2 Hz, which is about 1.7 MB/s.
+- **Robot CPU** while streaming the map remotely: `mowgli-connect` used about 1.5 %.
+  `mowgli-gui` itself used 40–46 %, re-encoding the 872 KB grids; that is MowgliNext's own cost
+  and is worth raising upstream.
+- **Found on first use:** opening a robot seconds after adding it can fail with
+  `ERR_NAME_NOT_RESOLVED`. The new DNS name is still propagating, and resolvers cache the
+  negative answer for the zone's SOA minimum of 30 minutes. Fixed: the relay now waits for the
+  tunnel to be connected before redirecting ("Connecting to your robot…", auto-retry) and shows
+  Online/Offline.
+
 ## Findings
 
 Fixed during testing:
