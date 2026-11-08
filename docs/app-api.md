@@ -139,7 +139,7 @@ signature (method and URL are); TLS protects them, and a signed request works on
 | Another app on the phone pretends to be the Mowgli app | The callback is an HTTPS URL delivered only to apps listed in the relay's `apple-app-site-association` (associated domains, verified by Apple). With the free-team scheme callback this protection is gone and only the consent page and the Devices list remain (see that section). |
 | The authorization code leaks (logs, a browser history, a shoulder) | It works once, for 60 seconds, only with the PKCE verifier and only with the device key whose thumbprint was bound at authorize time. |
 | The phone's storage is copied (backup, malware reading files) | There is no token: the Secure Enclave key cannot be exported; signed requests live 60 s and work once. |
-| A link tricks someone into approving a sign-in | The result goes to the genuine app on that person's own phone; the attacker gets nothing. The consent page names the device, and the device appears under Devices. |
+| A link tricks someone into approving a sign-in | With the HTTPS callback, the result goes to the genuine app on that person's own phone; the attacker gets nothing. With the free-team scheme callback this holds only if no malicious app is involved (see that section). Either way the consent page names the device, and the device appears under Devices. |
 | Cross-site request to the consent form | Origin check on the POST; the page cannot be framed (`frame-ancestors 'none'`). |
 | Open redirect through `redirect_uri` | Exact match against the relay's own callback URL. |
 | A lost or sold phone | Sign it out under Devices. That also signs everyone out of the robots its owner owns, which ends the robot sessions the app still had (they would otherwise last up to 12 hours); on robots the person only views, the owner can sign everyone out. Keys can also require Face ID or the passcode (app side). An admin removing the person deletes all their devices, and their robots drop them at the next sync. |
@@ -167,8 +167,16 @@ What this variant gives up: iOS hands the callback to the authentication session
 sign-in, so another app cannot intercept the Mowgli app's own sign-in. But any app can start its
 own session for the same scheme, and the relay cannot tell it apart. A malicious app on the phone
 could therefore ask for a sign-in that the person approves on the consent page, thinking it is the
-Mowgli app. Everything else stays: PKCE, the device key binding, the consent page, the Devices
-list with Sign out. Switch to the HTTPS callback, and remove the scheme from
+Mowgli app. That app can bring a key and a PKCE challenge made anywhere, so the device it gets
+can then be used from anywhere: PKCE and the key binding prove that the same party finishes the
+sign-in, not that it is the Mowgli app, a Secure Enclave key or the phone in your hand (security
+review 12 reproduced this). What still protects you is the consent page (only approve a sign-in
+you started yourself, in the Mowgli app, a moment ago) and the Devices list with Sign out, which
+shows every device and its name. Outside `ASWebAuthenticationSession`, another app registered
+for the same scheme could also catch or drop a callback; that cannot defeat PKCE or the key
+binding, but it can make a sign-in fail. The app must therefore accept a callback only while a
+sign-in it started is pending, only for the exact callback URI, and only with the `state` it sent
+(RFC 8252 sections 8.9 and 8.10). Switch to the HTTPS callback, and remove the scheme from
 `APP_REDIRECT_URIS`, as soon as the app is signed by a paid team (the mowgli-ios roadmap records
 this follow-up).
 

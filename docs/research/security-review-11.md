@@ -32,3 +32,13 @@ domain; `webcredentials` is the relevant service) from Apple's documentation, no
 | 10 | ECDSA high-s signatures are accepted; request bodies are not signed. | Info | Opus | **Accepted**: replay protection keys on the signed `jti`, and bodies are protected by TLS; documented. |
 
 Regression tests: `relay/test/app.test.ts` (sections "review 11").
+
+## Addendum: review 12, the free-team scheme callback
+
+`git diff b261b52 0aa50b7`, reviewed by GPT-6.1 Sol. No Critical, High or Medium finding; the
+redirect validation, the binding of a code to its redirect URI, the CSP change and URL handling
+were checked with Worker-runtime probes. One Low: the threat model still promised that a tricked
+approval gives an attacker nothing, which does not hold for the scheme variant (an impersonating
+app can bring a remotely generated key and use the device from anywhere). **Fixed** in
+docs/app-api.md, which now also requires the app to accept callbacks only for a pending sign-in,
+the exact callback URI and its own `state`.
