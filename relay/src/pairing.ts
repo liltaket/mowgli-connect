@@ -1,3 +1,5 @@
+import { b64urlDecode } from "./crypto";
+import type { Env } from "./env";
 import { sha256Hex } from "./util";
 import { WORDS } from "./wordlist";
 
@@ -37,6 +39,45 @@ export function normalizePairingCode(input: string): string | null {
   return words.join("-");
 }
 
-export function hashPairingCode(normalized: string): Promise<string> {
+/**
+ * The stored form of a code. With TUNNEL_TOKEN_KEY set it is an HMAC under a key derived from
+ * it, so a copy of the database is not enough to recover live codes by trying all ~2^31 of them
+ * (security review 10); without the key, a plain SHA-256 as before.
+ */
+export async function hashPairingCode(env: Env, normalized: string): Promise<string> {
+  const key = await pairingKey(env);
+  if (!key) return legacyHash(normalized);
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(normalized));
+  return [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Both forms a live code may be stored in (codes issued before the key existed live 15 min). */
+export async function pairingCodeHashes(env: Env, normalized: string): Promise<[string, string]> {
+  return [await hashPairingCode(env, normalized), await legacyHash(normalized)];
+}
+
+function legacyHash(normalized: string): Promise<string> {
   return sha256Hex(`mc-pairing-code:${normalized}`);
+}
+
+const pairingKeys = new Map<string, Promise<CryptoKey>>();
+
+function pairingKey(env: Env): Promise<CryptoKey> | null {
+  const raw = env.TUNNEL_TOKEN_KEY;
+  if (!raw) return null;
+  let k = pairingKeys.get(raw);
+  if (!k) {
+    k = (async () => {
+      const base = await crypto.subtle.importKey("raw", b64urlDecode(raw.trim()), "HKDF", false, ["deriveKey"]);
+      return crypto.subtle.deriveKey(
+        { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info: new TextEncoder().encode("mc-pairing-code-hmac") },
+        base,
+        { name: "HMAC", hash: "SHA-256", length: 256 },
+        false,
+        ["sign"],
+      );
+    })();
+    pairingKeys.set(raw, k);
+  }
+  return k;
 }

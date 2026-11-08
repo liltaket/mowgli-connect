@@ -2,7 +2,7 @@ import { isUserAllowed, ownedRobots, robotLimit } from "./access";
 import { alert } from "./alerts";
 import type { Env } from "./env";
 import { sealToken, tokenKeyUsable } from "./tokenSeal";
-import { hashPairingCode, normalizePairingCode } from "./pairing";
+import { normalizePairingCode, pairingCodeHashes } from "./pairing";
 import { HostnameInUseError, robotHostname, robotSubdomain, type TunnelProvisioner } from "./provisioner";
 import { nowSeconds } from "./util";
 
@@ -11,15 +11,35 @@ export const CLAIM_FAILURES_PER_HOUR = 10;
 type Failure = { ok: false; status: number; message: string };
 export type ClaimResult = { ok: true; robotId: string } | Failure;
 
-export async function claimRateLimited(env: Env, userId: string): Promise<boolean> {
-  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM claim_failures WHERE user_id = ? AND at > ?")
-    .bind(userId, nowSeconds() - 3600)
-    .first<{ n: number }>();
-  return (row?.n ?? 0) >= CLAIM_FAILURES_PER_HOUR;
+/**
+ * Reserves one guess from the person's hourly budget (CLAIM_FAILURES_PER_HOUR) in a single
+ * statement, so concurrent requests cannot all pass one count. The row stays as a failure unless
+ * the attempt is released (a valid code, or a failure that was not a wrong guess). Returns null
+ * when the budget is used up.
+ */
+async function reserveAttempt(env: Env, userId: string): Promise<number | null> {
+  const now = nowSeconds();
+  const row = await env.DB.prepare(
+    `INSERT INTO claim_failures (user_id, at)
+     SELECT ?1, ?2 WHERE (SELECT COUNT(*) FROM claim_failures WHERE user_id = ?1 AND at > ?3) < ?4
+     RETURNING id`,
+  )
+    .bind(userId, now, now - 3600, CLAIM_FAILURES_PER_HOUR)
+    .first<{ id: number }>();
+  return row?.id ?? null;
 }
 
-export async function recordClaimFailure(env: Env, userId: string): Promise<void> {
-  await env.DB.prepare("INSERT INTO claim_failures (user_id, at) VALUES (?, ?)").bind(userId, nowSeconds()).run();
+async function releaseAttempt(env: Env, id: number): Promise<void> {
+  await env.DB.prepare("DELETE FROM claim_failures WHERE id = ?").bind(id).run();
+}
+
+/** Runs one pairing-code attempt against the budget; only a wrong or used code keeps counting. */
+async function withAttempt<T extends { ok: boolean }>(env: Env, userId: string, attempt: () => Promise<T | Failure>): Promise<T | Failure> {
+  const id = await reserveAttempt(env, userId);
+  if (id === null) return RATE_LIMITED;
+  const res = await attempt();
+  if (res !== INVALID) await releaseAttempt(env, id);
+  return res;
 }
 
 const RATE_LIMITED: Failure = { ok: false, status: 429, message: "Too many failed attempts. Try again later." };
@@ -43,6 +63,14 @@ export async function reachedLimit(env: Env, userId: string): Promise<number | n
 }
 
 const MAX_NAME_SUFFIX = 9;
+
+/**
+ * How long a released hostname rests before another robot may take it (the robot that had it
+ * may take it back at once). Whatever the previous owner's robot served under the name (cached
+ * by a browser, or a service worker registered in someone's browser) must not greet the next
+ * owner; Cloudflare's edge cache is also bypassed for robot hostnames (relay/README.md).
+ */
+export const NAME_QUARANTINE_SECONDS = 90 * 86400;
 
 /** "front-lawn", then "front-lawn-2" ... "front-lawn-9": readable names to try, in order. */
 export function hostnameCandidates(name: string | null): string[] {
@@ -92,10 +120,12 @@ export async function planAddress(
   const candidates = hostnameCandidates(name);
   if (candidates.length === 0) return { hostname: robotHostname(robotId, zone), taken: null };
   const names = candidates.map((c) => robotHostname(c, zone));
+  const marks = names.map(() => "?").join(",");
   const used = await env.DB.prepare(
-    `SELECT hostname FROM robots WHERE robot_id != ? AND hostname IN (${names.map(() => "?").join(",")})`,
+    `SELECT hostname FROM robots WHERE robot_id != ? AND hostname IN (${marks})
+     UNION SELECT hostname FROM released_hostnames WHERE robot_id != ? AND released_at > ? AND hostname IN (${marks})`,
   )
-    .bind(robotId, ...names)
+    .bind(robotId, ...names, robotId, nowSeconds() - NAME_QUARANTINE_SECONDS, ...names)
     .all<{ hostname: string }>();
   const usedSet = new Set(used.results.map((r) => r.hostname));
   const free = names.find((h) => !usedSet.has(h));
@@ -108,20 +138,20 @@ export async function previewClaim(
   userId: string,
   rawCode: string,
 ): Promise<{ ok: true; robotId: string; name: string | null } | Failure> {
-  if (await claimRateLimited(env, userId)) return RATE_LIMITED;
+  return withAttempt(env, userId, () => lookupCode(env, rawCode));
+}
+
+async function lookupCode(env: Env, rawCode: string): Promise<{ ok: true; robotId: string; name: string | null } | Failure> {
   const code = normalizePairingCode(rawCode);
   const row = code
     ? await env.DB.prepare(
         `SELECT r.robot_id, r.name FROM pairing_codes p JOIN robots r ON r.robot_id = p.robot_id
-         WHERE p.code_hash = ? AND p.expires_at > ? AND r.status = 'unclaimed'`,
+         WHERE p.code_hash IN (?1, ?2) AND p.expires_at > ?3 AND r.status = 'unclaimed'`,
       )
-        .bind(await hashPairingCode(code), nowSeconds())
+        .bind(...(await pairingCodeHashes(env, code)), nowSeconds())
         .first<{ robot_id: string; name: string | null }>()
     : null;
-  if (!row) {
-    await recordClaimFailure(env, userId);
-    return INVALID;
-  }
+  if (!row) return INVALID;
   return { ok: true, robotId: row.robot_id, name: row.name };
 }
 
@@ -132,32 +162,35 @@ export async function claimRobot(
   rawCode: string,
   label: string | null,
 ): Promise<ClaimResult> {
-  if (await claimRateLimited(env, userId)) return RATE_LIMITED;
+  return withAttempt(env, userId, () => claimWithCode(env, provisioner, userId, rawCode, label));
+}
+
+async function claimWithCode(
+  env: Env,
+  provisioner: TunnelProvisioner,
+  userId: string,
+  rawCode: string,
+  label: string | null,
+): Promise<ClaimResult> {
   const code = normalizePairingCode(rawCode);
-  if (!code) {
-    await recordClaimFailure(env, userId);
-    return INVALID;
-  }
+  if (!code) return INVALID;
   const full = await reachedLimit(env, userId);
   if (full !== null) return limitReached(full); // before the code is used, so it stays valid
   if (!tokenKeyUsable(env)) {
     await alert(env, "token_key_invalid", "TUNNEL_TOKEN_KEY is not valid (32 bytes, base64url), so no robot can be added. Set the secret again.");
     return { ok: false, status: 503, message: "Robots cannot be added right now. Try again later." };
   }
-  const codeHash = await hashPairingCode(code);
   const now = nowSeconds();
 
   // Single use: the DELETE is the atomic gate.
   const consumed = await env.DB.prepare(
-    "DELETE FROM pairing_codes WHERE code_hash = ? AND expires_at > ? RETURNING robot_id, created_at, expires_at",
+    "DELETE FROM pairing_codes WHERE code_hash IN (?1, ?2) AND expires_at > ?3 RETURNING code_hash, robot_id, created_at, expires_at",
   )
-    .bind(codeHash, now)
-    .first<{ robot_id: string; created_at: number; expires_at: number }>();
-  if (!consumed) {
-    await recordClaimFailure(env, userId);
-    return INVALID;
-  }
+    .bind(...(await pairingCodeHashes(env, code)), now)
+    .first<{ code_hash: string; robot_id: string; created_at: number; expires_at: number }>();
+  if (!consumed) return INVALID;
   const robotId = consumed.robot_id;
+  const codeHash = consumed.code_hash;
 
   // Only while the robot is still unclaimed: somebody else may have added it in the meantime.
   const restoreCode = () =>
@@ -172,7 +205,6 @@ export async function claimRobot(
     .bind(robotId)
     .first<{ status: string; name: string | null; hostname: string | null }>();
   if (status?.status !== "unclaimed") {
-    await recordClaimFailure(env, userId);
     return INVALID;
   }
 
@@ -217,7 +249,6 @@ export async function claimRobot(
       return limitReached((await robotLimit(env, userId)) ?? 0);
     }
     // Lost a race; the tunnel (idempotent by name) now belongs to the winner, so leave it alone.
-    await recordClaimFailure(env, userId);
     return INVALID;
   }
   // Access removed while the robot was being added: do not leave it owned by nobody usable.
@@ -272,11 +303,18 @@ export async function cleanupRevoked(
     console.error("tunnel cleanup failed (will retry)", robotId, e instanceof Error ? e.message : "unknown");
     return false;
   }
-  await env.DB.prepare(
-    "UPDATE robots SET hostname = NULL, tunnel_id = NULL, dns_record_id = NULL, updated_at = ? WHERE robot_id = ? AND status = 'revoked'",
-  )
-    .bind(nowSeconds(), robotId)
-    .run();
+  const now = nowSeconds();
+  await env.DB.batch([
+    // The name rests before another robot may take it (NAME_QUARANTINE_SECONDS).
+    env.DB.prepare(
+      `INSERT INTO released_hostnames (hostname, robot_id, released_at)
+       SELECT hostname, robot_id, ?1 FROM robots WHERE robot_id = ?2 AND status = 'revoked' AND hostname IS NOT NULL
+       ON CONFLICT(hostname) DO UPDATE SET robot_id = excluded.robot_id, released_at = excluded.released_at`,
+    ).bind(now, robotId),
+    env.DB.prepare(
+      "UPDATE robots SET hostname = NULL, tunnel_id = NULL, dns_record_id = NULL, updated_at = ? WHERE robot_id = ? AND status = 'revoked'",
+    ).bind(now, robotId),
+  ]);
   return true;
 }
 
@@ -303,8 +341,11 @@ async function provisionNamed(
   for (const label of candidates) {
     if (label !== held) {
       try {
-        const r = await env.DB.prepare("UPDATE robots SET hostname = ? WHERE robot_id = ? AND status = 'unclaimed'")
-          .bind(robotHostname(label, zone), robotId)
+        const r = await env.DB.prepare(
+          `UPDATE robots SET hostname = ?1 WHERE robot_id = ?2 AND status = 'unclaimed'
+             AND NOT EXISTS (SELECT 1 FROM released_hostnames WHERE hostname = ?1 AND robot_id != ?2 AND released_at > ?3)`,
+        )
+          .bind(robotHostname(label, zone), robotId, nowSeconds() - NAME_QUARANTINE_SECONDS)
           .run();
         if (r.meta.changes !== 1) continue;
       } catch {

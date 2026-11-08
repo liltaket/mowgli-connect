@@ -203,10 +203,12 @@ func run() error {
 		return fmt.Errorf("bad MC_UPSTREAM %q", cfg.upstream)
 	}
 	var policy gateway.Policy = gateway.GenericPolicy{}
-	var guard *gateway.ContainerGuard
+	var guard *gateway.MowgliGuard
 	if cfg.profile == "mowgli" {
 		policy = gateway.MowgliPolicy{AllowTeleop: cfg.allowTeleop}
-		guard = &gateway.ContainerGuard{Upstream: upstream, SelfID: gateway.OwnContainerID(), Names: []string{"mowgli-connect", "mowgli-gui"}}
+		guard = &gateway.MowgliGuard{Containers: &gateway.ContainerGuard{
+			Upstream: upstream, SelfID: gateway.OwnContainerID(), Names: []string{"mowgli-connect", "mowgli-gui"},
+		}}
 	}
 	// Resync requests from the gateway; each carries a channel closed after the next sync.
 	syncReq := make(chan chan struct{}, 8)

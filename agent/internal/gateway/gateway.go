@@ -58,11 +58,10 @@ type Config struct {
 	Throttle     map[string]time.Duration
 	// MaxStale bounds how long the last relay snapshot may authorize anything. Past it (relay
 	// unreachable), all sessions and grants are rejected so revocations cannot be outwaited.
-	// Guard, if set, refuses requests that would cut off remote access (see ContainerGuard).
-	Guard interface {
-		Denies(method, path string) bool
-	}
 	MaxStale time.Duration
+	// Guard, if set, refuses remote requests that would lock the owner out or open a way
+	// around Mowgli Connect (see MowgliGuard).
+	Guard Guard
 	// SessionFile, if set, keeps sessions across agent restarts (only token hashes are stored).
 	SessionFile string
 	// Resync, if set, asks for an immediate relay sync and waits for it. It is called (at most
@@ -270,11 +269,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
 		return
 	}
-	if g.cfg.Guard != nil && g.cfg.Guard.Denies(r.Method, r.URL.Path) {
-		writeJSON(w, http.StatusForbidden, map[string]string{
-			"error": "Stopping this container remotely would cut off remote access until someone restarts it at the robot. Restart it instead, or stop it at home.",
-		})
-		return
+	if g.cfg.Guard != nil {
+		if reason := g.cfg.Guard.Deny(r); reason != "" {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": reason})
+			return
+		}
 	}
 	stripSessionCookie(r)
 	if isWS {
@@ -467,13 +466,15 @@ func setForwarded(h http.Header, in *http.Request) {
 }
 
 func hardenResponse(h http.Header) {
-	// The app must not be able to plant or overwrite the gateway session cookie.
+	// The app must not be able to plant or overwrite the gateway session cookie, and its cookies
+	// stay on this robot's hostname: a Domain attribute would reach the relay and every other
+	// robot under the same zone (cookie tossing, or a cookie flood that locks the owner out).
 	if sc := h.Values("Set-Cookie"); len(sc) > 0 {
 		h.Del("Set-Cookie")
 		for _, v := range sc {
 			name, _, _ := strings.Cut(v, "=")
-			if strings.TrimSpace(name) != CookieName { // browsers trim the name, so must we
-				h.Add("Set-Cookie", v)
+			if strings.TrimSpace(name) != CookieName && strings.TrimSpace(name) != "" { // browsers trim the name
+				h.Add("Set-Cookie", hostOnlyCookie(v))
 			}
 		}
 	}
@@ -486,6 +487,19 @@ func hardenResponse(h http.Header) {
 	if h.Get("Referrer-Policy") == "" {
 		h.Set("Referrer-Policy", "same-origin")
 	}
+}
+
+// hostOnlyCookie drops any Domain attribute from a Set-Cookie value.
+func hostOnlyCookie(v string) string {
+	parts := strings.Split(v, ";")
+	out := parts[:1]
+	for _, p := range parts[1:] {
+		k, _, _ := strings.Cut(strings.TrimSpace(p), "=")
+		if !strings.EqualFold(strings.TrimSpace(k), "domain") {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, ";")
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -77,6 +77,10 @@ seconds. connect.bronc.app shows "Update available" next to a robot with an olde
 by hand, run the command above. To turn automatic updates on or off, run the installer again with
 `--auto-update yes` or `--auto-update no` (it keeps the robot's identity and pairing).
 
+Automatic updates mean trusting whoever can publish the agent image: a malicious image would run on
+the robot with the container's privileges, outside the network lock. See
+[SECURITY.md](../SECURITY.md). Turn them off if you would rather read each change first.
+
 The robot's key and pairing are kept in the container's data volume, so you do not need to pair
 again.
 

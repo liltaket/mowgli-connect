@@ -151,3 +151,32 @@ describe("robots added long ago", () => {
     }
   });
 });
+
+describe("released hostnames (review 10)", () => {
+  it("rest for 90 days before another robot can take them; the same robot can take its name back", async () => {
+    const { post, newUser, newRobot, register, self, testEnv } = await import("./helpers");
+    const owner = await newUser();
+    const first = await newRobot();
+    const c1 = ((await (await register(first, "quarantine-test")).json()) as { pairingCode: string }).pairingCode;
+    expect((await post("/claim", owner, { code: c1 })).status).toBe(303);
+    expect(((await (await self(first)).json()) as SelfBody).hostname).toBe("quarantine-test.robots.test");
+    expect((await post(`/robots/${first.robotId}/unlink`, owner, {})).status).toBe(303);
+    const rel = await testEnv.DB.prepare("SELECT robot_id FROM released_hostnames WHERE hostname = 'quarantine-test.robots.test'").first();
+    expect(rel).toEqual({ robot_id: first.robotId });
+
+    // Another robot asking for the same name gets the next one, and the preview says so.
+    const other = await newRobot();
+    const c2 = ((await (await register(other, "quarantine-test")).json()) as { pairingCode: string }).pairingCode;
+    const u2 = await newUser();
+    expect(await (await post("/claim", u2, { code: c2, step: "preview" })).text()).toContain("quarantine-test-2.robots.test");
+    expect((await post("/claim", u2, { code: c2 })).status).toBe(303);
+    expect(((await (await self(other)).json()) as SelfBody).hostname).toBe("quarantine-test-2.robots.test");
+
+    // After 90 days it is free again.
+    await testEnv.DB.prepare("UPDATE released_hostnames SET released_at = released_at - 91 * 86400 WHERE hostname = 'quarantine-test.robots.test'").run();
+    const third = await newRobot();
+    const c3 = ((await (await register(third, "quarantine-test")).json()) as { pairingCode: string }).pairingCode;
+    expect((await post("/claim", await newUser(), { code: c3 })).status).toBe(303);
+    expect(((await (await self(third)).json()) as SelfBody).hostname).toBe("quarantine-test.robots.test");
+  });
+});

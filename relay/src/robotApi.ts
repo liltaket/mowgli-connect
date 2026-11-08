@@ -7,7 +7,7 @@ import { b64urlDecode, deriveRobotId } from "./crypto";
 import { loadRelayKey } from "./relayKey";
 import { formatPairingCode, generatePairingCode, hashPairingCode, PAIRING_TTL_SECONDS } from "./pairing";
 import { SECURITY_HEADERS } from "./html";
-import { cleanLabel, nowSeconds, readBodyText, SKEW_SECONDS } from "./util";
+import { cleanLabel, nowSeconds, readBodyText, sha256Hex, SKEW_SECONDS } from "./util";
 
 export function json(body: unknown, status = 200, extra: HeadersInit = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -93,6 +93,26 @@ async function recentUnclaimed(env: Env, now: number): Promise<number> {
   return r?.n ?? 0;
 }
 
+/** New unclaimed robots one network may register per hour, so it cannot use up the global cap. */
+export const NEW_ROBOTS_PER_NETWORK_PER_HOUR = 5;
+
+/**
+ * A coarse, hashed key for the client's network (IPv4 /24, IPv6 /48), from Cloudflare's
+ * CF-Connecting-IP. null without that header (local tests); the raw address is never stored.
+ */
+export async function networkKey(request: Request): Promise<string | null> {
+  const ip = request.headers.get("CF-Connecting-IP");
+  if (!ip) return null;
+  let net: string;
+  if (ip.includes(":")) {
+    const groups = ip.split(":");
+    net = groups.slice(0, 3).join(":") + "::/48";
+  } else {
+    net = ip.split(".").slice(0, 3).join(".") + ".0/24";
+  }
+  return (await sha256Hex(`mc-net:${net}`)).slice(0, 24);
+}
+
 function maxNewRobotsPerHour(env: Env): number {
   const n = Number.parseInt(env.MAX_NEW_ROBOTS_PER_HOUR ?? "", 10);
   return Number.isFinite(n) && n > 0 ? n : 30;
@@ -121,6 +141,13 @@ export async function registerRobot(env: Env, request: Request, url: URL): Promi
   const existing = await env.DB.prepare("SELECT robot_id, public_key, status, tunnel_id FROM robots WHERE robot_id = ?")
     .bind(await deriveRobotId(raw))
     .first<Pick<RobotRow, "robot_id" | "public_key" | "status" | "tunnel_id">>();
+  const net = await networkKey(request);
+  if (!existing && net) {
+    const fromNet = await env.DB.prepare("SELECT COUNT(*) AS n FROM robots WHERE status = 'unclaimed' AND created_at > ? AND origin_net = ?")
+      .bind(now - 3600, net)
+      .first<{ n: number }>();
+    if ((fromNet?.n ?? 0) >= NEW_ROBOTS_PER_NETWORK_PER_HOUR) return json({ error: "rate_limited" }, 429, { "Retry-After": "600" });
+  }
   if (!existing && (await recentUnclaimed(env, now)) >= maxNewRobotsPerHour(env)) {
     await alert(env, "registration_cap", "The hourly cap on new robot registrations was reached. Normal for a launch, otherwise someone may be flooding the relay.");
     return json({ error: "rate_limited" }, 429, { "Retry-After": "600" });
@@ -158,11 +185,12 @@ export async function registerRobot(env: Env, request: Request, url: URL): Promi
     // appear; the count and insert are one statement so concurrent requests cannot overshoot.
     // Unclaimed rows are deleted after 7 days idle, which caps the table size.
     const ins = await env.DB.prepare(
-      `INSERT OR IGNORE INTO robots (robot_id, public_key, name, status, session_epoch, created_at, updated_at, last_seen_at)
-       SELECT ?, ?, ?, 'unclaimed', 1, ?, ?, ?
-       WHERE (SELECT COUNT(*) FROM robots WHERE status = 'unclaimed' AND created_at > ?) < ?`,
+      `INSERT OR IGNORE INTO robots (robot_id, public_key, name, status, session_epoch, created_at, updated_at, last_seen_at, origin_net)
+       SELECT ?1, ?2, ?3, 'unclaimed', 1, ?4, ?4, ?4, ?7
+       WHERE (SELECT COUNT(*) FROM robots WHERE status = 'unclaimed' AND created_at > ?5) < ?6
+         AND (?7 IS NULL OR (SELECT COUNT(*) FROM robots WHERE status = 'unclaimed' AND created_at > ?5 AND origin_net = ?7) < ?8)`,
     )
-      .bind(robotId, publicKey, robotName, now, now, now, now - 3600, maxNewRobotsPerHour(env))
+      .bind(robotId, publicKey, robotName, now, now - 3600, maxNewRobotsPerHour(env), net, NEW_ROBOTS_PER_NETWORK_PER_HOUR)
       .run();
     if (ins.meta.changes !== 1) return json({ error: "rate_limited" }, 429, { "Retry-After": "600" });
     try {
@@ -179,7 +207,7 @@ export async function registerRobot(env: Env, request: Request, url: URL): Promi
   await env.DB.batch([
     env.DB.prepare("DELETE FROM pairing_codes WHERE robot_id = ?").bind(robotId),
     env.DB.prepare("INSERT INTO pairing_codes (code_hash, robot_id, created_at, expires_at) VALUES (?, ?, ?, ?)").bind(
-      await hashPairingCode(code),
+      await hashPairingCode(env, code),
       robotId,
       now,
       expiresAt,

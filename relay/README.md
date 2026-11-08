@@ -85,6 +85,12 @@ looks at records with the exact robot name, so it leaves the wildcard alone.
 whose apex *is* `ROBOT_ZONE` (e.g. a dedicated domain `mowgli-robots.net`) or enable Advanced
 Certificate Manager for deeper names. (General Cloudflare behaviour, not checked against current docs here.)
 
+7. **Never cache robot hostnames.** A robot's owner controls everything its tunnel serves, and a
+   hostname can later belong to someone else, so Cloudflare must not keep responses for robot
+   hostnames. Add a Cache Rule (Caching > Cache Rules, free plan) for the robot zone: expression
+   `(http.host ne "<apex>" and http.host ne "www.<apex>")` (or whatever covers the robot
+   hostnames only), action "Bypass cache". The hosted relay has this rule for `bronc.app`.
+
 ### Local development
 
 `.dev.vars` (git-ignored):

@@ -1,7 +1,9 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -45,7 +47,8 @@ func (c *ContainerGuard) Denies(method, path string) bool {
 			return true
 		}
 	}
-	if c.SelfID != "" && len(id) >= 12 && strings.HasPrefix(c.SelfID, id) {
+	// Docker accepts any unambiguous prefix of an id, so every prefix of a protected id counts.
+	if c.SelfID != "" && strings.HasPrefix(c.SelfID, id) {
 		return true
 	}
 	ids, ok := c.protectedIDs()
@@ -53,7 +56,7 @@ func (c *ContainerGuard) Denies(method, path string) bool {
 		return true
 	}
 	for full := range ids {
-		if len(id) >= 12 && strings.HasPrefix(full, id) {
+		if strings.HasPrefix(full, id) {
 			return true
 		}
 	}
@@ -113,4 +116,64 @@ func OwnContainerID() string {
 		return string(m[1])
 	}
 	return ""
+}
+
+// Guard refuses remote requests that would lock the owner out or open a way around Mowgli
+// Connect. It returns the reason shown to the user, or "" to let the request through.
+type Guard interface {
+	Deny(r *http.Request) string
+}
+
+// MowgliGuard is the Guard for the MowgliNext GUI. Everything it refuses still works at home,
+// on the robot's own network; only the remote path is closed:
+//   - stopping the Mowgli Connect or GUI container (see ContainerGuard), or shutting the robot
+//     down: nothing would be left to bring remote access back;
+//   - changing the GUI's own remote access (a Tailscale sidecar on the host network): a second
+//     way in that would outlast unlinking the robot here;
+//   - changing the map tile server: the GUI proxies /tiles/* to it from the host network, so
+//     pointing it at a LAN address would turn the robot into a proxy into the home network.
+type MowgliGuard struct {
+	Containers *ContainerGuard
+}
+
+const (
+	denyLockout = "Doing this remotely would cut off remote access until someone is at the robot. Do it at home instead."
+	denyAtHome  = "For safety this setting can only be changed at home, on the robot's own network."
+)
+
+func (m *MowgliGuard) Deny(r *http.Request) string {
+	path := r.URL.Path
+	switch {
+	case r.Method == http.MethodPost && strings.TrimSuffix(path, "/") == "/api/system/shutdown":
+		return denyLockout
+	case m.Containers != nil && m.Containers.Denies(r.Method, path):
+		return denyLockout
+	case strings.HasPrefix(path+"/", "/api/remote-access/") && !safeMethod(r.Method):
+		return denyAtHome
+	case r.Method == http.MethodPost && strings.TrimSuffix(path, "/") == "/api/config/keys/set" && setsKey(r, "system.map.tileServer"):
+		return denyAtHome
+	}
+	return ""
+}
+
+// setsKey reports whether a JSON object body sets key, and puts the body back for the proxy.
+// The GUI decodes it with the same encoding/json, so both see the same keys.
+func setsKey(r *http.Request, key string) bool {
+	if r.Body == nil {
+		return false
+	}
+	b, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	r.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(b), r.Body), r.Body}
+	if err != nil {
+		return true // unreadable: refuse rather than guess
+	}
+	var body map[string]json.RawMessage
+	if json.Unmarshal(b, &body) != nil {
+		return false // the GUI rejects it too
+	}
+	_, ok := body[key]
+	return ok
 }

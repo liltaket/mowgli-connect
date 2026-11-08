@@ -263,7 +263,7 @@ func mpStr(b []byte, p int) (string, int, bool) {
 	default:
 		return "", 0, false
 	}
-	if n < 0 || p+h+n > len(b) {
+	if n < 0 || n > len(b)-p-h { // no p+h+n: it can overflow int on 32-bit platforms
 		return "", 0, false
 	}
 	return string(b[p+h : p+h+n]), p + h + n, true
@@ -343,7 +343,7 @@ func mpSkip(b []byte, p int) (int, bool) {
 		default: // 0xc1 is never used
 			return 0, false
 		}
-		if !ok || size < 0 || items < 0 || items > len(b) || p+1+size > len(b) {
+		if !ok || size < 0 || items < 0 || items > len(b) || size > len(b)-p-1 {
 			return 0, false
 		}
 		p += 1 + size

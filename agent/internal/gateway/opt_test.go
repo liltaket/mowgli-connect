@@ -369,6 +369,21 @@ func TestUpstreamCannotPlantSessionCookie(t *testing.T) {
 	}
 }
 
+// App cookies stay host-only, and nameless ones (which some browsers read as a "__Host-..."
+// name) are dropped (review 10).
+func TestUpstreamCookiesStayOnThisHost(t *testing.T) {
+	h := http.Header{}
+	for _, v := range []string{"a=1; Domain=bronc.app; Path=/", "b=2;domain=.bronc.app;Max-Age=9", "=__Host-mcr_session=x; Path=/", "c=3; Secure"} {
+		h.Add("Set-Cookie", v)
+	}
+	hardenResponse(h)
+	got := h.Values("Set-Cookie")
+	want := []string{"a=1; Path=/", "b=2;Max-Age=9", "c=3; Secure"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("Set-Cookie after hardening: %q, want %q", got, want)
+	}
+}
+
 // The sign-in page is styled from a same-origin stylesheet, links back to the relay, and keeps a
 // strict CSP (no inline script or style).
 func TestCallbackPage(t *testing.T) {

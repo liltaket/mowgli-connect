@@ -320,6 +320,14 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
     if (method === "GET") {
       if (!user) return loginRedirect(url);
       const raw = url.searchParams.get("code") ?? "";
+      // A code link counts against the guess budget only when the owner opens it (typed, pasted
+      // or clicked from here). A page on a sibling *.bronc.app host loading it in the background
+      // must not use the budget up; it gets the form, filled in, instead.
+      const site = request.headers.get("Sec-Fetch-Site");
+      if (site && site !== "none" && site !== "same-origin") {
+        const norm = normalizePairingCode(raw);
+        return redirect(norm ? `/?code=${formatPairingCode(norm)}` : "/");
+      }
       const prev = await previewClaim(env, user.id, raw);
       if (!prev.ok) return claimError(env, user, prev.message, prev.status);
       const full = await reachedLimit(env, user.id);

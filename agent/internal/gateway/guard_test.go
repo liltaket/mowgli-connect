@@ -1,9 +1,11 @@
 package gateway
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -38,7 +40,9 @@ func TestContainerGuard(t *testing.T) {
 		{"POST", "/api/containers/" + ros + "/stop", false},     // other containers: owner's choice
 		{"POST", "/api/containers/" + self + "/restart", false}, // comes back by itself
 		{"GET", "/api/containers/" + self + "/stop", false},
-		{"POST", "/api/containers/" + self[:4] + "/stop", false}, // too short to mean anything
+		{"POST", "/api/containers/" + self[:4] + "/stop", true}, // Docker resolves short prefixes too
+		{"POST", "/api/containers/" + gui[:1] + "/stop", true},
+		{"POST", "/api/containers/" + ros[:6] + "/stop", false},
 	} {
 		if got := g.Denies(tc.method, tc.path); got != tc.deny {
 			t.Errorf("%s %s: deny=%v, want %v", tc.method, tc.path, got, tc.deny)
@@ -68,4 +72,35 @@ func TestGuardInGateway(t *testing.T) {
 
 type denyAll struct{}
 
-func (denyAll) Denies(string, string) bool { return true }
+func (denyAll) Deny(*http.Request) string { return "no" }
+
+func TestMowgliGuard(t *testing.T) {
+	g := &MowgliGuard{}
+	req := func(method, path, body string) *http.Request {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		return r
+	}
+	for _, tc := range []struct {
+		method, path, body string
+		deny               bool
+	}{
+		{"POST", "/api/system/shutdown", "", true},
+		{"POST", "/api/system/reboot", "", false},
+		{"PUT", "/api/remote-access/settings", `{"authKey":"x"}`, true},
+		{"POST", "/api/remote-access/apply", "", true},
+		{"GET", "/api/remote-access/status", "", false},
+		{"POST", "/api/config/keys/set", `{"system.map.tileServer":"http://192.168.1.1"}`, true},
+		{"POST", "/api/config/keys/set", `{"system.map.enabled":"true","system.map.tileServer":"x"}`, true},
+		{"POST", "/api/config/keys/set", `{"system.map.enabled":"true"}`, false},
+		{"POST", "/api/config/keys/set", `not json`, false},
+	} {
+		r := req(tc.method, tc.path, tc.body)
+		if got := g.Deny(r) != ""; got != tc.deny {
+			t.Errorf("%s %s %s: deny=%v, want %v", tc.method, tc.path, tc.body, got, tc.deny)
+		}
+		// The body is still there for the proxy.
+		if b, _ := io.ReadAll(r.Body); string(b) != tc.body {
+			t.Errorf("%s %s: body %q after the guard, want %q", tc.method, tc.path, b, tc.body)
+		}
+	}
+}
