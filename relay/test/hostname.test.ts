@@ -107,12 +107,20 @@ describe("robot connection status", () => {
       const res = await get(`/open/${robot.robotId}`, user);
       expect(res.status).toBe(503);
       expect(res.headers.get("Refresh")).toBe("5");
-      expect(await res.text()).toContain("Connecting to your robot");
+      expect(await res.text()).toContain("Setting up your robot's connection"); // just added: normal
+      expect(await (await call("/", { headers: { Cookie: user.cookie } })).text()).toContain("Setting up connection");
+    } finally {
+      proto.connected = original;
+    }
+    const { get, call } = await import("./helpers");
+    expect((await get(`/open/${robot.robotId}`, user)).status).toBe(302); // online: recorded as first online
+    proto.connected = async () => false;
+    try {
+      const later = await get(`/open/${robot.robotId}`, user);
+      expect(await later.text()).toContain("Your robot is offline");
       expect(await (await call("/", { headers: { Cookie: user.cookie } })).text()).toContain("Offline");
     } finally {
       proto.connected = original;
     }
-    const { get } = await import("./helpers");
-    expect((await get(`/open/${robot.robotId}`, user)).status).toBe(302);
   });
 });

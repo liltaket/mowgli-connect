@@ -128,8 +128,9 @@ export async function claimRobot(
   const [upd] = await env.DB.batch([
     env.DB.prepare(
       `UPDATE robots SET status = 'claimed', session_epoch = session_epoch + 1, hostname = ?, tunnel_id = ?,
-         dns_record_id = ?, tunnel_token = ?, updated_at = ? WHERE robot_id = ? AND status = 'unclaimed'`,
-    ).bind(tunnel.hostname, tunnel.tunnelId, tunnel.dnsRecordId, tunnel.token, now, robotId),
+         dns_record_id = ?, tunnel_token = ?, updated_at = ?, claimed_at = ?, first_online_at = NULL
+       WHERE robot_id = ? AND status = 'unclaimed'`,
+    ).bind(tunnel.hostname, tunnel.tunnelId, tunnel.dnsRecordId, tunnel.token, now, now, robotId),
     env.DB.prepare(
       "INSERT INTO members (robot_id, user_id, role, label, created_at) SELECT ?, ?, 'owner', ?, ? WHERE changes() > 0",
     ).bind(robotId, userId, label, now),

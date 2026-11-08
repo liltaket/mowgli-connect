@@ -15,10 +15,16 @@ import {
 import { cleanLabel, isRobotId, nowSeconds, readBodyText, safeReturnPath } from "./util";
 
 const NOTICES: Record<string, string> = {
-  claimed: "Robot added. It connects within a few seconds; then press Open.",
+  claimed: "Robot added. It is setting up its secure connection, which usually takes under a minute the first time. You can press Open now: it waits for the robot.",
   unlinked: "Robot unlinked.",
   revoked: "All sessions on that robot were signed out.",
 };
+
+async function markFirstOnline(env: Env, robotId: string): Promise<void> {
+  await env.DB.prepare("UPDATE robots SET first_online_at = ? WHERE robot_id = ? AND first_online_at IS NULL")
+    .bind(nowSeconds(), robotId)
+    .run();
+}
 
 function redirect(location: string, status = 302, extra: HeadersInit = {}): Response {
   return new Response(null, { status, headers: { Location: location, "Cache-Control": "no-store", ...extra } });
@@ -44,11 +50,12 @@ interface RobotListRow {
   label: string | null;
   allow_teleop: number | null;
   tunnel_id: string | null;
+  first_online_at: number | null;
 }
 
 async function dashboard(env: Env, user: SessionUser, url: URL): Promise<Response> {
   const rows = await env.DB.prepare(
-    `SELECT r.robot_id, r.name, r.hostname, m.role, m.label, r.allow_teleop, r.tunnel_id
+    `SELECT r.robot_id, r.name, r.hostname, m.role, m.label, r.allow_teleop, r.tunnel_id, r.first_online_at
      FROM members m JOIN robots r ON r.robot_id = m.robot_id
      WHERE m.user_id = ? AND r.status = 'claimed' ORDER BY m.created_at`,
   )
@@ -58,7 +65,10 @@ async function dashboard(env: Env, user: SessionUser, url: URL): Promise<Respons
   const online = new Map<string, boolean | null>();
   await Promise.all(
     rows.results.slice(0, 20).map(async (r) => {
-      if (r.tunnel_id && prov.connected) online.set(r.robot_id, await prov.connected(r.tunnel_id));
+      if (!r.tunnel_id || !prov.connected) return;
+      const up = await prov.connected(r.tunnel_id);
+      online.set(r.robot_id, up);
+      if (up && r.first_online_at === null) await markFirstOnline(env, r.robot_id);
     }),
   );
   const notice = NOTICES[url.searchParams.get("notice") ?? ""];
@@ -81,7 +91,9 @@ ${rows.results.map(
     !r.hostname
       ? html`<span class="state wait">waiting for tunnel</span>`
       : online.get(r.robot_id) === false
-        ? html`<span class="state off">Offline</span>`
+        ? r.first_online_at === null
+          ? html`<span class="state wait">Setting up connection</span>`
+          : html`<span class="state off">Offline</span>`
         : online.get(r.robot_id) === true
           ? html`<span class="state">Online</span>`
           : html`<span class="state">Tunnel ready</span>`
@@ -233,23 +245,44 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
     if (!isRobotId(robotId)) return notFound();
     // Non-members and unknown robots get the same 404.
     const row = await env.DB.prepare(
-      `SELECT r.hostname, r.session_epoch, r.tunnel_id, m.role FROM members m JOIN robots r ON r.robot_id = m.robot_id
+      `SELECT r.hostname, r.session_epoch, r.tunnel_id, r.claimed_at, r.first_online_at, m.role
+       FROM members m JOIN robots r ON r.robot_id = m.robot_id
        WHERE m.robot_id = ? AND m.user_id = ? AND r.status = 'claimed'`,
     )
       .bind(robotId, user.id)
-      .first<{ hostname: string | null; session_epoch: number; tunnel_id: string | null; role: "owner" | "viewer" }>();
+      .first<{
+        hostname: string | null;
+        session_epoch: number;
+        tunnel_id: string | null;
+        claimed_at: number | null;
+        first_online_at: number | null;
+        role: "owner" | "viewer";
+      }>();
     if (!row) return notFound();
     // Only send the browser to the robot once its tunnel is up: otherwise it would get a
     // Cloudflare error page, or (for a robot added seconds ago) look up a name that is still
     // propagating and cache "not found" for up to 30 minutes.
     const prov = createProvisioner(env);
-    if (row.tunnel_id && prov.connected && (await prov.connected(row.tunnel_id)) === false) {
+    const up = row.tunnel_id && prov.connected ? await prov.connected(row.tunnel_id) : null;
+    if (up && row.first_online_at === null) await markFirstOnline(env, robotId);
+    if (up === false) {
+      const firstTime = row.first_online_at === null;
+      const settingUp = firstTime && nowSeconds() - (row.claimed_at ?? 0) < 10 * 60;
+      const retry = html`<p><a class="btn primary" href="/open/${robotId}">Try now</a> <a class="btn" href="/">Back</a></p>`;
+      const help = html`<p class="muted">Check that the robot is switched on and has internet. On the robot, <code>docker logs mowgli-connect</code> shows what the agent is doing.</p>`;
       return page(
-        "Robot not connected",
-        html`<h1>Connecting to your robot…</h1>
-<p>The robot is not connected right now. If you just added it or switched it on, this takes about half a minute; this page tries again by itself.</p>
-<p class="muted">Still waiting after a few minutes? Check that the robot is on and has internet, and see <code>docker logs mowgli-connect</code> on it.</p>
-<p><a class="btn primary" href="/open/${robotId}">Try now</a> <a class="btn" href="/">Back</a></p>`,
+        settingUp ? "Setting up" : "Robot offline",
+        settingUp
+          ? html`<h1>Setting up your robot's connection…</h1>
+<p>This is normal right after adding a robot: it is creating its secure connection to Cloudflare, which usually takes under a minute. This page opens the robot by itself as soon as it is ready.</p>
+${retry}`
+          : firstTime
+            ? html`<h1>Still waiting for your robot</h1>
+<p>The robot has not connected since it was added. This page keeps trying.</p>
+${help}${retry}`
+            : html`<h1>Your robot is offline</h1>
+<p>It is not connected right now, for example because it is switched off or out of Wi-Fi range. This page opens it by itself when it is back.</p>
+${help}${retry}`,
         503,
         { "Retry-After": "5", Refresh: "5" },
       );
