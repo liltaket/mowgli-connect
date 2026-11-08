@@ -366,3 +366,21 @@ func TestUpstreamCannotPlantSessionCookie(t *testing.T) {
 		t.Fatalf("Set-Cookie after hardening: %q", got)
 	}
 }
+
+// The sign-in page is styled from a same-origin stylesheet, links back to the relay, and keeps a
+// strict CSP (no inline script or style).
+func TestCallbackPage(t *testing.T) {
+	f := newFixture(t, MowgliPolicy{})
+	r := f.req("GET", "/_connect/callback", nil, "")
+	body, _ := io.ReadAll(r.Body)
+	csp := r.Header.Get("Content-Security-Policy")
+	if r.StatusCode != 200 || !strings.Contains(string(body), `href="`+testRelay+`/"`) || !strings.Contains(string(body), "/_connect/connect.css") {
+		t.Fatalf("callback page: %d %s", r.StatusCode, body)
+	}
+	if !strings.Contains(csp, "style-src 'self'") || strings.Contains(csp, "unsafe-inline") || strings.Contains(string(body), "style=") {
+		t.Fatalf("csp %q", csp)
+	}
+	if r := f.req("GET", "/_connect/connect.css", nil, ""); r.StatusCode != 200 || !strings.HasPrefix(r.Header.Get("Content-Type"), "text/css") {
+		t.Fatalf("css: %d", r.StatusCode)
+	}
+}
