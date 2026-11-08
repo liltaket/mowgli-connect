@@ -35,6 +35,18 @@ type wsOut struct {
 	compress bool
 	fw       *flate.Writer
 	buf      bytes.Buffer
+	sent     int64 // payload bytes written downstream (after compression)
+}
+
+// wsStats is what one proxied socket carried, logged when it closes so the cost of remote use
+// can be seen per page and per topic. Only relayDown's goroutine writes the downstream fields
+// and only pump's the upstream one; they are read after both have finished.
+type wsStats struct {
+	rawDown  int64            // bytes the app sent towards the browser
+	upBytes  int64            // bytes the browser sent to the app
+	frames   int64            // downstream messages from the app
+	held     int64            // throttled messages replaced by a newer one before sending
+	topicRaw map[string]int64 // rawDown per multiplex topic (throttled paths only)
 }
 
 func newWSOut(conn *websocket.Conn, compress bool) *wsOut {
@@ -48,6 +60,7 @@ func newWSOut(conn *websocket.Conn, compress bool) *wsOut {
 func (o *wsOut) send(f frame) error {
 	_ = o.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 	if !o.compress {
+		o.sent += int64(len(f.data))
 		return o.conn.WriteMessage(f.typ, f.data)
 	}
 	flag := byte(0)
@@ -74,6 +87,7 @@ func (o *wsOut) send(f frame) error {
 	if _, err := w.Write(payload); err != nil {
 		return err
 	}
+	o.sent += int64(len(payload)) + 1
 	return w.Close()
 }
 
@@ -81,7 +95,7 @@ func (o *wsOut) send(f frame) error {
 // snapshots such as occupancy grids) are sent at most once per interval: a message that
 // arrives too early is held back and replaced by newer ones, and the latest is sent when the
 // interval has passed, so the browser always ends up with the current state.
-func relayDown(src *websocket.Conn, out *wsOut, throttle map[string]time.Duration) {
+func relayDown(src *websocket.Conn, out *wsOut, throttle map[string]time.Duration, st *wsStats) {
 	msgs := make(chan frame)
 	quit := make(chan struct{})
 	defer close(quit)
@@ -125,6 +139,16 @@ func relayDown(src *websocket.Conn, out *wsOut, throttle map[string]time.Duratio
 			if len(throttle) > 0 && f.typ == websocket.BinaryMessage {
 				topic, _ = msgpackTopic(f.data)
 			}
+			st.frames++
+			st.rawDown += int64(len(f.data))
+			if len(throttle) > 0 {
+				if st.topicRaw == nil {
+					st.topicRaw = map[string]int64{}
+				}
+				if len(st.topicRaw) < 64 || st.topicRaw[topic] > 0 { // bounded: topics come from the app
+					st.topicRaw[topic] += int64(len(f.data))
+				}
+			}
 			iv, limited := throttle[topic]
 			if !limited {
 				if out.send(f) != nil {
@@ -133,6 +157,9 @@ func relayDown(src *websocket.Conn, out *wsOut, throttle map[string]time.Duratio
 				continue
 			}
 			if _, held := pending[topic]; held || time.Now().Before(next[topic]) {
+				if held {
+					st.held++
+				}
 				pending[topic] = f
 				continue
 			}

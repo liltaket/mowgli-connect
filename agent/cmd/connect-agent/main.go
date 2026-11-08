@@ -203,8 +203,10 @@ func run() error {
 		return fmt.Errorf("bad MC_UPSTREAM %q", cfg.upstream)
 	}
 	var policy gateway.Policy = gateway.GenericPolicy{}
+	var guard *gateway.ContainerGuard
 	if cfg.profile == "mowgli" {
 		policy = gateway.MowgliPolicy{AllowTeleop: cfg.allowTeleop}
+		guard = &gateway.ContainerGuard{Upstream: upstream, SelfID: gateway.OwnContainerID(), Names: []string{"mowgli-connect", "mowgli-gui"}}
 	}
 	// Resync requests from the gateway; each carries a channel closed after the next sync.
 	syncReq := make(chan chan struct{}, 8)
@@ -224,6 +226,9 @@ func run() error {
 			case <-time.After(10 * time.Second):
 			}
 		},
+	}
+	if guard != nil { // not a typed nil in the interface
+		gwCfg.Guard = guard
 	}
 	if cfg.profile == "mowgli" {
 		gwCfg.ThrottlePath, gwCfg.Throttle = "/api/mowglinext/multiplex", cfg.throttle
@@ -362,7 +367,9 @@ func run() error {
 			default:
 				log.Warn("relay unreachable; keeping last known state", "err", err, "retry", backoff)
 				wait = backoff
-				backoff = min(backoff*2, 5*time.Minute)
+				// At most a minute: after a long outage remote access is suspended (MC_MAX_STALE)
+				// until the next successful sync, so the robot should notice the relay is back soon.
+				backoff = min(backoff*2, time.Minute)
 			}
 			nextPoll = time.Now().Add(wait)
 			if current == nil || current.Status != "claimed" {

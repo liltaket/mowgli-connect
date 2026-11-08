@@ -9,7 +9,7 @@
 # are not touched), asks three questions, starts the agent and shows the pairing code.
 # Non-interactive: sh install.sh --name hedgehog --teleop no --auto-update yes --yes
 # Options: --dir DIR, --relay URL, --name NAME, --teleop yes|no, --auto-update yes|no,
-#          --image IMAGE, --yes
+#          --dns auto|system, --image IMAGE, --yes
 set -eu
 
 DIR="$HOME/mowgli-connect"
@@ -18,6 +18,7 @@ IMAGE="ghcr.io/liltaket/mowgli-connect-agent:latest"
 NAME=""
 TELEOP=""
 AUTOUPDATE=""
+DNS=auto
 YES=no
 
 die() {
@@ -32,9 +33,10 @@ while [ $# -gt 0 ]; do
 	--name) NAME=$2; shift 2 ;;
 	--teleop) TELEOP=$2; shift 2 ;;
 	--auto-update) AUTOUPDATE=$2; shift 2 ;;
+	--dns) DNS=$2; shift 2 ;;
 	--image) IMAGE=$2; shift 2 ;;
 	--yes | -y) YES=yes; shift ;;
-	-h | --help) sed -n '2,13p' "$0"; exit 0 ;;
+	-h | --help) sed -n '2,14p' "$0"; exit 0 ;;
 	*) die "unknown option $1 (see --help)" ;;
 	esac
 done
@@ -58,6 +60,7 @@ case $(uname -m) in x86_64 | amd64 | aarch64 | arm64) ;; *) die "unsupported CPU
 case $RELAY in https://*) ;; *) die "--relay must be an https:// URL" ;; esac
 case $RELAY$IMAGE in *[!A-Za-z0-9:/._@-]*) die "--relay and --image may not contain spaces or quotes" ;; esac
 case $DIR in *[!A-Za-z0-9/._-]*) die "--dir may contain only letters, digits, '/', '.', '_' and '-'" ;; esac
+case $DNS in auto | system) ;; *) die "--dns must be auto or system" ;; esac
 
 echo "Mowgli Connect: remote access to this robot's web interface."
 echo
@@ -121,6 +124,7 @@ services:
       MC_PROFILE: mowgli
     volumes:
       - data:/data # robot identity and pairing; keep it private
+    # dns-servers
     read_only: true
     cap_drop: [ALL]
     cap_add: [NET_ADMIN, SETUID, SETGID, KILL]
@@ -151,6 +155,23 @@ if command -v crontab >/dev/null 2>&1; then
 	fi
 elif [ "$AUTOUPDATE" = yes ]; then
 	cron_note="  Automatic updates: not set up (no cron on this robot). Update by hand: cd $DIR && docker compose pull && docker compose up -d"
+fi
+
+# DNS for the container (--dns auto): Cloudflare and Google first, then the robot's own resolver.
+# A home router that does not answer DNS otherwise delays every lookup by seconds, and the
+# tunnel's start by half a minute. --dns system keeps Docker's default (the robot's resolvers).
+if [ "$DNS" = auto ]; then
+	own=""
+	for f in /run/systemd/resolve/resolv.conf /etc/resolv.conf; do
+		[ -r "$f" ] || continue
+		own=$(awk '$1 == "nameserver" { print $2 }' "$f" | grep -v '^127\.' | grep -v '^::1$' | grep -v '%' | grep -E '^[0-9A-Fa-f:.]+$' | head -1)
+		[ -n "$own" ] && break
+	done
+	list='"1.1.1.1", "8.8.8.8"'
+	case $own in "" | 1.1.1.1 | 8.8.8.8) ;; *) list="$list, \"$own\"" ;; esac
+	sed -i "s|^    # dns-servers\$|    dns: [$list] # from install.sh --dns auto|" "$DIR/compose.yaml"
+else
+	sed -i '/^    # dns-servers$/d' "$DIR/compose.yaml"
 fi
 
 echo

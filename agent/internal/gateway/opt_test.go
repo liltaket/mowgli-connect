@@ -5,10 +5,12 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -389,4 +391,53 @@ func TestCallbackPage(t *testing.T) {
 	if r := f.req("GET", "/_connect/icon.svg", nil, ""); r.StatusCode != 200 || r.Header.Get("Content-Type") != "image/svg+xml" {
 		t.Fatalf("icon: %d %q", r.StatusCode, r.Header.Get("Content-Type"))
 	}
+}
+
+func TestSocketStatsLogged(t *testing.T) {
+	f := newFixture(t, MowgliPolicy{})
+	var buf syncBuffer
+	f.gw.cfg.Logger = slog.New(slog.NewTextHandler(&buf, nil))
+	tok, _ := f.login(f.grant(nil))
+	c, _, err := f.dialWS("/api/mowglinext/multiplex?"+wsCompressParam+"=1", tok, "https://"+testHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	big := strings.Repeat("grid ", 20000) // 100 kB, compresses well
+	c.WriteMessage(websocket.TextMessage, []byte(big))
+	readFramed(t, c)
+	c.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(buf.String(), "websocket closed") {
+		if time.Now().After(deadline) {
+			t.Fatalf("no socket summary logged: %s", buf.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	line := buf.String()
+	for _, want := range []string{"path=/api/mowglinext/multiplex", "compressed=true", "app_kB=97", "up_kB=97", "frames=1"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("missing %q in %s", want, line)
+		}
+	}
+	if strings.Contains(line, "tunnel_kB=97") {
+		t.Fatalf("compression not reflected: %s", line)
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe for the logger's goroutines.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }

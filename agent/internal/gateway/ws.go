@@ -1,7 +1,10 @@
 package gateway
 
 import (
+	"fmt"
 	"net/http"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -89,13 +92,27 @@ func (g *Gateway) proxyWebSocket(w http.ResponseWriter, r *http.Request, sess *s
 
 	// Each conn has exactly one writer goroutine for data frames; pings use WriteControl,
 	// which gorilla allows concurrently.
+	var st wsStats
+	out := newWSOut(client, compress)
+	started := time.Now()
+	var wg sync.WaitGroup
+	wg.Add(2)
 	go func() {
+		defer wg.Done()
 		defer finish()
-		pump(client, upConn, func() { _ = client.SetReadDeadline(time.Now().Add(wsReadTimeout)) })
+		st.upBytes = pump(client, upConn, func() { _ = client.SetReadDeadline(time.Now().Add(wsReadTimeout)) })
 	}()
 	go func() {
+		defer wg.Done()
 		defer finish()
-		relayDown(upConn, newWSOut(client, compress), g.throttleFor(r.URL.Path))
+		relayDown(upConn, out, g.throttleFor(r.URL.Path), &st)
+	}()
+	defer func() {
+		// Close both ends so the goroutines return, then report what the socket carried.
+		client.Close()
+		upConn.Close()
+		wg.Wait()
+		g.logSocket(r.URL.Path, time.Since(started), compress, out.sent, &st)
 	}()
 
 	ping := time.NewTicker(wsPingInterval)
@@ -122,20 +139,22 @@ func (g *Gateway) proxyWebSocket(w http.ResponseWriter, r *http.Request, sess *s
 	}
 }
 
-// pump copies messages from src to dst until either side fails, forwarding close frames.
-func pump(src, dst *websocket.Conn, onRead func()) {
+// pump copies messages from src to dst until either side fails, forwarding close frames. It
+// returns the number of payload bytes copied.
+func pump(src, dst *websocket.Conn, onRead func()) (n int64) {
 	for {
 		typ, data, err := src.ReadMessage()
 		if err != nil {
 			forwardClose(dst, err)
-			return
+			return n
 		}
+		n += int64(len(data))
 		if onRead != nil {
 			onRead()
 		}
 		_ = dst.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 		if err := dst.WriteMessage(typ, data); err != nil {
-			return
+			return n
 		}
 	}
 }
@@ -145,4 +164,36 @@ func (g *Gateway) throttleFor(path string) map[string]time.Duration {
 		return nil
 	}
 	return g.cfg.Throttle
+}
+
+// logSocket reports one closed socket: how long it was open, what the app sent and what went
+// over the tunnel after compression and throttling, and the heaviest multiplex topics. Sockets
+// shorter than a few seconds carrying little are not worth a line.
+func (g *Gateway) logSocket(path string, d time.Duration, compressed bool, sent int64, st *wsStats) {
+	if d < 5*time.Second && st.rawDown < 64<<10 {
+		return
+	}
+	type tb struct {
+		t string
+		n int64
+	}
+	var top []tb
+	for t, n := range st.topicRaw {
+		top = append(top, tb{t, n})
+	}
+	sort.Slice(top, func(i, j int) bool { return top[i].n > top[j].n })
+	var b strings.Builder
+	for i, x := range top {
+		if i == 5 {
+			break
+		}
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, "%s:%dk", x.t, x.n>>10)
+	}
+	secs := max(d.Seconds(), 1)
+	g.cfg.Logger.Info("websocket closed", "path", path, "seconds", int(d.Seconds()), "compressed", compressed,
+		"app_kB", st.rawDown>>10, "tunnel_kB", sent>>10, "tunnel_kBps", fmt.Sprintf("%.1f", float64(sent)/1024/secs),
+		"up_kB", st.upBytes>>10, "frames", st.frames, "throttled", st.held, "top_app_kB", b.String())
 }

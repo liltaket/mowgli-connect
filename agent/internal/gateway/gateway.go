@@ -58,6 +58,10 @@ type Config struct {
 	Throttle     map[string]time.Duration
 	// MaxStale bounds how long the last relay snapshot may authorize anything. Past it (relay
 	// unreachable), all sessions and grants are rejected so revocations cannot be outwaited.
+	// Guard, if set, refuses requests that would cut off remote access (see ContainerGuard).
+	Guard interface {
+		Denies(method, path string) bool
+	}
 	MaxStale time.Duration
 	// SessionFile, if set, keeps sessions across agent restarts (only token hashes are stored).
 	SessionFile string
@@ -264,6 +268,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !g.cfg.Policy.Allow(role, r.Method, r.URL.Path, isWS) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
+	if g.cfg.Guard != nil && g.cfg.Guard.Denies(r.Method, r.URL.Path) {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "Stopping this container remotely would cut off remote access until someone restarts it at the robot. Restart it instead, or stop it at home.",
+		})
 		return
 	}
 	stripSessionCookie(r)

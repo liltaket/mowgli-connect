@@ -124,4 +124,9 @@ Time a lookup on the robot itself: `time getent hosts example.com`. If it takes 
 the first DNS server the network hands out is not answering (often the router), and every lookup
 waits for it to time out before the next server is tried. Fix it on the router: enable its DNS
 or give out a working one through DHCP, such as `1.1.1.1` or `8.8.8.8`. This speeds up everything
-on that network, MowgliNext included. Mowgli Connect itself still works, only more slowly.
+on that network, MowgliNext included.
+
+The installer protects Mowgli Connect from this by default (`--dns auto`): the container asks
+`1.1.1.1` and `8.8.8.8` first and the robot's own DNS server last, so its tunnel starts in seconds
+even with such a router. To keep Docker's default instead (only the robot's own DNS servers), run
+the installer with `--dns system`.

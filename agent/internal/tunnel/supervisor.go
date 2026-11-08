@@ -78,7 +78,9 @@ func (s *Supervisor) loop(ctx context.Context, spec Spec, done chan struct{}) {
 		start := time.Now()
 		// --no-prechecks: the startup connectivity check reports false failures inside the egress
 		// lock (it probes endpoints the lock does not allow) and delays the tunnel by ~13 s.
-		args := []string{"tunnel", "--no-autoupdate", "--no-prechecks", "--metrics", "127.0.0.1:0"}
+		// A short grace period: on a restart or update the old connections close within Docker's
+		// 10 s stop timeout instead of lingering (default 30 s), so the edge moves on sooner.
+		args := []string{"tunnel", "--no-autoupdate", "--no-prechecks", "--grace-period", "5s", "--metrics", "127.0.0.1:0"}
 		env := os.Environ()
 		if spec.Token != "" {
 			// The connector token is passed via the environment, never argv (visible in ps).
