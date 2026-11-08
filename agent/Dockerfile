@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM --platform=$BUILDPLATFORM golang:1.24 AS build
+FROM --platform=$BUILDPLATFORM golang:1.24@sha256:d2d2bc1c84f7e60d7d2438a3836ae7d0c847f4888464e7ec9ba3a1339a1ee804 AS build
 ARG TARGETOS TARGETARCH VERSION=dev
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -9,11 +9,12 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w -X main.version=$VERSION" -o /out/connect-agent ./cmd/connect-agent \
  && mkdir -p /out/data
 
-# Pinned cloudflared (same release T3 Connect pins). Multi-arch: amd64 + arm64.
-FROM cloudflare/cloudflared:2026.10.4 AS cloudflared
+# Base images pinned by tag and multi-arch index digest (amd64 + arm64). cloudflared: same
+# release T3 Connect pins.
+FROM cloudflare/cloudflared:2026.10.4@sha256:c6c7ae1d5dfdcb094ad344ed68ccffc26635c9c6be80965664c33baf064b0515 AS cloudflared
 
 # Alpine for nft (egress lock) and setpriv (privilege drop); see entrypoint.sh.
-FROM alpine:3.22
+FROM alpine:3.22@sha256:bfe7ceb9f09ec0566c48fb93356e45a47a00be5a1dd14fa5b909e7709c66b034
 # Numeric ids only: 65532 = agent, 65533 = cloudflared (see entrypoint.sh).
 RUN apk add --no-cache nftables setpriv ca-certificates
 COPY --from=cloudflared /usr/local/bin/cloudflared /usr/local/bin/cloudflared
