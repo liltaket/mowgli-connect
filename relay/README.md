@@ -71,6 +71,13 @@ npx wrangler login
    Add a `routes` entry so the Worker is served on exactly `RELAY_ORIGIN` (custom domain).
 6. **Deploy**: `npm run deploy` (not done by this repo's tooling; run it yourself).
 
+**Add a wildcard record once:** a proxied `AAAA *.<ROBOT_ZONE> -> 100::`. Every robot name then
+always resolves, to the same Cloudflare addresses a robot's own CNAME gives. Resolvers never
+cache "not found" for a robot that is being added; with the default SOA minimum they would cache
+it for 30 minutes. Robot CNAMEs override the wildcard, and names without a robot answer 522.
+The relay never sends browsers there, because it checks the tunnel first. The provisioner only
+looks at records with the exact robot name, so it leaves the wildcard alone.
+
 `ROBOT_ZONE` and TLS: Cloudflare's free Universal certificate covers `example.com` and
 `*.example.com` only (one label). Robot hostnames are `<robotId>.<ROBOT_ZONE>`, so use a zone
 whose apex *is* `ROBOT_ZONE` (e.g. a dedicated domain `mowgli-robots.net`) or enable Advanced
