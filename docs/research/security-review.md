@@ -36,7 +36,7 @@ Scope: read-only adversarial review of the prototype at the current workspace st
 
 - **Confirmed from code:** Findings above and the checked-path conclusions. No suspected exploit was promoted without a concrete path.
 - `go test ./...` was attempted; gateway packages could not compile because the sandbox denied fetching `github.com/gorilla/websocket` from `proxy.golang.org`. Identity tests passed; remaining packages had no tests.
-- `npm test` was attempted; Vitest/Cloudflare workers could not bind `127.0.0.1` (`EPERM`), and Wrangler could not write its log under `/home/bruno/.config`. No relay test cases ran.
+- `npm test` was attempted; Vitest/Cloudflare workers could not bind `127.0.0.1` (`EPERM`), and Wrangler could not write its log under ``~/.config`. No relay test cases ran.
 - Relay is explicitly a never-deployed prototype (`relay/README.md:10`); no live Cloudflare ingress or deployment behavior was verified.
 
 ## Status after fixes (2026-11-08, lead)

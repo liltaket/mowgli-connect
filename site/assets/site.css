@@ -254,6 +254,8 @@ p code, li code, dd code {
 .art-strong { fill: var(--ink); font-size: 14px; font-weight: 650; }
 .art-code { fill: var(--grass-ink); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px; font-weight: 600; }
 .art-wash { fill: var(--grass-wash); }
+.art-lawn { fill: var(--lawn); }
+.art-url { font-size: 10px; letter-spacing: -.01em; }
 .art-line { stroke: var(--line-strong); }
 
 /* Sections */
@@ -420,3 +422,88 @@ section[id] { scroll-margin-top: 16px; }
 .foot-links a { color: var(--muted); }
 .foot-links a:hover { color: var(--ink); }
 .foot-note { margin: 16px 0 0; max-width: none; }
+
+/* Install: two ways, as tabs when JavaScript runs */
+.tablist {
+  display: inline-flex; flex-wrap: wrap; gap: 4px;
+  padding: 4px; margin-bottom: 28px;
+  background: var(--paper); border: 1px solid var(--line); border-radius: 12px;
+}
+.tablist[hidden] { display: none; }
+.tablist [role=tab] {
+  display: inline-flex; align-items: center; gap: 8px;
+  min-height: 42px; padding: 8px 16px;
+  border: 0; border-radius: 9px; background: transparent; color: var(--muted);
+  font-weight: 650; font-size: .95rem;
+  transition: background-color .2s, color .2s;
+}
+.tablist [role=tab]:hover { color: var(--ink); }
+.tablist [role=tab][aria-selected=true] { background: var(--grass); color: var(--on-grass); }
+.tablist svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.way + .way { margin-top: 40px; }
+.has-tabs .way + .way { margin-top: 0; }
+.way-title { font-size: 1.25rem; margin-bottom: 16px; }
+.has-tabs .way-title {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap;
+}
+.has-tabs .way:not([hidden]) { animation: way-in .3s ease-out; }
+@keyframes way-in { from { opacity: 0; transform: translateY(6px); } }
+.ph { color: #ffd88a; border-bottom: 1px dashed currentColor; }
+.agent-rules { margin: 16px 0 12px; padding: 0; list-style: none; display: grid; gap: 6px; }
+.agent-rules li { position: relative; padding-left: 26px; }
+.agent-rules li::before {
+  content: ""; position: absolute; left: 2px; top: .45em;
+  width: 12px; height: 7px; border: solid var(--grass); border-width: 0 0 2px 2px;
+  transform: rotate(-45deg);
+}
+.copy.done { border-color: var(--code-muted); }
+
+/* Lawn stripes: the install band is mown in wide, barely visible lanes. */
+.band {
+  background-image: repeating-linear-gradient(-32deg, transparent 0 110px, var(--stripe) 110px 220px);
+}
+:root { --stripe: rgb(47 125 74 / 2.6%); --lawn: #d7eadc; }
+:root[data-theme="dark"] { --stripe: rgb(108 201 138 / 3%); --lawn: #1d3424; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --stripe: rgb(108 201 138 / 3%); --lawn: #1d3424; } }
+
+/* Hero motion: once the connection line is drawn, the map in the phone goes live and the mower
+   works its way across the lawn, stripe by stripe. */
+.art-stripes {
+  fill: none; stroke: var(--grass-wash); stroke-opacity: 1; stroke-width: 12; stroke-linecap: butt; stroke-linejoin: round;
+}
+.art-mower { display: none; }
+@supports (offset-path: path("M0 0")) {
+  .art-mower {
+    display: block;
+    offset-path: path("M322 242h76v14h-76v14h76v14h-76v14h40");
+    offset-rotate: 0deg;
+    offset-distance: 100%;
+  }
+  .art-stripes, .art-live { stroke-dasharray: 400; }
+  @media (prefers-reduced-motion: no-preference) {
+    .art-stripes, .art-live { animation: lawn 9s linear 2.4s infinite both; }
+    .art-mower { animation: mower 9s linear 2.4s infinite both; }
+  }
+}
+@keyframes lawn {
+  0% { stroke-dashoffset: 400; opacity: 1; }
+  80% { stroke-dashoffset: 0; opacity: 1; }
+  94% { stroke-dashoffset: 0; opacity: 1; }
+  100% { stroke-dashoffset: 0; opacity: 0; }
+}
+@keyframes mower {
+  0% { offset-distance: 0%; }
+  80%, 100% { offset-distance: 100%; }
+}
+
+/* The mark in the header redraws its path when you point at it. */
+.brand .mark-path { stroke-dasharray: 60; stroke-dashoffset: 0; }
+@media (prefers-reduced-motion: no-preference) {
+  .brand:hover .mark-path { animation: mark-draw .8s ease-in-out; }
+}
+@keyframes mark-draw { from { stroke-dashoffset: 60; } }
+@media (max-width: 40rem) {
+  .tablist { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+  .tablist [role=tab] { justify-content: center; padding: 8px 10px; font-size: .9rem; line-height: 1.25; text-align: left; }
+}

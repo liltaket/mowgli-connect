@@ -1,7 +1,7 @@
 # Test report (2026-11-08)
 
-Everything here ran on a dev machine (Kuffe). **No robot, no ROS, no hardware.** The robot side
-was the real MowgliNext GUI server built from source (`/home/bruno/mowglinext` commit
+Everything here ran on a dev machine. **No robot, no ROS, no hardware.** The robot side
+was the real MowgliNext GUI server built from source (a local `mowglinext` checkout commit
 `4739f41fb`, unmodified) fed by the synthetic Foxglove simulator in [`sim/`](../sim/README.md).
 The relay ran under `wrangler dev` with local D1; GitHub login was bypassed by seeding a relay
 session row. Cloudflare was **real**: anonymous Quick Tunnels (`*.trycloudflare.com`).
@@ -50,7 +50,7 @@ socket as received by the meter:
 Offline analysis of every frame (`wsmeter -analyze`): per-message deflate gives 5–7× on noisy
 grids, ~11× on the plain synthetic grid, ~2× on LiDAR (floats); delta encoding against the
 previous frame added almost nothing, so it was not built. Deflate (BestSpeed) cost 2–13 ms of CPU
-per second of traffic on Kuffe; a Raspberry Pi is several times slower but still a few percent of
+per second of traffic on the dev machine; a Raspberry Pi is several times slower but still a few percent of
 one core.
 
 | Check | Result |

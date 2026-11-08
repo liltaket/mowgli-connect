@@ -7,7 +7,7 @@ export const PAIRING_WORDS = 3;
 const WORD_SET = new Set(WORDS);
 
 /**
- * Three random words from the 1,295-word list, e.g. "sunny-tiger-moss": about 31 bits, easy to
+ * Three random words from the 1,295-word list, e.g. "lemon-otter-crisp": about 31 bits, easy to
  * read aloud and type on a phone. Enough because a code lives 15 minutes, works once, and claim
  * attempts are limited per account (CLAIM_FAILURES_PER_HOUR). Words are drawn without modulo
  * bias (rejection sampling on 16-bit values).
@@ -28,8 +28,8 @@ export function formatPairingCode(code: string): string {
 }
 
 /**
- * Accepts any case and any separators ("Sunny Tiger-moss", "sunny_tiger moss"). Returns the
- * canonical "sunny-tiger-moss", or null unless it is exactly three known words.
+ * Accepts any case and any separators ("Lemon Otter-crisp", "lemon_otter crisp"). Returns the
+ * canonical "lemon-otter-crisp", or null unless it is exactly three known words.
  */
 export function normalizePairingCode(input: string): string | null {
   const words = input.toLowerCase().split(/[^a-z]+/).filter(Boolean);

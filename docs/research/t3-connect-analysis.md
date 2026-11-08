@@ -1,6 +1,6 @@
 # T3 Connect implementation analysis for Mowgli Connect
 
-Research date: 2026-11-07. Scope: the checked-out T3 Code implementation in `/home/bruno/t3code`; this report describes code and repository docs, not a live Cloudflare account. Source references use `path:line` in that checkout.
+Research date: 2026-11-07. Scope: the checked-out T3 Code implementation in a local `t3code` checkout; this report describes code and repository docs, not a live Cloudflare account. Source references use `path:line` in that checkout.
 
 ## Executive summary
 

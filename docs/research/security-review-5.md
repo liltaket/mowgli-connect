@@ -112,7 +112,7 @@ Validation: the focused `GOPROXY=off GOTOOLCHAIN=local /tmp/mowgli-simulator-go/
 | MC5-05 | cloudflared may no longer use private resolvers. Only the agent may, and it cannot be steered by tunnel ingress. A warning is printed if only private resolvers exist. |
 | MC5-06 | Scheme-aware default ports (80/443). An IPv6 upstream is refused explicitly. |
 
-**Verified on putte, Docker 29, `docker compose`** (default project network, so `nameserver 127.0.0.11`; `read_only`, `cap_drop ALL` + `NET_ADMIN, SETUID, SETGID, KILL`, `no-new-privileges`), with a **real claimed robot** on the live relay (`mc-test-putte.bronc.app`):
+**Verified on a test server, Docker 29, `docker compose`** (default project network, so `nameserver 127.0.0.11`; `read_only`, `cap_drop ALL` + `NET_ADMIN, SETUID, SETGID, KILL`, `no-new-privileges`), with a **real claimed robot** on the live relay (`mc-test.bronc.app`):
 - The agent started cloudflared itself. The process table showed uid 65533 as a child of the agent, with 4 edge connections through Docker DNS.
 - Capabilities in `/proc/<pid>/status`:
   - agent: `CapEff=CapAmb=0xe0` (KILL, SETGID, SETUID), `NoNewPrivs 1`;
@@ -127,7 +127,7 @@ Validation: the focused `GOPROXY=off GOTOOLCHAIN=local /tmp/mowgli-simulator-go/
   | other host port | no content |
   | router :80 | no content |
   | router tcp :53 | no content |
-  | putte LAN IP :9000 | no content |
+  | test server LAN IP :9000 | no content |
   | non-Cloudflare public IP | no content |
   | agent | 204 |
 - Unlinking the robot in the relay made the agent apply `revoked` and log `cloudflared stopped`, and no cloudflared process remained. This is MC5-03. `docker compose down` returned at once.

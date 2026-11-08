@@ -38,7 +38,9 @@ export function robotHostname(label: string, zone: string): string {
 // Names that could be mistaken for a service of the zone itself.
 const RESERVED_LABELS = new Set(
   ("www api app auth login logout signin account accounts admin connect relay mail smtp imap pop mx ns ns1 ns2 " +
-    "ftp cdn static assets dash dashboard status support help docs blog shop git dev test staging robots robot")
+    "ftp cdn static assets dash dashboard status support help docs blog shop git dev test staging robots robot " +
+    // Example names used in the documentation, so they never point at somebody's robot.
+    "example hedgehog")
     .split(" "),
 );
 

@@ -36,7 +36,7 @@ continue), and then runs it.
 ### Pair and open
 
 1. Go to <https://connect.bronc.app> and sign in with GitHub.
-2. Enter the pairing code. The robot gets its own address, such as `https://kuffe.bronc.app`.
+2. Enter the pairing code. The robot gets its own address, such as `https://hedgehog.bronc.app`.
 3. Press Open. You are logged in to the robot's own GUI.
 
 To see the pairing code again:

@@ -1,5 +1,5 @@
 import type { Env } from "./env";
-import { page, html } from "./html";
+import { page, html, type SafeHtml } from "./html";
 import { createSession, isUserAllowed, sessionCookie } from "./session";
 import { b64urlDecode, b64urlEncode } from "./crypto";
 import { nowSeconds, parseCookies, randomToken, safeReturnPath } from "./util";
@@ -64,10 +64,13 @@ export async function startLogin(env: Env, returnTo: string | null): Promise<Res
   });
 }
 
-function fail(message: string, status = 400): Response {
-  return page("Sign-in failed", html`<h1>Sign-in failed</h1><p class="error">${message}</p><p><a href="/">Back to the start</a></p>`, status, {
-    "Set-Cookie": oauthCookie("", 0),
-  });
+function fail(message: string, status = 400, help?: SafeHtml): Response {
+  return page(
+    "Sign-in failed",
+    html`<h1>Sign-in failed</h1><p class="error">${message}</p>${help ?? ""}<p class="actions"><a class="btn primary" href="/login">Try again</a> <a class="btn" href="/">Back to the start</a></p>`,
+    status,
+    { "Set-Cookie": oauthCookie("", 0) },
+  );
 }
 
 interface GithubUser {
@@ -118,7 +121,11 @@ export async function finishLogin(env: Env, url: URL, request: Request): Promise
 
   const userId = `gh:${gh.id}`;
   if (!isUserAllowed(env, userId, gh.login)) {
-    return fail("This GitHub account is not allowed to use this relay.", 403);
+    return fail(
+      `The GitHub account @${gh.login} has not been invited yet.`,
+      403,
+      html`<p class="muted">Mowgli Connect is invite-only while it is a prototype. Ask the person who runs it to add your account. Signed in to GitHub with another account? Sign out on github.com first, then try again.</p>`,
+    );
   }
 
   const now = nowSeconds();

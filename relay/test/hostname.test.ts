@@ -23,7 +23,7 @@ describe("readable robot hostnames", () => {
     expect(robotSubdomain("  --Kuffe--  ")).toBe("kuffe");
     expect(robotSubdomain("x".repeat(40))).toBe("x".repeat(32));
     expect(robotSubdomain("xn--abc")).toBe("xn-abc"); // dashes collapse, so never punycode
-    for (const bad of ["ab", "www", "Login", "connect", "abcdefghijklmnop", "!!!", "", null]) {
+    for (const bad of ["ab", "www", "Login", "connect", "Hedgehog", "example", "abcdefghijklmnop", "!!!", "", null]) {
       expect(robotSubdomain(bad)).toBeNull();
     }
   });

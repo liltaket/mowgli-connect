@@ -7,7 +7,7 @@
 #
 # It creates ~/mowgli-connect (its own Docker Compose project: MowgliNext's files and updates
 # are not touched), asks two questions, starts the agent and shows the pairing code.
-# Non-interactive: sh install.sh --name kuffe --teleop no --yes
+# Non-interactive: sh install.sh --name hedgehog --teleop no --yes
 # Options: --dir DIR, --relay URL, --name NAME, --teleop yes|no, --image IMAGE, --yes
 set -eu
 

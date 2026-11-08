@@ -99,14 +99,12 @@ Source: MDN browser-compat-data `api/DecompressionStream.json` (the data behind 
 8. Official .app renewal price; zone/DNS effect of expiry.
 9. Whether Worker routes can capture tunnel hostnames (design avoidance: do not route `*.bronc.app/*` to a Worker).
 
-## Bruno's account, inspected read-only (2026-11-08)
+## The maintainer's existing account (2026-11-08)
 
-Inventory via a read-only API token (no changes made):
-
-- The existing website is one **Worker with static assets** on two custom domains. It averaged
-  about 170 Worker requests/day over the last 8 days, about 0.2 % of the Free pool.
-- There are no D1 databases, no tunnels, and no Worker routes. The account holds one zone, which
-  is not `bronc.app`, so `bronc.app` is registered or hosted somewhere else.
+The maintainer's existing free account already hosts a small website, a Worker with static assets
+that uses a fraction of a percent of the Free plan's daily Worker requests. It has no D1
+databases, tunnels or Worker routes, and it does not hold `bronc.app`. (Inventory details are left
+out of this public report.)
 
 Normal relay use fits easily: about 15,000 requests/day at 30 robots, see
 [architecture](../architecture.md). It cannot be ruled out, though, that someone floods the

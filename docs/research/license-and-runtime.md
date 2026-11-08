@@ -1,11 +1,11 @@
 # Mowgli Connect — licensing and robot runtime research
 
-Status: read-only research. No files in `/home/bruno/mowglinext` or `/home/bruno/t3code` were modified.
+Status: read-only research. No files in a local `mowglinext` checkout or a local `t3code` checkout were modified.
 Not legal advice. Items marked **UNVERIFIED** were not confirmed by reading code or running anything.
 
 Sources read:
-- MowgliNext: `/home/bruno/mowglinext` (LICENSE, README.md, CONTRIBUTING.md, docs/, docker/, install/, gui/, ros2/)
-- T3 Code: `/home/bruno/t3code` (LICENSE, package.json files)
+- MowgliNext: a local `mowglinext` checkout (LICENSE, README.md, CONTRIBUTING.md, docs/, docker/, install/, gui/, ros2/)
+- T3 Code: a local `t3code` checkout (LICENSE, package.json files)
 
 ---
 
@@ -46,7 +46,7 @@ So a recipient who gets the GUI under GPLv3 can argue the "commercial license re
 
 ### 1.2 T3 Code (MIT)
 
-`/home/bruno/t3code/LICENSE`:
+`a local t3code checkout/LICENSE`:
 ```
 MIT License
 

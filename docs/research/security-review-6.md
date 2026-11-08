@@ -36,7 +36,7 @@ The generated public-resolver rule separately permits arbitrary TCP/UDP payloads
 
 **Evidence.** Docker 29's [resolver `dialExtDNS`](https://raw.githubusercontent.com/moby/moby/docker-v29.0.0/daemon/libnetwork/resolver.go) dials a non-HostLoopback upstream inside the sandbox via `backend.ExecFunc`. Its [namespace implementation](https://raw.githubusercontent.com/moby/moby/docker-v29.0.0/daemon/libnetwork/osl/namespace_linux.go) changes the thread's network namespace, not its UID to the requesting container process's UID. On ordinary rootful Docker this forwarding socket is daemon-owned, not uid 65532. Kernel [`skuid` matching](https://raw.githubusercontent.com/torvalds/linux/v6.12/net/netfilter/nft_meta.c) uses the socket file's credentials; it does not propagate the DNS client's identity.
 
-The script reads only the container's resolver file, which in this case contains `127.0.0.11`, not the private external resolver. Its DNS exception also requires uid 65532. A forwarded packet to `192.168.1.1:53` is neither loopback, agent-owned, nor the app-port exception, and is dropped at line 94. The same mechanism covers UDP and TCP. A HostLoopback upstream is dialed in Docker's host context instead, and a public upstream passes the general public-destination policy; these topologies explain why a successful embedded-DNS run does not disprove this case. The actual Putte resolver forwarding path was not inspected here.
+The script reads only the container's resolver file, which in this case contains `127.0.0.11`, not the private external resolver. Its DNS exception also requires uid 65532. A forwarded packet to `192.168.1.1:53` is neither loopback, agent-owned, nor the app-port exception, and is dropped at line 94. The same mechanism covers UDP and TCP. A HostLoopback upstream is dialed in Docker's host context instead, and a public upstream passes the general public-destination policy; these topologies explain why a successful embedded-DNS run does not disprove this case. The actual test-server resolver forwarding path was not inspected here.
 
 This forwarding restriction already existed with embedded DNS in the previous rules: moving the client-to-stub allowance fixes only the first leg. It is a remaining MC5-04 limitation, not a newly introduced UID regression for that topology.
 
@@ -100,7 +100,7 @@ Validation performed here: complete requested diff and surrounding code review; 
 | MC6-03 | The shell matcher was removed. No rule depends on classifying resolvers any more. |
 | MC6-04 | IPv6 nameservers are allowed for the agent on port 53, with the zone suffix stripped. |
 
-**Verified on putte** (Docker 29, Compose, real claimed robot `mc-test-putte.bronc.app`):
+**Verified on a test server** (Docker 29, Compose, real claimed robot `mc-test.bronc.app`):
 - The tunnel connected (4 edge connections) and grant login reached the stand-in GUI.
 - cloudflared's own "Cloudflare API" precheck to `api.cloudflare.com:443` now reports `FAIL`. It is diagnostic only and the tunnel works.
 - Ingress was pushed to each target below and cloudflared was restarted each time:

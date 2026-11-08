@@ -7,7 +7,9 @@
 <meta name="description" content="Open your MowgliNext robot mower's own web interface from anywhere, on your phone or computer. No VPN, no Tailscale, no port forwarding. Free.">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#fbfcfa">
+<link rel="icon" href="favicon.ico" sizes="48x48">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="preload" href="assets/fonts/atkinson-hyperlegible-next-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="assets/site.css">
 <script>
@@ -69,14 +71,15 @@
         <!-- Pairing code -->
         <text class="art-label" x="300" y="104" text-anchor="middle">Pairing code</text>
         <rect class="art-stroke art-fill art-line" x="196" y="118" width="208" height="44" rx="10"/>
-        <text class="art-code" x="300" y="145" text-anchor="middle">sunny-tiger-moss</text>
-                <!-- Phone showing the mower's app -->
+        <text class="art-code" x="300" y="145" text-anchor="middle">clover-hedgehog-dew</text>
+        <!-- Phone showing the mower's app: a live map where the mower works its way across the lawn -->
         <rect class="art-stroke art-fill" x="300" y="184" width="120" height="186" rx="16"/>
         <rect class="art-fog" x="312" y="200" width="96" height="20" rx="6"/>
-        <text class="art-label" x="360" y="214" text-anchor="middle" font-size="11">kuffe.bronc.app</text>
-        <rect class="art-wash" x="312" y="228" width="96" height="104" rx="8"/>
-        <path class="art-path" d="M322 242h76v14h-76v14h76v14h-76v14h40" stroke-width="1.8"/>
-        <circle class="art-grass" cx="368" cy="298" r="3"/>
+        <text class="art-label art-url" x="360" y="214" text-anchor="middle">hedgehog.bronc.app</text>
+        <rect class="art-lawn" x="312" y="228" width="96" height="104" rx="8"/>
+        <path class="art-stripes" d="M322 242h76v14h-76v14h76v14h-76v14h40"/>
+        <path class="art-path art-live" d="M322 242h76v14h-76v14h76v14h-76v14h40" stroke-width="1.8"/>
+        <circle class="art-grass art-mower" r="3.5"/>
         <rect class="art-fog" x="312" y="342" width="60" height="7" rx="3.5"/>
         <rect class="art-fog" x="312" y="355" width="40" height="7" rx="3.5"/>
         <text class="art-label" x="36" y="256">The mower's own app,</text>
@@ -98,7 +101,7 @@
         </li>
         <li>
           <h3>Pair it with your account</h3>
-          <p>Sign in at connect.bronc.app with GitHub and enter the code. The robot gets its own address, such as <code>kuffe.bronc.app</code>, and is linked to you.</p>
+          <p>Sign in at connect.bronc.app with GitHub and enter the code. The robot gets its own address, such as <code>hedgehog.bronc.app</code>, and is linked to you.</p>
         </li>
         <li>
           <h3>Open your robot</h3>
@@ -120,7 +123,20 @@
           <li>a GitHub account that has been invited</li>
         </ul>
       </div>
-      <div>
+      <div class="install-ways" id="agent">
+        <div class="tablist" role="tablist" aria-label="Ways to install" hidden>
+          <button type="button" role="tab" id="tab-self" aria-controls="way-self" aria-selected="true">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6l5 5-5 5M12 17h8"/></svg>
+            Run it myself
+          </button>
+          <button type="button" role="tab" id="tab-agent" aria-controls="way-agent" aria-selected="false" tabindex="-1">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3M8 21h8M6 9h12a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2Z"/><circle cx="9" cy="14" r="1.2"/><circle cx="15" cy="14" r="1.2"/></svg>
+            Ask my AI agent
+          </button>
+        </div>
+
+        <div class="way" id="way-self" role="tabpanel" aria-labelledby="tab-self">
+        <h3 class="way-title">Run it yourself</h3>
         <ol class="install-steps">
           <li>
             <h3>Run the installer on the robot</h3>
@@ -128,23 +144,49 @@
             <div class="cmd">
               <pre><code id="cmd">curl -fsSL https://liltaket.github.io/mowgli-connect/install.sh -o install.sh && less install.sh && sh install.sh</code></pre>
               <div class="cmd-bar">
-                <button type="button" class="copy" id="copy">
+                <button type="button" class="copy" data-copy="cmd">
                   <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>
                   Copy command
                 </button>
-                <span class="copy-status" id="copy-status" role="status" aria-live="polite"></span>
+                <span class="copy-status" role="status" aria-live="polite"></span>
               </div>
             </div>
           </li>
           <li>
             <h3>Pair the robot</h3>
-            <p>Go to <a href="https://connect.bronc.app">connect.bronc.app</a>, sign in with GitHub (invite-only for now) and enter the pairing code. The robot gets its own address, such as <code>https://kuffe.bronc.app</code>.</p>
+            <p>Go to <a href="https://connect.bronc.app">connect.bronc.app</a>, sign in with GitHub (invite-only for now) and enter the pairing code. The robot gets its own address, such as <code>https://hedgehog.bronc.app</code>.</p>
           </li>
           <li>
             <h3>Open it</h3>
             <p>Press Open next to your robot. You are signed in to its own interface, from anywhere.</p>
           </li>
         </ol>
+        </div>
+
+        <div class="way" id="way-agent" role="tabpanel" aria-labelledby="tab-agent">
+          <h3 class="way-title">Let an AI agent install it</h3>
+          <p>Using Claude Code, Codex or another coding agent that can reach your robot over SSH? Copy this, replace the SSH line with how you reach your robot, and paste it to the agent. It follows a written guide, asks you for a name and about the joystick, and hands you the pairing code. Pairing itself stays with you.</p>
+          <div class="cmd">
+            <pre><code id="agent-prompt">Install Mowgli Connect on my MowgliNext robot so I can open its web interface from anywhere.
+
+Robot: ssh <span class="ph">user@my-robot.local</span>
+
+Follow the guide at https://liltaket.github.io/mowgli-connect/agents.md step by step. Ask me before you change anything outside ~/mowgli-connect, ask me whether to allow the remote joystick, and give me the pairing code when you are done.</code></pre>
+            <div class="cmd-bar">
+              <button type="button" class="copy" data-copy="agent-prompt">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>
+                Copy prompt
+              </button>
+              <span class="copy-status" role="status" aria-live="polite"></span>
+            </div>
+          </div>
+          <ul class="agent-rules">
+            <li>It checks Docker, the robot's web interface and the internet connection first.</li>
+            <li>It keeps the joystick off unless you say yes.</li>
+            <li>It does not touch MowgliNext, your router or your firewall.</li>
+          </ul>
+          <p class="muted small">Read exactly what the agent is told: <a href="agents.md">agents.md</a>. When it is done, sign in at <a href="https://connect.bronc.app">connect.bronc.app</a> and enter the code, as in step 2 of the other tab.</p>
+        </div>
         <div class="install-more">
           <dl>
             <dt>Update</dt>
@@ -238,6 +280,7 @@
         <li><a href="https://github.com/liltaket/mowgli-connect/blob/main/docs/architecture.md">How it is built</a></li>
         <li><a href="https://github.com/liltaket/mowgli-connect/blob/main/SECURITY.md">Security</a></li>
         <li><a href="https://github.com/liltaket/mowgli-connect/blob/main/docs/install.md">Install guide</a></li>
+        <li><a href="agents.md">Guide for AI agents</a></li>
         <li><a href="https://github.com/liltaket/mowgli-connect/blob/main/docs/test-report.md">Test report</a></li>
       </ul>
     </div>

@@ -121,7 +121,7 @@ cloudflared can reach only the agent.
     gateway, that port only);
   - DNS to the configured resolvers is allowed.
 
-Verified on putte (Docker 29, x86_64) with the built image, `--read-only`, `cap_drop ALL` +
+Verified on a test server (Docker 29, x86_64) with the built image, `--read-only`, `cap_drop ALL` +
 `NET_ADMIN, SETUID, SETGID`, and `no-new-privileges`:
 
 | From | 127.0.0.1:4007 agent | GUI (host gateway :14006) | other host port | host's LAN IP | router | internet |

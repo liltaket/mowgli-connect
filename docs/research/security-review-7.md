@@ -1,8 +1,8 @@
 # Mowgli Connect security review 7
 
-Reviewed `git diff abdaa87 aee1e2d`, pinned HEAD `aee1e2dd07df1dc3bbea5f01f246d1cc0684992d`, the previous reports, and the appended “Status after fixes” in review 6. Scope: the container egress boundary and its consequences for an attacker controlling the Cloudflare account **and the relay**, with trusted image/startup configuration. Only this report was written. No Docker, deployment, push, Cloudflare/GitHub API call, remote-machine operation, real credential use, or service probe was performed. Public documentation and raw upstream source were read. Local checks ran on Kuffe; Putte results below are attributed to the lead.
+Reviewed `git diff abdaa87 aee1e2d`, pinned HEAD `aee1e2dd07df1dc3bbea5f01f246d1cc0684992d`, the previous reports, and the appended “Status after fixes” in review 6. Scope: the container egress boundary and its consequences for an attacker controlling the Cloudflare account **and the relay**, with trusted image/startup configuration. Only this report was written. No Docker, deployment, push, Cloudflare/GitHub API call, remote-machine operation, real credential use, or service probe was performed. Public documentation and raw upstream source were read. Local checks ran on the dev machine; test-server results below are attributed to the lead.
 
-`CONFIRMED` means a code/platform-semantic result under the stated conditions, not a new deployed exploit reproduction. The lead's “real claimed robot” identifies a live relay registration; its Putte/stand-in-GUI evidence does not establish execution on mower hardware or physical robot behavior.
+`CONFIRMED` means a code/platform-semantic result under the stated conditions, not a new deployed exploit reproduction. The lead's “real claimed robot” identifies a live relay registration; its test-server/stand-in-GUI evidence does not establish execution on mower hardware or physical robot behavior.
 
 ## Status table
 

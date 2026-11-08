@@ -27,7 +27,7 @@ Scope: requested changes against `security-review.md`; protocol contract `docs/p
 ## Validation
 
 - Agent `GOFLAGS=-mod=mod GOPROXY=off go test ./...`: failed in gateway tests because `httptest` could not bind `[::1]` (`operation not permitted`); identity and tunnel packages passed before the package failure.
-- Relay `npm test`: no tests ran; Vitest workers could not bind `127.0.0.1` (`EPERM`), and Wrangler could not write its log under `/home/bruno/.config` (`EROFS`).
+- Relay `npm test`: no tests ran; Vitest workers could not bind `127.0.0.1` (`EPERM`), and Wrangler could not write its log under ``~/.config` (`EROFS`).
 
 ## Status after fixes (2026-11-08, lead)
 

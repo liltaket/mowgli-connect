@@ -37,6 +37,7 @@ export function html(strings: TemplateStringsArray, ...values: Interp[]): SafeHt
 export const CSP = [
   "default-src 'none'",
   "style-src 'self'",
+  "img-src 'self'", // favicons only
   "script-src 'self'", // only /pair.js; no inline script anywhere
   "form-action 'self'",
   "base-uri 'none'",
@@ -55,9 +56,32 @@ export const SECURITY_HEADERS: Record<string, string> = {
 
 export const HOMEPAGE = "https://liltaket.github.io/mowgli-connect/";
 
-export const MARK = html`<svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><rect class="mark-tile" width="32" height="32" rx="8"/><path class="mark-path" d="M8.5 9.5h15v6.5h-15v6.5h10"/><circle class="mark-robot" cx="22.7" cy="22.5" r="2.3"/></svg>`;
+export const MARK = markSvg("mark");
 
-export function page(title: string, body: SafeHtml, status = 200, extra: HeadersInit = {}): Response {
+export function markSvg(cls: string): SafeHtml {
+  return html`<svg class="${cls}" viewBox="0 0 32 32" aria-hidden="true"><rect class="mark-tile" width="32" height="32" rx="8"/><path class="mark-path" d="M8.5 9.5h15v6.5h-15v6.5h10"/><circle class="mark-robot" cx="22.7" cy="22.5" r="2.3"/></svg>`;
+}
+
+/** Who is signed in, for the header. Pages that do not know pass nothing and show no account. */
+export interface PageUser {
+  login: string;
+  name: string | null;
+}
+
+function accountBar(user: PageUser | null | undefined): SafeHtml {
+  if (user === undefined) return html``;
+  if (user === null) return html`<a class="btn small" href="/login">Sign in</a>`;
+  const initial = (user.name ?? user.login).trim().charAt(0).toUpperCase() || "?";
+  return html`<div class="account"><span class="avatar" aria-hidden="true">${initial}</span><span class="who-name"><span class="visually-hidden">Signed in as </span>${user.login}</span><form method="post" action="/logout"><button class="link">Sign out</button></form></div>`;
+}
+
+export function page(
+  title: string,
+  body: SafeHtml,
+  status = 200,
+  extra: HeadersInit = {},
+  user?: PageUser | null,
+): Response {
   const doc = html`<!doctype html>
 <html lang="en">
 <head>
@@ -65,14 +89,17 @@ export function page(title: string, body: SafeHtml, status = 200, extra: Headers
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>${title} · Mowgli Connect</title>
+<link rel="icon" href="/favicon.ico" sizes="48x48">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<header class="top"><div class="bar"><a class="brand" href="/">${MARK}Mowgli Connect</a><span class="tag">Prototype</span></div></header>
+<header class="top"><div class="bar"><a class="brand" href="/">${MARK}Mowgli Connect</a><span class="tag">Prototype</span>${accountBar(user)}</div></header>
 <main>
 ${body}
 </main>
-<footer><a href="${HOMEPAGE}">About Mowgli Connect</a><a href="https://github.com/liltaket/mowgli-connect">Source code</a></footer>
+<footer><a href="${HOMEPAGE}">About Mowgli Connect</a><a href="${HOMEPAGE}#install">Install on a robot</a><a href="https://github.com/liltaket/mowgli-connect">Source code</a></footer>
 </body>
 </html>`;
   const headers = new Headers({ "Content-Type": "text/html; charset=utf-8", ...SECURITY_HEADERS });
@@ -80,11 +107,19 @@ ${body}
   return new Response(doc.value, { status, headers });
 }
 
+/**
+ * A small lawn with a mower working across it, stripe by stripe: the waiting animation. `parked`
+ * draws it finished and still (robot offline).
+ */
+export function lawn(parked = false): SafeHtml {
+  return html`<svg class="lawn${parked ? " parked" : ""}" viewBox="0 0 132 76" aria-hidden="true"><rect class="lawn-bed" width="132" height="76" rx="12"/><g transform="translate(14 14)"><path class="lawn-cut" d="M0 0h104v16H0v16h104v16H48"/><path class="lawn-line" d="M0 0h104v16H0v16h104v16H48"/><circle class="lawn-mower" r="5"/></g></svg>`;
+}
+
 // Same visual system as the project site (site/assets/site.css): tinted paper, one grass-green
 // accent, the mowing-path mark. System fonts only, so the strict CSP needs no other origins.
 export const STYLE_CSS = `
-:root{color-scheme:light dark;--paper:#fbfcfa;--fog:#f1f5f0;--ink:#18211b;--muted:#5b675f;--line:#d9e0da;--line-strong:#b9c4bb;--grass:#2f7d4a;--grass-deep:#266640;--grass-wash:#e6f2e9;--grass-ink:#1f5a35;--on-grass:#fff;--amber:#b7791b;--danger:#b4322a;--danger-wash:#fbeeec;--focus:#1f5a35}
-@media (prefers-color-scheme:dark){:root{--paper:#111613;--fog:#181f1a;--ink:#e8ede8;--muted:#a3ada5;--line:#2b342d;--line-strong:#3f4b42;--grass:#6cc98a;--grass-deep:#5bb97a;--grass-wash:#1b2a1f;--grass-ink:#b2e3c0;--on-grass:#0f1a13;--amber:#e0a54a;--danger:#f08a80;--danger-wash:#2c1a18;--focus:#b2e3c0}}
+:root{color-scheme:light dark;--paper:#fbfcfa;--fog:#f1f5f0;--ink:#18211b;--muted:#5b675f;--line:#d9e0da;--line-strong:#b9c4bb;--grass:#2f7d4a;--grass-deep:#266640;--grass-wash:#e6f2e9;--grass-ink:#1f5a35;--on-grass:#fff;--amber:#b7791b;--danger:#b4322a;--danger-wash:#fbeeec;--focus:#1f5a35;--lawn:#d7eadc}
+@media (prefers-color-scheme:dark){:root{--paper:#111613;--fog:#181f1a;--ink:#e8ede8;--muted:#a3ada5;--line:#2b342d;--line-strong:#3f4b42;--grass:#6cc98a;--grass-deep:#5bb97a;--grass-wash:#1b2a1f;--grass-ink:#b2e3c0;--on-grass:#0f1a13;--amber:#e0a54a;--danger:#f08a80;--danger-wash:#2c1a18;--focus:#b2e3c0;--lawn:#1d3424}}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;min-height:100vh;display:flex;flex-direction:column;overflow-wrap:break-word}
@@ -145,10 +180,47 @@ form.inline{display:inline}
 .hero .lead{color:var(--muted)}
 .hero .actions{margin:1.5rem 0 1rem}
 .standby{padding:1.5rem 0 1rem}
-.pulse{width:.9rem;height:.9rem;border-radius:50%;background:var(--amber);margin:0 0 1.25rem;animation:pulse 1.6s ease-in-out infinite}
-.pulse.off{background:var(--line-strong);animation:none}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
-@media (prefers-reduced-motion:reduce){.pulse{animation:none}}
+.lawn{display:block;width:132px;height:76px;margin:0 0 1.5rem}
+.lawn-bed{fill:var(--lawn)}
+.lawn-cut{fill:none;stroke:var(--grass-wash);stroke-width:14;stroke-linejoin:round}
+.lawn-line{fill:none;stroke:var(--grass);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.lawn-mower{fill:var(--grass);offset-path:path("M0 0h104v16H0v16h104v16H48");offset-rotate:0deg;offset-distance:100%}
+.lawn .lawn-cut,.lawn .lawn-line{stroke-dasharray:416}
+@media (prefers-reduced-motion:no-preference){.lawn:not(.parked) .lawn-cut,.lawn:not(.parked) .lawn-line{animation:lawn 4.5s linear infinite both}.lawn:not(.parked) .lawn-mower{animation:mower 4.5s linear infinite both}}
+@keyframes lawn{0%{stroke-dashoffset:416;opacity:1}80%,90%{stroke-dashoffset:0;opacity:1}100%{stroke-dashoffset:0;opacity:0}}
+@keyframes mower{0%{offset-distance:0%}80%,100%{offset-distance:100%}}
+.lawn.parked .lawn-line,.lawn.parked .lawn-mower{stroke:var(--line-strong);fill:var(--line-strong)}
+.lawn.parked .lawn-line{fill:none}
+.lawn.parked .lawn-cut{stroke:var(--fog)}
+.lawn.parked .lawn-bed{fill:var(--line)}
+@supports not (offset-path:path("M0 0")){.lawn-mower{display:none}}
+.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.account{margin-left:auto;display:flex;align-items:center;gap:.55rem;font-size:.93rem;min-width:0}
+.avatar{display:inline-grid;place-items:center;width:30px;height:30px;border-radius:50%;background:var(--grass-wash);color:var(--grass-ink);font-weight:700;font-size:.9rem;flex:none}
+.who-name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:12rem}
+.account form{display:flex}
+button.link{border:0;background:none;min-height:40px;padding:.4rem .5rem;color:var(--muted);font-weight:500;text-decoration:underline;text-underline-offset:.2em;text-decoration-color:var(--line-strong)}
+button.link:hover{background:none;color:var(--ink);text-decoration-color:currentColor}
+.bar>.btn.small{margin-left:auto}
+.btn.small{min-height:38px;padding:.4rem .9rem;font-size:.93rem}
+@media (max-width:30rem){.tag{display:none}.who-name{max-width:7rem}}
+.gh{display:inline-flex;align-items:center;gap:.6rem}
+.gh svg{width:20px;height:20px;fill:currentColor;flex:none}
+.landing{display:grid;gap:2rem;padding:2rem 0 1rem}
+.landing h1{font-size:clamp(2rem,1.5rem + 2.4vw,2.7rem);line-height:1.08;max-width:14ch;margin-bottom:1rem}
+.landing .lead{font-size:1.12rem;color:var(--muted);max-width:40ch}
+.landing .actions{margin:1.75rem 0 1.25rem}
+.facts{list-style:none;margin:0;padding:1.1rem 0 0;border-top:1px solid var(--line);display:grid;gap:.5rem;color:var(--muted);font-size:.95rem}
+.facts li{position:relative;padding-left:1.6rem}
+.facts li::before{content:"";position:absolute;left:.15rem;top:.5em;width:.7rem;height:.4rem;border:solid var(--grass);border-width:0 0 2px 2px;transform:rotate(-45deg)}
+.big-mark{width:72px;height:72px}
+.big-mark .mark-path{stroke-dasharray:60;stroke-dashoffset:0}
+.big-mark .mark-robot{transform-origin:22.7px 22.5px}
+@media (prefers-reduced-motion:no-preference){.big-mark .mark-path{animation:mark-draw 1.4s cubic-bezier(.4,0,.2,1) .15s both}.big-mark .mark-robot{animation:pop .4s ease-out 1.45s both}}
+@keyframes mark-draw{from{stroke-dashoffset:60}}
+@keyframes pop{from{transform:scale(0)}60%{transform:scale(1.25)}}
+.empty{display:grid;gap:.25rem}
+.empty strong{color:var(--ink)}
 .actions{display:flex;flex-wrap:wrap;gap:.6rem}
 .empty{border:1px dashed var(--line-strong);border-radius:12px;padding:1.25rem 1.1rem;color:var(--muted)}
 `;

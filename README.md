@@ -24,7 +24,7 @@ Project site: <https://liltaket.github.io/mowgli-connect/>
 A small agent container runs on the robot next to MowgliNext, as its own Docker Compose project in
 `~/mowgli-connect`. It does not modify MowgliNext and is not touched by MowgliNext updates. You sign
 in at <https://connect.bronc.app> with GitHub, enter the pairing code the agent prints, and the
-robot gets its own address such as `https://kuffe.bronc.app`. Pressing Open logs you in to the
+robot gets its own address such as `https://hedgehog.bronc.app`. Pressing Open logs you in to the
 robot's own GUI.
 
 Your data goes browser, Cloudflare Tunnel, agent on the robot, MowgliNext GUI. The relay (a
@@ -43,6 +43,10 @@ Requirements: a MowgliNext robot with Docker and Docker Compose v2, internet acc
 
    The installer asks for the robot name and whether to allow the remote joystick (default no,
    recommended), starts the container and prints a pairing code.
+
+   Using a coding agent such as Claude Code or Codex? Point it at the
+   [agent install guide](https://liltaket.github.io/mowgli-connect/agents.md); it follows the
+   same steps, asks you the same two questions and hands you the pairing code.
 2. **Pair.** Go to <https://connect.bronc.app>, sign in with GitHub and enter the code.
 3. **Open.** Press Open next to your robot.
 

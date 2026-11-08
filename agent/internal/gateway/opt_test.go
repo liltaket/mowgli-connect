@@ -383,4 +383,10 @@ func TestCallbackPage(t *testing.T) {
 	if r := f.req("GET", "/_connect/connect.css", nil, ""); r.StatusCode != 200 || !strings.HasPrefix(r.Header.Get("Content-Type"), "text/css") {
 		t.Fatalf("css: %d", r.StatusCode)
 	}
+	if !strings.Contains(string(body), `rel="icon" href="/_connect/icon.svg"`) || !strings.Contains(csp, "img-src 'self'") {
+		t.Fatalf("favicon link or img-src missing: %q", csp)
+	}
+	if r := f.req("GET", "/_connect/icon.svg", nil, ""); r.StatusCode != 200 || r.Header.Get("Content-Type") != "image/svg+xml" {
+		t.Fatalf("icon: %d %q", r.StatusCode, r.Header.Get("Content-Type"))
+	}
 }

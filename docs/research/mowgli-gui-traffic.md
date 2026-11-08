@@ -1,6 +1,6 @@
 # MowgliNext GUI: proxy, traffic and safety research
 
-Baseline: local `/home/bruno/mowglinext` checkout `4739f41fb4e9473da2c5a5868f4c7d1a589e7b7c`, inspected read-only on Kuffe. Citations below are paths relative to that checkout. They describe source, not measurements, deployed configuration, Cloudflare guarantees, or physical test results. The live robot may run a different revision. KB below means 1,000 bytes.
+Baseline: local a local `mowglinext` checkout checkout `4739f41fb4e9473da2c5a5868f4c7d1a589e7b7c`, inspected read-only on the dev machine. Citations below are paths relative to that checkout. They describe source, not measurements, deployed configuration, Cloudflare guarantees, or physical test results. The live robot may run a different revision. KB below means 1,000 bytes.
 
 ## Routing and trust boundary
 

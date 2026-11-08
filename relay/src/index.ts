@@ -2,9 +2,18 @@ import type { Env } from "./env";
 import { handleBrowser } from "./browser";
 import { retryPendingCleanups } from "./claim";
 import { page, html, PAIR_JS, SECURITY_HEADERS, STYLE_CSS } from "./html";
+import { APPLE_TOUCH_PNG_B64, FAVICON_ICO_B64, ICON_SVG } from "./icons";
 import { createProvisioner } from "./provisioner";
 import { json, registerRobot, reportHostname, robotSelf } from "./robotApi";
 import { nowSeconds } from "./util";
+
+const fromB64 = (b: string): Uint8Array => Uint8Array.from(atob(b), (c) => c.charCodeAt(0));
+
+const ICONS: Record<string, { body: string | Uint8Array; type: string }> = {
+  "/icon.svg": { body: ICON_SVG, type: "image/svg+xml" },
+  "/favicon.ico": { body: fromB64(FAVICON_ICO_B64), type: "image/x-icon" },
+  "/apple-touch-icon.png": { body: fromB64(APPLE_TOUCH_PNG_B64), type: "image/png" },
+};
 
 async function route(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
@@ -21,6 +30,11 @@ async function route(request: Request, env: Env): Promise<Response> {
     return new Response(PAIR_JS, { headers: { ...SECURITY_HEADERS, "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "public, max-age=300" } });
   }
 
+  const icon = ICONS[url.pathname];
+  if (icon && request.method === "GET") {
+    return new Response(icon.body, { headers: { ...SECURITY_HEADERS, "Content-Type": icon.type, "Cache-Control": "public, max-age=86400" } });
+  }
+
   // Robot API (assertion-authenticated JSON; no cookies, no Origin semantics).
   if (url.pathname === "/v1/robots/register") {
     return request.method === "POST" ? registerRobot(env, request, url) : json({ error: "method_not_allowed" }, 405, { Allow: "POST" });
@@ -35,7 +49,7 @@ async function route(request: Request, env: Env): Promise<Response> {
 
   const res = await handleBrowser(request, env, url);
   if (res) return res;
-  return page("Not found", html`<p>Not found.</p><p><a href="/">Home</a></p>`, 404);
+  return page("Not found", html`<h1>Nothing growing here</h1><p class="muted">There is nothing at this address.</p><p><a href="/">Back to the start</a></p>`, 404);
 }
 
 export async function runCleanup(env: Env): Promise<void> {

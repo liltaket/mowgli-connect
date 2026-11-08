@@ -1,6 +1,6 @@
 import type { Env } from "./env";
 import { claimRobot, previewClaim, unlinkRobot } from "./claim";
-import { HOMEPAGE, html, page } from "./html";
+import { HOMEPAGE, html, lawn, markSvg, page } from "./html";
 import { mintGrant } from "./grant";
 import { finishLogin, startLogin } from "./oauth";
 import { formatPairingCode, normalizePairingCode } from "./pairing";
@@ -19,6 +19,8 @@ const NOTICES: Record<string, string> = {
   unlinked: "Robot unlinked.",
   revoked: "All sessions on that robot were signed out.",
 };
+
+const GITHUB_ICON = html`<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>`;
 
 /** A robot added in the last 10 minutes that has never been seen online is still setting up. */
 function settingUp(r: { first_online_at: number | null; claimed_at: number | null }): boolean {
@@ -46,7 +48,7 @@ function forbiddenOrigin(): Response {
 }
 
 function notFound(): Response {
-  return page("Not found", html`<h1>Page not found</h1><p class="muted">There is nothing at this address, or it belongs to a robot you do not have access to.</p><p><a href="/">Back to my robots</a></p>`, 404);
+  return page("Not found", html`<div class="standby">${lawn(true)}<h1>Nothing growing here</h1><p class="muted">There is nothing at this address, or it belongs to a robot you do not have access to.</p><p class="actions"><a class="btn" href="/">Back to my robots</a></p></div>`, 404);
 }
 
 interface RobotListRow {
@@ -85,11 +87,10 @@ async function dashboard(env: Env, user: SessionUser, url: URL): Promise<Respons
     "Robots",
     html`
 ${notice ? html`<p class="notice" role="status">${notice}</p>` : ""}
-<div class="who"><h1>My robots</h1>
-<form class="inline" method="post" action="/logout"><span class="muted">Signed in as <strong>${user.login}</strong></span> <button>Sign out</button></form></div>
+<div class="who"><h1>My robots</h1></div>
 ${
   rows.results.length === 0
-    ? html`<p class="empty">No robots yet. Install the Mowgli Connect agent on your robot and enter the pairing code it shows below.</p>`
+    ? html`<div class="empty"><strong>No robots yet.</strong><span>Install the agent on your robot (<a href="${HOMEPAGE}#install">how</a>), then enter the pairing code it shows below.</span></div>`
     : html`<ul class="robots">
 ${rows.results.map(
   (r) => html`<li class="robot">
@@ -125,27 +126,40 @@ ${
 <h2>Add a robot</h2>
 <form class="panel" method="post" action="/claim">
 <div class="fields">
-<div><label for="code">Pairing code</label><input class="code" type="text" id="code" name="code" value="${code}" placeholder="sunny-tiger-moss" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="go" required maxlength="40" aria-describedby="code-hint"></div>
+<div><label for="code">Pairing code</label><input class="code" type="text" id="code" name="code" value="${code}" placeholder="clover-hedgehog-dew" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="go" required maxlength="40" aria-describedby="code-hint"></div>
 <div><label for="label">Name <span class="muted">(optional)</span></label><input type="text" id="label" name="label" placeholder="Front lawn" maxlength="64"></div>
 <button class="primary">Add robot</button>
 </div>
 <p class="muted hint" id="code-hint">Three words, shown by the installer on your robot (or <code>docker logs mowgli-connect</code>). Spaces, dashes and capitals do not matter. The code is valid for 15 minutes.</p>
 </form>
 <script src="/pair.js"></script>`,
+    200,
+    {},
+    user,
   );
 }
 
-function loggedOutPage(): Response {
+function loggedOutPage(url: URL): Response {
+  const signedOut = url.searchParams.get("notice") === "signedout";
   return page(
     "Sign in",
-    html`<div class="hero"><h1>Your mower's own app, from anywhere</h1>
+    html`${signedOut ? html`<p class="notice" role="status">You are signed out of Mowgli Connect. A robot you opened stays signed in in this browser for up to 12 hours. To end that now, sign in and use Sign everyone out under the robot's Manage.</p>` : ""}
+<div class="landing"><div>${markSvg("big-mark")}</div>
+<div><h1>Your mower's own app, from anywhere</h1>
 <p class="lead">Sign in to see your robots and open their own web interface, without VPN or port forwarding.</p>
-<p class="actions"><a class="btn primary" href="/login">Sign in with GitHub</a></p>
-<p class="muted">Access is invite-only while Mowgli Connect is a prototype. <a href="${HOMEPAGE}">How it works</a>.</p></div>`,
+<p class="actions"><a class="btn primary gh" href="/login">${GITHUB_ICON}Sign in with GitHub</a></p>
+<ul class="facts">
+<li>GitHub shares your public profile only. Mowgli Connect keeps your user id, username and name, and gets no access to your repositories.</li>
+<li>Access is invite-only while Mowgli Connect is a prototype.</li>
+<li>New here? <a href="${HOMEPAGE}">See how it works</a>, or <a href="${HOMEPAGE}#install">install it on your robot</a>.</li>
+</ul></div></div>`,
+    200,
+    {},
+    null,
   );
 }
 
-function claimConfirm(code: string, robotId: string, name: string | null, error?: string, status = 200): Response {
+function claimConfirm(user: SessionUser, code: string, robotId: string, name: string | null, error?: string, status = 200): Response {
   return page(
     "Add a robot",
     html`
@@ -160,6 +174,8 @@ ${error ? html`<p class="error">${error}</p>` : ""}
 </form>
 <p><a href="/">Cancel</a></p>`,
     status,
+    {},
+    user,
   );
 }
 
@@ -213,11 +229,11 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
 
   const user = await getSessionUser(env, request);
 
-  if (pathname === "/" && method === "GET") return user ? dashboard(env, user, url) : loggedOutPage();
+  if (pathname === "/" && method === "GET") return user ? dashboard(env, user, url) : loggedOutPage(url);
 
   if (pathname === "/logout" && method === "POST") {
     await destroySession(env, request);
-    return redirect("/", 303, { "Set-Cookie": clearSessionCookie() });
+    return redirect("/?notice=signedout", 303, { "Set-Cookie": clearSessionCookie() });
   }
 
   if (pathname === "/claim") {
@@ -225,8 +241,8 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
       if (!user) return loginRedirect(url);
       const raw = url.searchParams.get("code") ?? "";
       const prev = await previewClaim(env, user.id, raw);
-      if (!prev.ok) return page("Add a robot", html`<h1>Could not add the robot</h1><p class="error">${prev.message}</p><p><a href="/">Back to my robots</a></p>`, prev.status);
-      return claimConfirm(normalizePairingCode(raw) ?? "", prev.robotId, prev.name);
+      if (!prev.ok) return page("Add a robot", html`<h1>Could not add the robot</h1><p class="error">${prev.message}</p><p><a href="/">Back to my robots</a></p>`, prev.status, {}, user);
+      return claimConfirm(user, normalizePairingCode(raw) ?? "", prev.robotId, prev.name);
     }
     if (method === "POST") {
       if (!user) return redirect("/login", 303);
@@ -239,6 +255,8 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
           "Add a robot",
           html`<h1>Could not add the robot</h1><p class="error">${res.message}</p><p><a href="/${norm ? `?code=${formatPairingCode(norm)}` : ""}">Back to my robots</a></p>`,
           res.status,
+          {},
+          user,
         );
       }
       return redirect("/?notice=claimed", 303);
@@ -281,27 +299,29 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
       return page(
         setup ? "Setting up" : "Robot offline",
         setup
-          ? html`<div class="standby"><div class="pulse" aria-hidden="true"></div><h1>Setting up your robot's connection…</h1>
+          ? html`<div class="standby">${lawn()}<h1>Setting up your robot's connection…</h1>
 <p>This is normal right after adding a robot: it is creating its secure connection to Cloudflare, which usually takes under a minute. This page opens the robot by itself as soon as it is ready.</p>
 ${retry}</div>`
           : firstTime
-            ? html`<div class="standby"><div class="pulse" aria-hidden="true"></div><h1>Still waiting for your robot</h1>
+            ? html`<div class="standby">${lawn()}<h1>Still waiting for your robot</h1>
 <p>The robot has not connected since it was added. This page keeps trying.</p>
 ${help}${retry}</div>`
-            : html`<div class="standby"><div class="pulse off" aria-hidden="true"></div><h1>Your robot is offline</h1>
+            : html`<div class="standby">${lawn(true)}<h1>Your robot is offline</h1>
 <p>It is not connected right now, for example because it is switched off or out of Wi-Fi range. This page opens it by itself when it is back.</p>
 ${help}${retry}</div>`,
         503,
         { "Retry-After": "5", Refresh: "5" },
+        user,
       );
     }
     if (!row.hostname) {
       // Quick-tunnel mode: claimed, but the robot has not reported its tunnel hostname yet.
       return page(
         "Robot starting",
-        html`<div class="standby"><div class="pulse" aria-hidden="true"></div><h1>Robot starting</h1><p>The robot is starting its tunnel. This usually takes a few seconds.</p><p class="actions"><a class="btn primary" href="/open/${robotId}">Try again</a> <a class="btn" href="/">Back to my robots</a></p></div>`,
+        html`<div class="standby">${lawn()}<h1>Robot starting</h1><p>The robot is starting its tunnel. This usually takes a few seconds.</p><p class="actions"><a class="btn primary" href="/open/${robotId}">Try again</a> <a class="btn" href="/">Back to my robots</a></p></div>`,
         503,
         { "Retry-After": "10" },
+        user,
       );
     }
     const grant = await mintGrant(env, {

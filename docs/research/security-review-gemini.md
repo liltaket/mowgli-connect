@@ -1,6 +1,6 @@
 # Mowgli Connect — Independent Security Review (Gemini)
 
-**Target:** `/home/bruno/.t3/projects/mowgli-connect`  
+**Target:** `the repository`  
 **Reviewed revision:** `cb8c774` (plus `HEAD` `95e689d`, whose only change over `cb8c774` is setting `ghcr.io/liltaket/mowgli-connect-agent:latest` in `agent/docker-compose.example.yaml:5`)  
 **Scope & constraints:** Read-only code, configuration, and protocol review of `agent/`, `relay/`, `docs/protocol.md`, `site/`, and `.github/workflows/`, cross-checked against earlier reviews (`docs/research/security-review.md` through `security-review-7.md`) to avoid duplicating already-resolved items. No gitignored secret files (`relay/.dev.vars`, `relay/wrangler.prod.jsonc`) were read, and no live service (`connect.bronc.app`), GitHub API, Cloudflare API, or Docker daemon was contacted.
 

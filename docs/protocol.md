@@ -77,10 +77,11 @@ assertion signed by that key (proof of possession; `iss` must equal derive(publi
 
 Response `200`:
 ```json
-{"robotId":"…","pairingCode":"sunny-tiger-moss","claimUrl":"https://relay/claim?code=sunny-tiger-moss","expiresAt":1767225600}
+{"robotId":"…","pairingCode":"clover-hedgehog-dew","claimUrl":"https://relay/claim?code=clover-hedgehog-dew","expiresAt":1767225600}
 ```
 Pairing code: three words from a 1,295-word list (EFF short wordlist 1, about 31 bits), e.g.
-`sunny-tiger-moss`. Input is case-insensitive and any run of non-letters separates words. Valid
+`lemon-otter-crisp`. Documentation uses `clover-hedgehog-dew`, which has words outside the list
+and so can never be issued. Input is case-insensitive and any run of non-letters separates words. Valid
 15 min, single use, stored only as SHA-256. Claim attempts are rate-limited per user (max 10
 failures/hour), so guessing any of the few codes alive at a time is impractical.
 

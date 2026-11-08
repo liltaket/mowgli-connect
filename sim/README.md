@@ -45,7 +45,7 @@ The meter reports payload bytes after WebSocket decompression, the largest recei
 ## Local results
 
 
-Synthetic-data measurements on Kuffe, 2026-11-08, with the supplied GUI binary and a single local meter connection. Each row is a separate 10-second window after startup; `wire` counts downstream raw socket bytes. Values are decimal bytes per second, rounded by the meter.
+Synthetic-data measurements on the dev machine, 2026-11-08, with the supplied GUI binary and a single local meter connection. Each row is a separate 10-second window after startup; `wire` counts downstream raw socket bytes. Values are decimal bytes per second, rounded by the meter.
 
 | Preset | Topic set | Compression requested | Payload B/s | Wire B/s |
 |---|---|---:|---:|---:|
