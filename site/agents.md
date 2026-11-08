@@ -4,7 +4,7 @@ You are helping the owner of a MowgliNext robot mower install the Mowgli Connect
 can open the robot's own web interface from anywhere. Follow these steps in order. Talk to the
 owner in plain language: they may not know Docker or SSH well.
 
-Homepage: https://liltaket.github.io/mowgli-connect/
+Homepage: https://bronc.app/
 Source: https://github.com/liltaket/mowgli-connect
 
 ## Rules
@@ -50,7 +50,7 @@ installer must run with sudo), and ask how they want to proceed.
 
 ```sh
 cd ~
-curl -fsSL https://liltaket.github.io/mowgli-connect/install.sh -o install.sh
+curl -fsSL https://bronc.app/install.sh -o install.sh
 ```
 
 Read `install.sh` and tell the owner in one or two sentences what it does: it writes

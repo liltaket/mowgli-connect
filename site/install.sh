@@ -1,7 +1,7 @@
 #!/bin/sh
 # Mowgli Connect: install the remote-access agent on a MowgliNext robot.
 #
-#   curl -fsSL https://liltaket.github.io/mowgli-connect/install.sh -o install.sh
+#   curl -fsSL https://bronc.app/install.sh -o install.sh
 #   less install.sh        # read it first
 #   sh install.sh
 #

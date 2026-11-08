@@ -18,7 +18,7 @@ Mowgli Connect is a prototype and has not yet been run on a real mower. Sign-in 
 Open a shell on the robot (for example over SSH) and run:
 
 ```sh
-curl -fsSL https://liltaket.github.io/mowgli-connect/install.sh -o install.sh && less install.sh && sh install.sh
+curl -fsSL https://bronc.app/install.sh -o install.sh && less install.sh && sh install.sh
 ```
 
 This downloads the installer, shows it to you in `less` so you can read it (press `q` to leave and

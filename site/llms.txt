@@ -3,7 +3,7 @@
 > Free remote access to a MowgliNext robot mower's own web interface, through Cloudflare Tunnel,
 > with GitHub sign-in at https://connect.bronc.app. No VPN or port forwarding.
 
-- [Install guide for AI agents](https://liltaket.github.io/mowgli-connect/agents.md): step by step, with the rules an agent must follow on the robot.
-- [Installer script](https://liltaket.github.io/mowgli-connect/install.sh)
+- [Install guide for AI agents](https://bronc.app/agents.md): step by step, with the rules an agent must follow on the robot.
+- [Installer script](https://bronc.app/install.sh)
 - [Install guide for people](https://github.com/liltaket/mowgli-connect/blob/main/docs/install.md)
 - [Source code](https://github.com/liltaket/mowgli-connect)

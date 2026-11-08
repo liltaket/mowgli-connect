@@ -26,7 +26,9 @@ export async function lookupGithubUser(env: Env, by: { login: string } | { id: n
         Accept: "application/vnd.github+json",
         "User-Agent": "mowgli-connect-relay",
       },
-      redirect: "error",
+      // Workers support only "follow" and "manual"; a redirect is not followed and counts as a
+      // failure below (any 3xx is not ok).
+      redirect: "manual",
       signal: AbortSignal.timeout(8_000),
     });
   } catch {

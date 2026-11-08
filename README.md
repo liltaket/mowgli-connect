@@ -6,7 +6,7 @@ Secure remote access to your MowgliNext robot mower's
 existing web GUI from anywhere, on a phone or a computer. No VPN, no Tailscale, no port
 forwarding. Free.
 
-Project site: <https://liltaket.github.io/mowgli-connect/>
+Project site: <https://bronc.app/>
 
 > **Status: prototype.** Tested end to end through real Cloudflare with the real MowgliNext GUI and
 > a simulated robot, from a phone on 5G. Not yet run on a real mower. Sign-in is invite-only for now.
@@ -38,14 +38,14 @@ Requirements: a MowgliNext robot with Docker and Docker Compose v2, internet acc
 1. **Install.** On the robot, run:
 
    ```sh
-   curl -fsSL https://liltaket.github.io/mowgli-connect/install.sh -o install.sh && less install.sh && sh install.sh
+   curl -fsSL https://bronc.app/install.sh -o install.sh && less install.sh && sh install.sh
    ```
 
    The installer asks for the robot name and whether to allow the remote joystick (default no,
    recommended), starts the container and prints a pairing code.
 
    Using a coding agent such as Claude Code or Codex? Point it at the
-   [agent install guide](https://liltaket.github.io/mowgli-connect/agents.md); it follows the
+   [agent install guide](https://bronc.app/agents.md); it follows the
    same steps, asks you the same two questions and hands you the pairing code.
 2. **Pair.** Go to <https://connect.bronc.app>, sign in with GitHub and enter the code.
 3. **Open.** Press Open next to your robot.

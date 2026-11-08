@@ -17,6 +17,8 @@ function stubGithub(profiles: GhProfile[]) {
   const calls: { url: string; auth: string | null }[] = [];
   vi.stubGlobal("fetch", async (input: string | Request, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.url;
+    // Like the Workers runtime, which rejects redirect: "error".
+    if (init?.redirect !== undefined && init.redirect !== "follow" && init.redirect !== "manual") throw new TypeError("Invalid redirect value");
     calls.push({ url, auth: new Headers(init?.headers).get("Authorization") });
     const byLogin = /^https:\/\/api\.github\.com\/users\/([^/]+)$/.exec(url);
     const byId = /^https:\/\/api\.github\.com\/user\/(\d+)$/.exec(url);

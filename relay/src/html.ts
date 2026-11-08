@@ -54,7 +54,7 @@ export const SECURITY_HEADERS: Record<string, string> = {
   "Cache-Control": "no-store",
 };
 
-export const HOMEPAGE = "https://liltaket.github.io/mowgli-connect/";
+export const HOMEPAGE = "https://bronc.app/";
 
 export const MARK = markSvg("mark");
 
