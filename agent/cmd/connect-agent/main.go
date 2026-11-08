@@ -407,6 +407,13 @@ func run() error {
 	}
 }
 
+// pairingValidity says how long a code is valid. Containers usually run in UTC, so the clock
+// time carries its zone.
+func pairingValidity(exp time.Time) string {
+	mins := int(time.Until(exp).Round(time.Minute).Minutes())
+	return fmt.Sprintf("valid for %d min, until %s", max(mins, 0), exp.Format("15:04 MST"))
+}
+
 // agentVersionToken keeps the version safe for a header token.
 func agentVersionToken(v string) string {
 	out := []rune{}
@@ -449,12 +456,12 @@ func selfCheck(ctx context.Context, hostname string) bool {
 func printPairing(p *relay.Registration) {
 	fmt.Fprintf(os.Stderr, `
 ================ Mowgli Connect: pair this robot ================
-  Code:    %s   (valid until %s)
+  Code:    %s   (%s)
   Open:    %s
   Sign in and enter the code to link this robot to your account.
 ==================================================================
 
-`, p.PairingCode, time.Unix(p.ExpiresAt, 0).Format("15:04"), p.ClaimURL)
+`, p.PairingCode, pairingValidity(time.Unix(p.ExpiresAt, 0)), p.ClaimURL)
 }
 
 func status() error {
