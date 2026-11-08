@@ -1,6 +1,7 @@
 import type { Env } from "./env";
 import { page, html, type SafeHtml } from "./html";
-import { createSession, isUserAllowed, sessionCookie } from "./session";
+import { isUserAllowed } from "./access";
+import { createSession, sessionCookie } from "./session";
 import { b64urlDecode, b64urlEncode } from "./crypto";
 import { nowSeconds, parseCookies, randomToken, safeReturnPath } from "./util";
 
@@ -120,7 +121,7 @@ export async function finishLogin(env: Env, url: URL, request: Request): Promise
   }
 
   const userId = `gh:${gh.id}`;
-  if (!isUserAllowed(env, userId, gh.login)) {
+  if (!(await isUserAllowed(env, userId, gh.login))) {
     return fail(
       `The GitHub account @${gh.login} has not been invited yet.`,
       403,

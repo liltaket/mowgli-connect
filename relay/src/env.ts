@@ -10,6 +10,7 @@ export interface RelayEnv {
   ROBOT_ZONE?: string;
   AGENT_ORIGIN?: string;
   ALLOWED_GITHUB_LOGINS?: string;
+  ADMIN_GITHUB_IDS?: string; // comma list of gh:<id>: who may open /admin
   MAX_NEW_ROBOTS_PER_HOUR?: string; // global cap on new unclaimed robots (default 30)
 
   // Secrets

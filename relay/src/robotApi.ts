@@ -1,3 +1,4 @@
+import { isUserAllowed } from "./access";
 import type { Env } from "./env";
 import { AssertionError, verifyRobotAssertion, type VerifiedAssertion } from "./assertion";
 import { b64urlDecode, deriveRobotId } from "./crypto";
@@ -229,9 +230,18 @@ function loadRobot(env: Env, robotId: string): Promise<RobotRow | null> {
 }
 
 async function selfResponse(env: Env, robotId: string, robot: RobotRow): Promise<Response> {
-  const members = await env.DB.prepare("SELECT user_id, role FROM members WHERE robot_id = ? ORDER BY created_at, user_id")
+  const rows = await env.DB.prepare(
+    `SELECT m.user_id, m.role, u.login FROM members m LEFT JOIN users u ON u.id = m.user_id
+     WHERE m.robot_id = ? ORDER BY m.created_at, m.user_id`,
+  )
     .bind(robotId)
-    .all<{ user_id: string; role: string }>();
+    .all<{ user_id: string; role: string; login: string | null }>();
+  // Someone whose access was removed is no member as far as the robot is concerned, so their open
+  // sessions on it end at its next sync.
+  const members = [];
+  for (const m of rows.results) {
+    if (m.login !== null && (await isUserAllowed(env, m.user_id, m.login))) members.push(m);
+  }
   const key = await loadRelayKey(env);
   const claimed = robot.status === "claimed";
   return json({
@@ -241,7 +251,7 @@ async function selfResponse(env: Env, robotId: string, robot: RobotRow): Promise
     tunnelToken: claimed ? robot.tunnel_token : null,
     relayKeys: [{ kid: key.kid, publicKey: key.publicKeyB64 }],
     sessionEpoch: robot.session_epoch,
-    members: claimed ? members.results.map((m) => ({ userId: m.user_id, role: m.role })) : [],
+    members: claimed ? members.map((m) => ({ userId: m.user_id, role: m.role })) : [],
   });
 }
 

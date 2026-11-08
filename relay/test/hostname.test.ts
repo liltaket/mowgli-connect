@@ -28,11 +28,14 @@ describe("readable robot hostnames", () => {
     }
   });
 
-  it("uses the owner's label, else the robot's name, and falls back to the robot id when taken or reserved", async () => {
+  it("uses the owner's label, else the robot's name, numbers taken names, and falls back to the robot id", async () => {
     const a = await claimWith("Back yard");
     expect(a.hostname).toBe("back-yard.robots.test");
-    const b = await claimWith("Back yard"); // taken
-    expect(b.hostname).toBe(`${b.robot.robotId}.robots.test`);
+    const b = await claimWith("Back yard"); // taken: the next free number
+    expect(b.hostname).toBe("back-yard-2.robots.test");
+    for (let n = 3; n <= 9; n++) expect((await claimWith("Back yard")).hostname).toBe(`back-yard-${n}.robots.test`);
+    const full = await claimWith("Back yard"); // all numbered names taken
+    expect(full.hostname).toBe(`${full.robot.robotId}.robots.test`);
     const c = await claimWith("admin"); // reserved
     expect(c.hostname).toBe(`${c.robot.robotId}.robots.test`);
     const d = await claimWith(null); // robot's reported name
@@ -41,7 +44,7 @@ describe("readable robot hostnames", () => {
 });
 
 describe("readable hostname used elsewhere in the zone", () => {
-  it("falls back to the robot id instead of touching the other record", async () => {
+  it("tries the numbered names, then the robot id, instead of touching the other record", async () => {
     const { claimRobot } = await import("../src/claim");
     const { HostnameInUseError, robotHostname } = await import("../src/provisioner");
     const robot = await newRobot();
@@ -59,7 +62,7 @@ describe("readable hostname used elsewhere in the zone", () => {
     };
     const res = await claimRobot(testEnv, stub, user.id, pairingCode, null);
     expect(res.ok).toBe(true);
-    expect(labels).toEqual(["garden-shed", undefined]);
+    expect(labels).toEqual(["garden-shed", ...[2, 3, 4, 5, 6, 7, 8, 9].map((n) => `garden-shed-${n}`), undefined]);
     expect(((await (await self(robot)).json()) as SelfBody).hostname).toBe(`${robot.robotId}.robots.test`);
   });
 });

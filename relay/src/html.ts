@@ -66,13 +66,14 @@ export function markSvg(cls: string): SafeHtml {
 export interface PageUser {
   login: string;
   name: string | null;
+  admin?: boolean;
 }
 
 function accountBar(user: PageUser | null | undefined): SafeHtml {
   if (user === undefined) return html``;
   if (user === null) return html`<a class="btn small" href="/login">Sign in</a>`;
   const initial = (user.name ?? user.login).trim().charAt(0).toUpperCase() || "?";
-  return html`<div class="account"><span class="avatar" aria-hidden="true">${initial}</span><span class="who-name"><span class="visually-hidden">Signed in as </span>${user.login}</span><form method="post" action="/logout"><button class="link">Sign out</button></form></div>`;
+  return html`<div class="account">${user.admin ? html`<a class="admin-link" href="/admin">Admin</a>` : ""}<span class="avatar" aria-hidden="true">${initial}</span><span class="who-name"><span class="visually-hidden">Signed in as </span>${user.login}</span><form method="post" action="/logout"><button class="link">Sign out</button></form></div>`;
 }
 
 export function page(
@@ -219,6 +220,28 @@ button.link:hover{background:none;color:var(--ink);text-decoration-color:current
 @media (prefers-reduced-motion:no-preference){.big-mark .mark-path{animation:mark-draw 1.4s cubic-bezier(.4,0,.2,1) .15s both}.big-mark .mark-robot{animation:pop .4s ease-out 1.45s both}}
 @keyframes mark-draw{from{stroke-dashoffset:60}}
 @keyframes pop{from{transform:scale(0)}60%{transform:scale(1.25)}}
+.admin-link{color:var(--muted);text-decoration:none;font-weight:600;padding:.35rem .6rem;border-radius:8px;margin-right:.25rem}
+.admin-link:hover{background:var(--fog);color:var(--ink)}
+.count{display:inline-grid;place-items:center;min-width:1.6rem;height:1.6rem;padding:0 .4rem;margin-left:.35rem;border-radius:999px;background:var(--grass-wash);color:var(--grass-ink);font-size:.85rem;vertical-align:.15em}
+.people{list-style:none;margin:0;padding:0;display:grid;gap:.6rem}
+.person{background:var(--fog);border:1px solid var(--line);border-radius:12px;padding:.9rem 1rem;display:grid;grid-template-columns:auto minmax(0,1fr);gap:.2rem .85rem;align-items:center}
+.person-main{display:grid;gap:.15rem;min-width:0}
+.person-name{font-weight:650;overflow-wrap:anywhere}
+.person .meta{display:flex;flex-wrap:wrap;gap:.2rem .9rem;font-size:.9rem;color:var(--muted)}
+.person .full{color:var(--amber);font-weight:600}
+.person details{grid-column:1/-1;margin-top:.5rem;border-top:1px solid var(--line);padding-top:.5rem}
+.person summary{cursor:pointer;color:var(--muted);font-size:.92rem;width:max-content;padding:.2rem 0}
+.inline-fields{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+input[type=number]{width:9rem;font:inherit;padding:.6rem .7rem;border:1px solid var(--line-strong);border-radius:8px;background:var(--paper);color:inherit}
+@media (min-width:40rem){.fields.fields-2{grid-template-columns:minmax(0,1fr) auto}}
+.invitee{display:flex;gap:1rem;align-items:center;margin:1rem 0 1.25rem}
+.invitee>div{display:grid;gap:.1rem}
+.avatar.big{width:52px;height:52px;font-size:1.3rem}
+.address{display:grid;gap:.2rem;margin:0 0 1.25rem;padding:1rem 1.1rem;border-radius:12px;border:1px solid var(--line);background:var(--paper)}
+.address strong{font:600 1.05rem ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--grass-ink);overflow-wrap:anywhere}
+.address span{font-size:.92rem;color:var(--muted)}
+.quota{font-size:.92rem;color:var(--muted);margin:-.4rem 0 .75rem}
+.panel+p{margin-top:1rem}
 .empty{display:grid;gap:.25rem}
 .empty strong{color:var(--ink)}
 .actions{display:flex;flex-wrap:wrap;gap:.6rem}

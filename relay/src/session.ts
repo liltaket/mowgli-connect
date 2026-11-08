@@ -1,3 +1,4 @@
+import { isUserAllowed } from "./access";
 import type { Env } from "./env";
 import { nowSeconds, parseCookies, randomToken, sha256Hex } from "./util";
 
@@ -8,20 +9,6 @@ export interface SessionUser {
   id: string;
   login: string;
   name: string | null;
-}
-
-/**
- * ALLOWED_GITHUB_LOGINS: comma list of GitHub logins (case-insensitive) or `gh:<id>` entries.
- * Empty/unset = nobody (fail closed); `*` = any GitHub account (open sign-up). Prefer
- * `gh:<id>`: GitHub logins can be renamed and later re-registered.
- */
-export function isUserAllowed(env: Env, userId: string, login: string): boolean {
-  const list = (env.ALLOWED_GITHUB_LOGINS ?? "")
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  if (list.includes("*")) return true;
-  return list.includes(login.toLowerCase()) || list.includes(userId.toLowerCase());
 }
 
 export async function createSession(env: Env, userId: string): Promise<string> {
@@ -43,7 +30,7 @@ export async function getSessionUser(env: Env, request: Request): Promise<Sessio
     .bind(await sha256Hex(token), nowSeconds())
     .first<SessionUser>();
   if (!row) return null;
-  if (!isUserAllowed(env, row.id, row.login)) return null; // allowlist changes take effect immediately
+  if (!(await isUserAllowed(env, row.id, row.login))) return null; // allowlist changes take effect immediately
   return row;
 }
 

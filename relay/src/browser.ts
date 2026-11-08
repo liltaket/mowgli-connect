@@ -1,6 +1,8 @@
 import type { Env } from "./env";
-import { claimRobot, previewClaim, unlinkRobot } from "./claim";
-import { HOMEPAGE, html, lawn, markSvg, page } from "./html";
+import { isAdmin, ownedRobots, robotLimit } from "./access";
+import { handleAdmin, isAdminPath } from "./admin";
+import { claimRobot, limitMessage, planAddress, previewClaim, reachedLimit, unlinkRobot, type AddressPlan } from "./claim";
+import { HOMEPAGE, html, lawn, markSvg, page, type PageUser } from "./html";
 import { mintGrant } from "./grant";
 import { finishLogin, startLogin } from "./oauth";
 import { formatPairingCode, normalizePairingCode } from "./pairing";
@@ -33,6 +35,10 @@ async function markFirstOnline(env: Env, robotId: string): Promise<void> {
   await env.DB.prepare("UPDATE robots SET first_online_at = ? WHERE robot_id = ? AND first_online_at IS NULL")
     .bind(nowSeconds(), robotId)
     .run();
+}
+
+function pageUser(env: Env, user: SessionUser): PageUser {
+  return { login: user.login, name: user.name, admin: isAdmin(env, user.id) };
 }
 
 function redirect(location: string, status = 302, extra: HeadersInit = {}): Response {
@@ -83,6 +89,9 @@ async function dashboard(env: Env, user: SessionUser, url: URL): Promise<Respons
   );
   const notice = NOTICES[url.searchParams.get("notice") ?? ""];
   const code = url.searchParams.get("code") ?? "";
+  const limit = await robotLimit(env, user.id);
+  const owned = await ownedRobots(env, user.id);
+  const full = limit !== null && owned >= limit;
   return page(
     "Robots",
     html`
@@ -124,18 +133,35 @@ ${
 </ul>`
 }
 <h2>Add a robot</h2>
-<form class="panel" method="post" action="/claim">
+${limit === null ? "" : html`<p class="quota">${owned} of ${limit} ${limit === 1 ? "robot" : "robots"} on your account.</p>`}
+${
+  full
+    ? html`<div class="empty"><strong>Your account is full.</strong><span>Unlink a robot to add another, or ask the person who runs Mowgli Connect to raise your limit.</span></div>`
+    : html`<form class="panel" method="post" action="/claim">
+<input type="hidden" name="step" value="preview">
 <div class="fields">
 <div><label for="code">Pairing code</label><input class="code" type="text" id="code" name="code" value="${code}" placeholder="clover-hedgehog-dew" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="go" required maxlength="40" aria-describedby="code-hint"></div>
 <div><label for="label">Name <span class="muted">(optional)</span></label><input type="text" id="label" name="label" placeholder="Front lawn" maxlength="64"></div>
-<button class="primary">Add robot</button>
+<button class="primary">Continue</button>
 </div>
-<p class="muted hint" id="code-hint">Three words, shown by the installer on your robot (or <code>docker logs mowgli-connect</code>). Spaces, dashes and capitals do not matter. The code is valid for 15 minutes.</p>
+<p class="muted hint" id="code-hint">Three words, shown by the installer on your robot (or <code>docker logs mowgli-connect</code>). Spaces, dashes and capitals do not matter. The code is valid for 15 minutes. You see the robot and its address before it is added.</p>
 </form>
-<script src="/pair.js"></script>`,
+<script src="/pair.js"></script>`
+}`,
     200,
     {},
-    user,
+    pageUser(env, user),
+  );
+}
+
+function claimError(env: Env, user: SessionUser, message: string, status: number, code?: string): Response {
+  const norm = code ? normalizePairingCode(code) : null;
+  return page(
+    "Add a robot",
+    html`<h1>Could not add the robot</h1><p class="error">${message}</p><p><a href="/${norm ? `?code=${formatPairingCode(norm)}` : ""}">Back to my robots</a></p>`,
+    status,
+    {},
+    pageUser(env, user),
   );
 }
 
@@ -159,32 +185,65 @@ function loggedOutPage(url: URL): Response {
   );
 }
 
-function claimConfirm(user: SessionUser, code: string, robotId: string, name: string | null, error?: string, status = 200): Response {
+function addressNote(plan: AddressPlan, robotId: string): string {
+  if (plan.taken) {
+    return plan.hostname.startsWith(`${robotId}.`)
+      ? `${plan.taken} and the names after it are taken, so it gets its id as its address. Choose another name to get a readable one.`
+      : `${plan.taken} is taken by another robot, so it gets the next free name.`;
+  }
+  return plan.hostname.startsWith(`${robotId}.`) ? "Give it a name of at least 3 letters or digits to get a readable address." : "You open the robot at this address. It stays the same until you unlink the robot.";
+}
+
+async function claimConfirm(
+  env: Env,
+  user: SessionUser,
+  code: string,
+  robotId: string,
+  robotName: string | null,
+  label: string | null,
+  changed = false,
+): Promise<Response> {
+  const plan = await planAddress(env, createProvisioner(env), robotId, label ?? robotName);
+  const limit = await robotLimit(env, user.id);
+  const owned = await ownedRobots(env, user.id);
   return page(
     "Add a robot",
     html`
-${error ? html`<p class="error">${error}</p>` : ""}
+${changed ? html`<p class="notice" role="status">The name changed, so the address may have too. Check it and press Add robot again.</p>` : ""}
 <h1>Add this robot?</h1>
-<p>${name ? html`The robot calls itself <strong>${name}</strong>.` : "The robot did not report a name."} Its id is <code>${robotId}</code>.</p>
-<p class="muted">Only add a robot you control. You will become its owner.</p>
+<p>${robotName ? html`The robot calls itself <strong>${robotName}</strong>.` : "The robot did not report a name."} Its id is <code>${robotId}</code>.</p>
+${plan ? html`<div class="address"><span>Its address will be</span><strong>${plan.hostname}</strong><span>${addressNote(plan, robotId)}</span></div>` : ""}
 <form class="panel" method="post" action="/claim">
 <input type="hidden" name="code" value="${code}">
-<div class="fields"><div><label for="label">Name <span class="muted">(optional)</span></label><input type="text" id="label" name="label" placeholder="Front lawn" maxlength="64"></div><span></span>
+<input type="hidden" name="step" value="confirm">
+<input type="hidden" name="shown_label" value="${label ?? ""}">
+<div class="fields fields-2"><div><label for="label">Name <span class="muted">(optional)</span></label><input type="text" id="label" name="label" value="${label ?? ""}" placeholder="Front lawn" maxlength="64" aria-describedby="label-hint"></div>
 <button class="primary">Add robot</button></div>
+<p class="muted hint" id="label-hint">Shown in your list${plan ? " and used for the address" : ""}. Empty uses the robot's own name.${plan ? " If you change it, you see the new address before the robot is added." : ""}</p>
 </form>
+<p class="muted">Only add a robot you control. You become its owner.${limit === null ? "" : ` It will be robot ${owned + 1} of ${limit} on your account.`}</p>
 <p><a href="/">Cancel</a></p>`,
-    status,
+    200,
     {},
-    user,
+    pageUser(env, user),
   );
 }
 
-async function readForm(request: Request): Promise<{ code: string; label: string | null } | null> {
+interface ClaimForm {
+  code: string;
+  label: string | null;
+  step: string | null;
+  shownLabel: string | null;
+}
+
+async function readForm(request: Request): Promise<ClaimForm | null> {
   const text = await readBodyText(request, 4096);
   if (text === null) return null;
   const ct = request.headers.get("Content-Type") ?? "";
   let code: unknown;
   let label: unknown;
+  let step: unknown;
+  let shown: unknown;
   try {
     if (ct.startsWith("application/json")) {
       const j = JSON.parse(text) as Record<string, unknown>;
@@ -194,12 +253,19 @@ async function readForm(request: Request): Promise<{ code: string; label: string
       const p = new URLSearchParams(text);
       code = p.get("code");
       label = p.get("label");
+      step = p.get("step");
+      shown = p.get("shown_label");
     }
   } catch {
     return null;
   }
   if (typeof code !== "string") return null;
-  return { code: code.slice(0, 64), label: cleanLabel(label) };
+  return {
+    code: code.slice(0, 64),
+    label: cleanLabel(label),
+    step: typeof step === "string" ? step : null,
+    shownLabel: typeof shown === "string" ? cleanLabel(shown) : null,
+  };
 }
 
 export async function handleBrowser(request: Request, env: Env, url: URL): Promise<Response | null> {
@@ -214,7 +280,8 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
     pathname === "/logout" ||
     pathname === "/claim" ||
     /^\/open\/[^/]+$/.test(pathname) ||
-    /^\/robots\/[^/]+\/(unlink|sessions\/revoke)$/.test(pathname);
+    /^\/robots\/[^/]+\/(unlink|sessions\/revoke)$/.test(pathname) ||
+    isAdminPath(pathname);
   if (!known) return null;
 
   // CSRF: every state-changing browser request must carry our own Origin.
@@ -231,6 +298,8 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
 
   if (pathname === "/" && method === "GET") return user ? dashboard(env, user, url) : loggedOutPage(url);
 
+  if (isAdminPath(pathname)) return handleAdmin(request, env, url, user, notFound);
+
   if (pathname === "/logout" && method === "POST") {
     await destroySession(env, request);
     return redirect("/?notice=signedout", 303, { "Set-Cookie": clearSessionCookie() });
@@ -241,24 +310,25 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
       if (!user) return loginRedirect(url);
       const raw = url.searchParams.get("code") ?? "";
       const prev = await previewClaim(env, user.id, raw);
-      if (!prev.ok) return page("Add a robot", html`<h1>Could not add the robot</h1><p class="error">${prev.message}</p><p><a href="/">Back to my robots</a></p>`, prev.status, {}, user);
-      return claimConfirm(user, normalizePairingCode(raw) ?? "", prev.robotId, prev.name);
+      if (!prev.ok) return claimError(env, user, prev.message, prev.status);
+      const full = await reachedLimit(env, user.id);
+      if (full !== null) return claimError(env, user, limitMessage(full), 403);
+      return claimConfirm(env, user, normalizePairingCode(raw) ?? "", prev.robotId, prev.name, null);
     }
     if (method === "POST") {
       if (!user) return redirect("/login", 303);
       const form = await readForm(request);
-      if (!form) return page("Add a robot", html`<h1>Could not add the robot</h1><p class="error">The form was not filled in correctly.</p><p><a href="/">Back to my robots</a></p>`, 400);
-      const res = await claimRobot(env, createProvisioner(env), user.id, form.code, form.label);
-      if (!res.ok) {
-        const norm = normalizePairingCode(form.code);
-        return page(
-          "Add a robot",
-          html`<h1>Could not add the robot</h1><p class="error">${res.message}</p><p><a href="/${norm ? `?code=${formatPairingCode(norm)}` : ""}">Back to my robots</a></p>`,
-          res.status,
-          {},
-          user,
-        );
+      if (!form) return claimError(env, user, "The form was not filled in correctly.", 400);
+      // Step 1 (or a changed name in step 2): show the robot and the address it would get.
+      if (form.step === "preview" || (form.step === "confirm" && form.shownLabel !== form.label)) {
+        const prev = await previewClaim(env, user.id, form.code);
+        if (!prev.ok) return claimError(env, user, prev.message, prev.status, form.code);
+        const full = await reachedLimit(env, user.id);
+        if (full !== null) return claimError(env, user, limitMessage(full), 403);
+        return claimConfirm(env, user, normalizePairingCode(form.code) ?? "", prev.robotId, prev.name, form.label, form.step === "confirm");
       }
+      const res = await claimRobot(env, createProvisioner(env), user.id, form.code, form.label);
+      if (!res.ok) return claimError(env, user, res.message, res.status, form.code);
       return redirect("/?notice=claimed", 303);
     }
     return null;
@@ -311,7 +381,7 @@ ${help}${retry}</div>`
 ${help}${retry}</div>`,
         503,
         { "Retry-After": "5", Refresh: "5" },
-        user,
+        pageUser(env, user),
       );
     }
     if (!row.hostname) {
@@ -321,7 +391,7 @@ ${help}${retry}</div>`,
         html`<div class="standby">${lawn()}<h1>Robot starting</h1><p>The robot is starting its tunnel. This usually takes a few seconds.</p><p class="actions"><a class="btn primary" href="/open/${robotId}">Try again</a> <a class="btn" href="/">Back to my robots</a></p></div>`,
         503,
         { "Retry-After": "10" },
-        user,
+        pageUser(env, user),
       );
     }
     const grant = await mintGrant(env, {
