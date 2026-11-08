@@ -457,7 +457,6 @@ section[id] { scroll-margin-top: 16px; }
   width: 12px; height: 7px; border: solid var(--grass); border-width: 0 0 2px 2px;
   transform: rotate(-45deg);
 }
-.copy.done { border-color: var(--code-muted); }
 
 /* Lawn stripes: the install band is mown in wide, barely visible lanes. */
 .band {
@@ -506,4 +505,33 @@ section[id] { scroll-margin-top: 16px; }
 @media (max-width: 40rem) {
   .tablist { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
   .tablist [role=tab] { justify-content: center; padding: 8px 10px; font-size: .9rem; line-height: 1.25; text-align: left; }
+}
+
+/* Copying: the icon turns into a tick, the button fills with grass, and a mower makes one pass
+   over the copied text. */
+.cmd { position: relative; overflow: hidden; isolation: isolate; }
+.cmd::after {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgb(108 201 138 / 16%) 70%, rgb(108 201 138 / 45%) 99%, transparent);
+  transform: translateX(-101%);
+}
+.cmd.mown::after { animation: mow-pass .75s cubic-bezier(.45, 0, .2, 1); }
+@keyframes mow-pass {
+  0% { transform: translateX(-101%); opacity: 1; }
+  75% { transform: translateX(0); opacity: 1; }
+  100% { transform: translateX(0); opacity: 0; }
+}
+.copy { transition: background-color .25s, border-color .25s, color .25s, transform .15s; }
+.copy:active { transform: scale(.96); }
+.copy.done, .copy.done:hover { background: var(--grass); border-color: var(--grass); color: var(--on-grass); }
+.copy-icons { display: grid; width: 16px; height: 16px; }
+.copy-icons svg { grid-area: 1 / 1; transition: opacity .2s, transform .25s; }
+.copy .i-check { opacity: 0; transform: scale(.6); stroke-width: 2.4; stroke-dasharray: 22; stroke-dashoffset: 22; }
+.copy.done .i-copy { opacity: 0; transform: scale(.6) rotate(-12deg); }
+.copy.done .i-check { opacity: 1; transform: none; animation: tick .35s ease-out .08s forwards; }
+@keyframes tick { to { stroke-dashoffset: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .cmd.mown::after, .copy.done .i-check { animation: none; }
+  .copy.done .i-check { stroke-dashoffset: 0; }
+  .copy, .copy-icons svg { transition: none; }
 }

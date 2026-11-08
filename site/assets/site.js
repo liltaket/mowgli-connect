@@ -77,13 +77,34 @@
   Array.prototype.forEach.call(document.querySelectorAll("[data-copy]"), function (btn) {
     var code = document.getElementById(btn.getAttribute("data-copy"));
     var out = btn.parentNode.querySelector(".copy-status");
-    if (!code || !out) return;
+    var label = btn.querySelector(".copy-label");
+    var block = btn.closest(".cmd");
+    if (!code || !out || !label) return;
+    var idle = label.textContent;
     var timer;
+    function reset() {
+      out.textContent = "";
+      out.classList.remove("visually-hidden");
+      label.textContent = idle;
+      btn.classList.remove("done");
+    }
     function say(t) {
-      out.textContent = t;
-      btn.classList.toggle("done", t === "Copied.");
       clearTimeout(timer);
-      timer = setTimeout(function () { out.textContent = ""; btn.classList.remove("done"); }, 3000);
+      reset();
+      out.textContent = t;
+      timer = setTimeout(reset, 3000);
+    }
+    function copied() {
+      say("Copied to the clipboard.");
+      out.classList.add("visually-hidden"); // the button itself shows it
+      label.textContent = "Copied";
+      btn.classList.add("done");
+      if (block) {
+        // Restart the mowing pass over the copied text.
+        block.classList.remove("mown");
+        void block.offsetWidth;
+        block.classList.add("mown");
+      }
     }
     function fallback() {
       var r = document.createRange();
@@ -93,12 +114,12 @@
       sel.addRange(r);
       var ok = false;
       try { ok = document.execCommand("copy"); } catch (e) {}
-      say(ok ? "Copied." : "Selected. Press Ctrl+C to copy.");
+      if (ok) copied(); else say("Selected. Press Ctrl+C to copy.");
     }
     btn.addEventListener("click", function () {
       var text = code.textContent.trim();
       if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(text).then(function () { say("Copied."); }, fallback);
+        navigator.clipboard.writeText(text).then(copied, fallback);
       } else {
         fallback();
       }
