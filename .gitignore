@@ -1,0 +1,6 @@
+node_modules/
+.wrangler/
+.dev.vars
+*.key
+/agent/connect-agent
+/relay/wrangler.prod.jsonc

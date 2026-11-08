@@ -1,0 +1,37 @@
+{
+  // Mowgli Connect relay. All IDs below are PLACEHOLDERS - replace before deploying.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "mowgli-connect-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true },
+
+  // Serve the relay on its own custom domain (must match RELAY_ORIGIN), e.g.:
+  // "routes": [{ "pattern": "connect.example.com", "custom_domain": true }],
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "mowgli-connect-relay",
+      "database_id": "00000000-0000-0000-0000-000000000000", // PLACEHOLDER: from `wrangler d1 create`
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  // Cleans expired jti / sessions / pairing codes and retries pending tunnel cleanups.
+  "triggers": { "crons": ["*/15 * * * *"] },
+
+  // Non-secret configuration. Secrets (never put these here):
+  //   RELAY_SIGNING_KEY, GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, CF_API_TOKEN
+  "vars": {
+    "RELAY_ORIGIN": "https://connect.example.com", // PLACEHOLDER: exact public origin, no trailing slash
+    "RELAY_KEY_ID": "k1",
+    "PROVISIONER": "cloudflare", // "cloudflare" | "quick" (no domain, see README) | "fake" (fake = tests/local dev only)
+    "CF_ACCOUNT_ID": "REPLACE_WITH_ACCOUNT_ID", // PLACEHOLDER
+    "CF_ZONE_ID": "REPLACE_WITH_ZONE_ID", // PLACEHOLDER: zone that contains ROBOT_ZONE
+    "ROBOT_ZONE": "robots.example.com", // PLACEHOLDER: robot hostnames are <robotId>.<ROBOT_ZONE>
+    "AGENT_ORIGIN": "http://127.0.0.1:4007",
+    "MAX_NEW_ROBOTS_PER_HOUR": "30", // global cap on new unclaimed robot registrations
+    "ALLOWED_GITHUB_LOGINS": "" // comma list of GitHub logins (or gh:<id>); empty = open to any GitHub user
+  }
+}

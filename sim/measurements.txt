@@ -1,0 +1,116 @@
+
+### default dashboard compression=false
+set=dashboard window=10s compression_requested=false negotiated=""
+topic messages msg/s payload_B/s max_frame_B jitter_stddev_ms
+coverageSession 11 1.10 120 109 297.10
+emergency 11 1.10 143 130 296.15
+fusionRaw 50 5.00 1595 319 1.91
+gnssStatus 11 1.10 1236 1124 268.31
+highLevelStatus 11 1.10 271 246 296.47
+map 1 0.10 1082 10818 0.00
+mowProgress 10 1.00 160195 160211 10.16
+power 11 1.10 152 138 298.19
+status 11 1.10 624 567 296.06
+TOTAL payload_B/s=165417 wire_read_B/s=165472 wire_read_B=1654878 elapsed=10.001 (wire includes websocket framing; TLS records when wss)
+
+### default dashboard compression=true
+set=dashboard window=10s compression_requested=true negotiated=""
+topic messages msg/s payload_B/s max_frame_B jitter_stddev_ms
+coverageSession 11 1.10 120 109 298.53
+emergency 11 1.10 143 130 298.54
+fusionRaw 50 5.00 1595 319 0.60
+gnssStatus 11 1.10 1236 1124 267.79
+highLevelStatus 11 1.10 271 246 299.76
+map 1 0.10 1082 10818 0.00
+mowProgress 10 1.00 160189 160211 47.91
+power 11 1.10 152 138 299.48
+status 11 1.10 624 567 298.62
+TOTAL payload_B/s=165411 wire_read_B/s=165465 wire_read_B=1654878 elapsed=10.001 (wire includes websocket framing; TLS records when wss)
+
+### default map compression=false
+set=map window=10s compression_requested=false negotiated=""
+topic messages msg/s payload_B/s max_frame_B jitter_stddev_ms
+highLevelStatus 11 1.10 271 246 16.09
+lidar 98 9.80 37441 3822 3.04
+lidarMap 9 0.90 144181 160208 47.58
+map 1 0.10 1082 10818 0.00
+mowProgress 10 1.00 160204 160211 43.34
+obstacles 10 1.00 84 84 22.12
+path 10 1.00 1093 1093 14.41
+plan 10 1.00 3299 3299 17.99
+pose 98 9.80 3547 362 6.57
+status 11 1.10 624 567 22.15
+TOTAL payload_B/s=351826 wire_read_B/s=351942 wire_read_B=3519573 elapsed=10.000 (wire includes websocket framing; TLS records when wss)
+
+### default map compression=true
+set=map window=10s compression_requested=true negotiated=""
+topic messages msg/s payload_B/s max_frame_B jitter_stddev_ms
+highLevelStatus 11 1.10 271 246 5.27
+lidar 99 9.90 37822 3822 4.04
+lidarMap 10 1.00 160200 160208 87.15
+map 1 0.10 1082 10818 0.00
+mowProgress 10 1.00 160203 160211 77.91
+obstacles 10 1.00 84 84 4.63
+path 10 1.00 1093 1093 10.05
+plan 10 1.00 3299 3299 12.44
+pose 99 9.90 3584 362 1.12
+status 11 1.10 624 567 7.65
+TOTAL payload_B/s=368261 wire_read_B/s=368379 wire_read_B=3683975 elapsed=10.000 (wire includes websocket framing; TLS records when wss)
+
+### stress dashboard compression=false
+set=dashboard window=10s compression_requested=false negotiated=""
+topic messages msg/s payload_B/s max_frame_B jitter_stddev_ms
+coverageSession 11 1.10 120 109 294.33
+emergency 11 1.10 143 130 294.68
+fusionRaw 50 5.00 1595 319 2.84
+gnssStatus 11 1.10 1236 1124 268.13
+highLevelStatus 11 1.10 271 246 294.67
+map 3 0.30 234048 780223 742.77
+mowProgress 10 1.00 1000132 1000211 23.44
+power 11 1.10 152 138 294.67
+status 11 1.10 624 567 294.57
+TOTAL payload_B/s=1238320 wire_read_B/s=1238377 wire_read_B=12384755 elapsed=10.001 (wire includes websocket framing; TLS records when wss)
+
+### stress dashboard compression=true
+set=dashboard window=10s compression_requested=true negotiated=""
+topic messages msg/s payload_B/s max_frame_B jitter_stddev_ms
+coverageSession 11 1.10 120 109 299.11
+emergency 11 1.10 143 130 299.14
+fusionRaw 50 5.00 1595 319 6.09
+gnssStatus 11 1.10 1236 1124 268.00
+highLevelStatus 11 1.10 271 246 299.14
+map 3 0.30 234066 780223 886.03
+mowProgress 10 1.00 1000206 1000211 133.31
+power 11 1.10 152 138 299.04
+status 11 1.10 624 567 299.21
+TOTAL payload_B/s=1238412 wire_read_B/s=1238469 wire_read_B=12384755 elapsed=10.000 (wire includes websocket framing; TLS records when wss)
+
+### stress map compression=false
+set=map window=10s compression_requested=false negotiated=""
+topic messages msg/s payload_B/s max_frame_B jitter_stddev_ms
+highLevelStatus 11 1.10 271 246 12.49
+lidar 98 9.80 37449 3822 6.78
+lidarMap 9 0.90 900109 1000208 33.37
+map 3 0.30 234071 780343 786.41
+mowProgress 9 0.90 900111 1000211 42.63
+obstacles 10 1.00 84 84 9.83
+path 10 1.00 1093 1093 10.95
+plan 10 1.00 3299 3299 10.32
+pose 94 9.40 3403 362 18.14
+status 11 1.10 624 567 10.19
+TOTAL payload_B/s=2080512 wire_read_B/s=2080629 wire_read_B=20808101 elapsed=10.001 (wire includes websocket framing; TLS records when wss)
+
+### stress map compression=true
+set=map window=10s compression_requested=true negotiated=""
+topic messages msg/s payload_B/s max_frame_B jitter_stddev_ms
+highLevelStatus 11 1.10 271 246 16.78
+lidar 95 9.50 36296 3822 10.78
+lidarMap 8 0.80 800018 1000208 33.85
+map 3 0.30 234060 780343 598.16
+mowProgress 8 0.80 800021 1000211 62.35
+obstacles 10 1.00 84 84 10.87
+path 10 1.00 1093 1093 10.77
+plan 10 1.00 3298 3299 10.99
+pose 93 9.30 3366 362 15.95
+status 11 1.10 624 567 15.76
+TOTAL payload_B/s=1879130 wire_read_B/s=1879243 wire_read_B=18795906 elapsed=10.002 (wire includes websocket framing; TLS records when wss)

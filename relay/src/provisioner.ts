@@ -1,0 +1,239 @@
+import type { Env } from "./env";
+
+export interface ProvisionedTunnel {
+  /** null in quick-tunnel mode: the robot reports the hostname cloudflared assigned it. */
+  hostname: string | null;
+  tunnelId: string | null;
+  dnsRecordId: string | null;
+  /** SENSITIVE cloudflared connector token. null in quick-tunnel mode. */
+  token: string | null;
+}
+
+export interface TunnelRef {
+  robotId: string;
+  hostname: string | null;
+  tunnelId: string | null;
+  dnsRecordId: string | null;
+}
+
+/**
+ * Hostname and origin service are always derived server-side from robotId and
+ * configuration. No caller-supplied hostname or origin is ever accepted.
+ */
+export interface TunnelProvisioner {
+  /** Idempotent: safe to call again for the same robot. */
+  provision(robotId: string): Promise<ProvisionedTunnel>;
+  /** Idempotent: missing resources count as success. */
+  deprovision(ref: TunnelRef): Promise<void>;
+}
+
+export function robotHostname(robotId: string, zone: string): string {
+  return `${robotId}.${zone.replace(/^\.+|\.+$/g, "").toLowerCase()}`;
+}
+
+/** Deterministic, no network. For tests / local dev only (PROVISIONER=fake). */
+export class FakeProvisioner implements TunnelProvisioner {
+  readonly provisioned: string[] = [];
+  readonly deprovisioned: string[] = [];
+  constructor(private readonly zone = "robots.invalid") {}
+
+  async provision(robotId: string): Promise<ProvisionedTunnel> {
+    this.provisioned.push(robotId);
+    return {
+      hostname: robotHostname(robotId, this.zone),
+      tunnelId: `fake-tunnel-${robotId}`,
+      dnsRecordId: `fake-dns-${robotId}`,
+      token: `fake-tunnel-token-${robotId}`,
+    };
+  }
+
+  async deprovision(ref: TunnelRef): Promise<void> {
+    this.deprovisioned.push(ref.robotId);
+  }
+}
+
+/**
+ * Quick-tunnel mode (PROVISIONER=quick): the robot runs a Cloudflare Quick Tunnel and reports its
+ * `*.trycloudflare.com` hostname itself (POST /v1/robots/hostname). Nothing is created or deleted
+ * on Cloudflare, so there is no CF_API_TOKEN, zone or tunnel token.
+ */
+export class QuickProvisioner implements TunnelProvisioner {
+  async provision(_robotId: string): Promise<ProvisionedTunnel> {
+    return { hostname: null, tunnelId: null, dnsRecordId: null, token: null };
+  }
+
+  async deprovision(_ref: TunnelRef): Promise<void> {}
+}
+
+export class CloudflareApiError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+export interface CloudflareConfig {
+  apiToken: string;
+  accountId: string;
+  zoneId: string;
+  robotZone: string;
+  agentOrigin: string;
+  fetchFn?: typeof fetch;
+}
+
+const API = "https://api.cloudflare.com/client/v4";
+
+interface CfEnvelope<T> {
+  success: boolean;
+  errors?: { code: number; message: string }[];
+  result: T;
+}
+
+interface CfTunnel {
+  id: string;
+  name: string;
+  deleted_at?: string | null;
+}
+
+interface CfDnsRecord {
+  id: string;
+  type: string;
+  name: string;
+  content: string;
+  proxied?: boolean;
+}
+
+export class CloudflareTunnelProvisioner implements TunnelProvisioner {
+  private readonly fetchFn: typeof fetch;
+
+  constructor(private readonly cfg: CloudflareConfig) {
+    this.fetchFn = cfg.fetchFn ?? ((...a) => fetch(...a));
+  }
+
+  private async call<T>(method: string, path: string, body?: unknown, okStatuses: number[] = []): Promise<T | null> {
+    const res = await this.fetchFn(`${API}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${this.cfg.apiToken}`,
+        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (okStatuses.includes(res.status)) return null;
+    let env: CfEnvelope<T> | null = null;
+    try {
+      env = (await res.json()) as CfEnvelope<T>;
+    } catch {
+      /* non-JSON error body */
+    }
+    if (!res.ok || !env?.success) {
+      // Never include request headers/bodies (token) in the error.
+      const detail = env?.errors?.map((e) => `${e.code}: ${e.message}`).join("; ") ?? "no error detail";
+      throw new CloudflareApiError(res.status, `Cloudflare API ${method} ${path} failed (${res.status}): ${detail}`);
+    }
+    return env.result;
+  }
+
+  private tunnelName(robotId: string): string {
+    return `mc-${robotId}`;
+  }
+
+  private async findTunnel(robotId: string): Promise<CfTunnel | null> {
+    const name = this.tunnelName(robotId);
+    const list = await this.call<CfTunnel[]>(
+      "GET",
+      `/accounts/${this.cfg.accountId}/cfd_tunnel?name=${encodeURIComponent(name)}&is_deleted=false`,
+    );
+    // The `name` filter semantics (exact vs substring) are undocumented: match exactly ourselves.
+    return list?.find((t) => t.name === name && !t.deleted_at) ?? null;
+  }
+
+  private async findDns(hostname: string): Promise<CfDnsRecord | null> {
+    const list = await this.call<CfDnsRecord[]>(
+      "GET",
+      `/zones/${this.cfg.zoneId}/dns_records?type=CNAME&name.exact=${encodeURIComponent(hostname)}`,
+    );
+    return list?.find((r) => r.type === "CNAME" && r.name.toLowerCase() === hostname) ?? null;
+  }
+
+  async provision(robotId: string): Promise<ProvisionedTunnel> {
+    const acct = this.cfg.accountId;
+    const hostname = robotHostname(robotId, this.cfg.robotZone);
+
+    let tunnel = await this.findTunnel(robotId);
+    if (!tunnel) {
+      tunnel = await this.call<CfTunnel>("POST", `/accounts/${acct}/cfd_tunnel`, {
+        name: this.tunnelName(robotId),
+        config_src: "cloudflare",
+      });
+    }
+    if (!tunnel?.id) throw new CloudflareApiError(502, "Cloudflare did not return a tunnel id");
+
+    await this.call("PUT", `/accounts/${acct}/cfd_tunnel/${tunnel.id}/configurations`, {
+      config: {
+        ingress: [{ hostname, service: this.cfg.agentOrigin }, { service: "http_status:404" }],
+      },
+    });
+
+    const content = `${tunnel.id}.cfargotunnel.com`;
+    const dnsBody = { type: "CNAME", name: hostname, content, proxied: true, ttl: 1 };
+    const existing = await this.findDns(hostname);
+    let dnsRecordId: string;
+    if (!existing) {
+      const rec = await this.call<CfDnsRecord>("POST", `/zones/${this.cfg.zoneId}/dns_records`, dnsBody);
+      if (!rec?.id) throw new CloudflareApiError(502, "Cloudflare did not return a DNS record id");
+      dnsRecordId = rec.id;
+    } else {
+      if (existing.content !== content || existing.proxied !== true) {
+        await this.call("PATCH", `/zones/${this.cfg.zoneId}/dns_records/${existing.id}`, dnsBody);
+      }
+      dnsRecordId = existing.id;
+    }
+
+    const token = await this.call<string>("GET", `/accounts/${acct}/cfd_tunnel/${tunnel.id}/token`);
+    if (typeof token !== "string" || !token) throw new CloudflareApiError(502, "Cloudflare did not return a tunnel token");
+    return { hostname, tunnelId: tunnel.id, dnsRecordId, token };
+  }
+
+  async deprovision(ref: TunnelRef): Promise<void> {
+    const acct = this.cfg.accountId;
+    const hostname = ref.hostname ?? robotHostname(ref.robotId, this.cfg.robotZone);
+
+    // DNS first so the name stops resolving to the tunnel.
+    let dnsId = ref.dnsRecordId;
+    if (!dnsId) dnsId = (await this.findDns(hostname))?.id ?? null;
+    if (dnsId) await this.call("DELETE", `/zones/${this.cfg.zoneId}/dns_records/${dnsId}`, undefined, [404]);
+
+    let tunnelId = ref.tunnelId;
+    if (!tunnelId) tunnelId = (await this.findTunnel(ref.robotId))?.id ?? null;
+    if (tunnelId) {
+      // A tunnel with active connections cannot be deleted; drop stale connections first (best effort).
+      try {
+        await this.call("DELETE", `/accounts/${acct}/cfd_tunnel/${tunnelId}/connections`, undefined, [404]);
+      } catch {
+        /* the delete below reports the real failure */
+      }
+      await this.call("DELETE", `/accounts/${acct}/cfd_tunnel/${tunnelId}`, undefined, [404]);
+    }
+  }
+}
+
+export function createProvisioner(env: Env): TunnelProvisioner {
+  if (env.PROVISIONER === "quick") return new QuickProvisioner();
+  if ((env.PROVISIONER ?? "cloudflare") === "fake") return new FakeProvisioner(env.ROBOT_ZONE || undefined);
+  if (env.PROVISIONER && env.PROVISIONER !== "cloudflare") throw new Error(`unknown PROVISIONER "${env.PROVISIONER}"`);
+  const { CF_API_TOKEN, CF_ACCOUNT_ID, CF_ZONE_ID, ROBOT_ZONE } = env;
+  if (!CF_API_TOKEN || !CF_ACCOUNT_ID || !CF_ZONE_ID || !ROBOT_ZONE) {
+    throw new Error("Cloudflare provisioner requires CF_API_TOKEN, CF_ACCOUNT_ID, CF_ZONE_ID, ROBOT_ZONE");
+  }
+  return new CloudflareTunnelProvisioner({
+    apiToken: CF_API_TOKEN,
+    accountId: CF_ACCOUNT_ID,
+    zoneId: CF_ZONE_ID,
+    robotZone: ROBOT_ZONE,
+    agentOrigin: env.AGENT_ORIGIN || "http://127.0.0.1:4007",
+  });
+}

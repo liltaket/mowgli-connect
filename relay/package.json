@@ -1,0 +1,21 @@
+{
+  "name": "mowgli-connect-relay",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Mowgli Connect relay (control plane) - Cloudflare Worker + D1",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "gen-key": "node scripts/gen-key.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.6.0",
+    "@cloudflare/workers-types": "^5.20261104.1",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.0.0"
+  }
+}
