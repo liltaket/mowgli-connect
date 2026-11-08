@@ -9,7 +9,7 @@
 # are not touched), asks three questions, starts the agent and shows the pairing code.
 # Non-interactive: sh install.sh --name hedgehog --teleop no --auto-update yes --yes
 # Options: --dir DIR, --relay URL, --name NAME, --teleop yes|no, --auto-update yes|no,
-#          --dns auto|system, --image IMAGE, --yes
+#          --dns auto|public|system, --image IMAGE, --yes
 set -eu
 
 DIR="$HOME/mowgli-connect"
@@ -60,7 +60,7 @@ case $(uname -m) in x86_64 | amd64 | aarch64 | arm64) ;; *) die "unsupported CPU
 case $RELAY in https://*) ;; *) die "--relay must be an https:// URL" ;; esac
 case $RELAY$IMAGE in *[!A-Za-z0-9:/._@-]*) die "--relay and --image may not contain spaces or quotes" ;; esac
 case $DIR in *[!A-Za-z0-9/._-]*) die "--dir may contain only letters, digits, '/', '.', '_' and '-'" ;; esac
-case $DNS in auto | system) ;; *) die "--dns must be auto or system" ;; esac
+case $DNS in auto | public | system) ;; *) die "--dns must be auto, public or system" ;; esac
 
 echo "Mowgli Connect: remote access to this robot's web interface."
 echo
@@ -157,10 +157,34 @@ elif [ "$AUTOUPDATE" = yes ]; then
 	cron_note="  Automatic updates: not set up (no cron on this robot). Update by hand: cd $DIR && docker compose pull && docker compose up -d"
 fi
 
-# DNS for the container (--dns auto): Cloudflare and Google first, then the robot's own resolver.
-# A home router that does not answer DNS otherwise delays every lookup by seconds, and the
-# tunnel's start by half a minute. --dns system keeps Docker's default (the robot's resolvers).
-if [ "$DNS" = auto ]; then
+# DNS for the container. Docker's default (the robot's own DNS servers) is kept unless they are
+# slow: a router that does not answer DNS makes every lookup wait seconds for a timeout, which
+# delays the tunnel's start by half a minute. Then (--dns auto, the default) the container asks
+# 1.1.1.1 and 8.8.8.8 first and the robot's own server last. --dns public always does that,
+# --dns system never does.
+lookup_ms() { # milliseconds for one lookup through the robot's own resolvers
+	s0=$(date +%s%N)
+	getent hosts "$1" >/dev/null 2>&1 || true
+	s1=$(date +%s%N)
+	case $s0$s1 in *N*) echo 0 ;; *) echo $(((s1 - s0) / 1000000)) ;; esac # no %N: assume fast
+}
+use_public=no
+if [ "$DNS" = public ]; then
+	use_public=yes
+elif [ "$DNS" = auto ]; then
+	slow=0
+	# A name nobody has asked for before (any *.bronc.app answers), so no cache hides the delay.
+	probe="dns-probe-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ').bronc.app"
+	for n in "$probe" region1.v2.argotunnel.com; do
+		ms=$(lookup_ms "$n")
+		[ "$ms" -gt "$slow" ] && slow=$ms
+	done
+	if [ "$slow" -gt 1500 ]; then
+		use_public=yes
+		echo "This network's DNS server is slow (a lookup took $((slow / 1000)).$((slow % 1000 / 100)) s); Mowgli Connect will ask 1.1.1.1 and 8.8.8.8 first."
+	fi
+fi
+if [ "$use_public" = yes ]; then
 	own=""
 	for f in /run/systemd/resolve/resolv.conf /etc/resolv.conf; do
 		[ -r "$f" ] || continue
@@ -169,7 +193,7 @@ if [ "$DNS" = auto ]; then
 	done
 	list='"1.1.1.1", "8.8.8.8"'
 	case $own in "" | 1.1.1.1 | 8.8.8.8) ;; *) list="$list, \"$own\"" ;; esac
-	sed -i "s|^    # dns-servers\$|    dns: [$list] # from install.sh --dns auto|" "$DIR/compose.yaml"
+	sed -i "s|^    # dns-servers\$|    dns: [$list] # install.sh: this network's DNS was slow|" "$DIR/compose.yaml"
 else
 	sed -i '/^    # dns-servers$/d' "$DIR/compose.yaml"
 fi

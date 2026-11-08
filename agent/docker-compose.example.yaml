@@ -9,8 +9,9 @@ services:
     # the agent, whatever ingress the Cloudflare account pushes. The GUI (host network, :4006)
     # is reached through the Docker host gateway.
     extra_hosts: ["host.docker.internal:host-gateway"]
-    # Public resolvers first, so a router that does not answer DNS cannot slow the tunnel down.
-    dns: ["1.1.1.1", "8.8.8.8"]
+    # Only if the network's DNS server is slow or does not answer (every lookup then waits for a
+    # timeout and the tunnel takes ~30 s to start): ask public resolvers first.
+    # dns: ["1.1.1.1", "8.8.8.8"]
     environment:
       MC_RELAY_URL: https://connect.example.com
       MC_PROFILE: mowgli

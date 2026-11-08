@@ -126,7 +126,7 @@ waits for it to time out before the next server is tried. Fix it on the router: 
 or give out a working one through DHCP, such as `1.1.1.1` or `8.8.8.8`. This speeds up everything
 on that network, MowgliNext included.
 
-The installer protects Mowgli Connect from this by default (`--dns auto`): the container asks
-`1.1.1.1` and `8.8.8.8` first and the robot's own DNS server last, so its tunnel starts in seconds
-even with such a router. To keep Docker's default instead (only the robot's own DNS servers), run
-the installer with `--dns system`.
+The installer checks for this (`--dns auto`, the default). If a lookup through the robot's own DNS
+takes more than 1.5 s, the container asks `1.1.1.1` and `8.8.8.8` first and the robot's own DNS
+server last, so its tunnel still starts in seconds; otherwise Docker's default (the robot's own
+DNS servers) is kept. `--dns public` always uses the public servers first, `--dns system` never.
