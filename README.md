@@ -146,7 +146,7 @@ deployment between modes while robots are claimed.
 | `MC_PROFILE` | `mowgli` | `mowgli` (GUI-aware policy) or `generic` (any app) |
 | `MC_ALLOW_TELEOP` | `false` | Allow the remote joystick socket |
 | `MC_WS_COMPRESSION` | `true` | Compress WebSocket messages to the browser (injects `/_connect/ws.js`, see [protocol](docs/protocol.md#remote-traffic-reduction-agent--browser-no-app-changes)) |
-| `MC_THROTTLE` | `mowProgress=2s,lidarMap=2s,lidar=200ms` | Max rate per multiplex topic for remote viewers (`mowgli` profile; always delivers the latest frame); `off` disables |
+| `MC_THROTTLE` | `mowProgress=2s,lidarMap=2s,lidar=200ms,diagnostics=1s,gnssStatus=1s` | Max rate per multiplex topic for remote viewers (`mowgli` profile; always delivers the latest frame); `off` disables |
 | `MC_POLL_INTERVAL` | `3m` | How often a claimed robot syncs with the relay (≤ half of `MC_MAX_STALE`). New members are admitted at once regardless. |
 | `MC_MAX_BODY_MB` | `64` | Request body limit |
 | `MC_MAX_STALE` | `10m` | If the relay is unreachable this long, remote sessions stop working (so revocations cannot be outwaited). LAN access is unaffected. |

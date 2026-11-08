@@ -441,3 +441,82 @@ func (s *syncBuffer) String() string {
 	defer s.mu.Unlock()
 	return s.b.String()
 }
+
+// diagFrame builds a multiplex "diagnostics" frame from one publisher, like the GUI's:
+// {topic: "diagnostics", data: {status: [{name, level}]}, seq} (seq in a bin for the test).
+func diagFrame(sender string, seq byte) []byte {
+	b := []byte{0x83, 0xa5}
+	b = append(b, "topic"...)
+	b = append(b, 0xab)
+	b = append(b, "diagnostics"...)
+	b = append(b, 0xa4)
+	b = append(b, "data"...)
+	b = append(b, 0x81, 0xa6)
+	b = append(b, "status"...)
+	b = append(b, 0x91, 0x82, 0xa5)
+	b = append(b, "level"...)
+	b = append(b, 0x00, 0xa4)
+	b = append(b, "name"...)
+	b = append(b, 0xa0|byte(len(sender)))
+	b = append(b, sender...)
+	b = append(b, 0xa3)
+	b = append(b, "seq"...)
+	return append(b, 0xc4, 3, 9, 9, seq)
+}
+
+func TestDiagnosticsSender(t *testing.T) {
+	if s, ok := diagnosticsSender(diagFrame("universal_gnss/summary", 1)); !ok || s != "universal_gnss/summary" {
+		t.Fatalf("%q %v", s, ok)
+	}
+	for _, b := range [][]byte{mpFrame("diagnostics", 1, false), {0x81, 0xa4, 'd', 'a', 't', 'a', 0x90}, nil} {
+		if _, ok := diagnosticsSender(b); ok {
+			t.Fatalf("sender found in %x", b)
+		}
+	}
+}
+
+// A fast publisher must not starve a slow one on the shared diagnostics topic.
+func TestDiagnosticsThrottledPerPublisher(t *testing.T) {
+	f := newFixture(t, MowgliPolicy{})
+	f.gw.cfg.ThrottlePath = "/api/mowglinext/multiplex"
+	f.gw.cfg.Throttle = map[string]time.Duration{"diagnostics": 300 * time.Millisecond}
+	up := websocket.Upgrader{}
+	f.useUpstream(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		for i := byte(1); i <= 40; i++ { // fast: every 10 ms; slow: every 100 ms, just after a fast one
+			c.WriteMessage(websocket.BinaryMessage, diagFrame("fast", i))
+			if i%10 == 5 {
+				c.WriteMessage(websocket.BinaryMessage, diagFrame("slow", i))
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		c.ReadMessage()
+	}))
+	tok, _ := f.login(f.grant(nil))
+	c, _, err := f.dialWS("/api/mowglinext/multiplex", tok, "https://"+testHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	got := map[string][]byte{}
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for {
+		_ = c.SetReadDeadline(deadline)
+		_, m, err := c.ReadMessage()
+		if err != nil {
+			break
+		}
+		s, _ := diagnosticsSender(m)
+		got[s] = append(got[s], m[len(m)-1])
+	}
+	if n := len(got["fast"]); n < 2 || n > 4 || got["fast"][n-1] != 40 {
+		t.Fatalf("fast publisher frames %v: want a few, ending with the latest", got["fast"])
+	}
+	if n := len(got["slow"]); n < 2 || got["slow"][n-1] != 35 {
+		t.Fatalf("slow publisher starved: %v", got["slow"])
+	}
+}

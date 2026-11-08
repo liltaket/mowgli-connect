@@ -50,7 +50,7 @@ const (
 	unclaimedFastFor  = 30 * time.Minute
 )
 
-const defaultThrottle = "mowProgress=2s,lidarMap=2s,lidar=200ms"
+const defaultThrottle = "mowProgress=2s,lidarMap=2s,lidar=200ms,diagnostics=1s,gnssStatus=1s"
 
 // parseThrottle reads "topic=interval,..." ("off" disables throttling).
 func parseThrottle(s string) (map[string]time.Duration, error) {
@@ -300,6 +300,7 @@ func run() error {
 	}
 	var pairing *relay.Registration
 	backoff := 5 * time.Second
+	var unreachableSince time.Time // start of the current relay outage, for the log
 	pendingHost, healthFails := "", 0
 	health := time.NewTicker(2 * time.Minute)
 	defer health.Stop()
@@ -328,6 +329,10 @@ func run() error {
 				unclaimedWait = unclaimedFastPoll
 			}
 			self, err := client.Self(ctx)
+			if err == nil && !unreachableSince.IsZero() {
+				log.Info("relay reachable again", "after", time.Since(unreachableSince).Round(time.Second))
+				unreachableSince = time.Time{}
+			}
 			switch {
 			case err == nil && self.Status == "claimed":
 				apply(self)
@@ -365,6 +370,9 @@ func run() error {
 				}
 				wait = unclaimedWait
 			default:
+				if unreachableSince.IsZero() {
+					unreachableSince = time.Now()
+				}
 				log.Warn("relay unreachable; keeping last known state", "err", err, "retry", backoff)
 				wait = backoff
 				// At most a minute: after a long outage remote access is suspended (MC_MAX_STALE)

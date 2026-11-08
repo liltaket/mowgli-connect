@@ -91,6 +91,9 @@ func (o *wsOut) send(f frame) error {
 	return w.Close()
 }
 
+// maxThrottleKeys bounds the per-publisher throttle state of one socket.
+const maxThrottleKeys = 256
+
 // relayDown copies upstream messages to the browser. Messages of a throttled topic (full
 // snapshots such as occupancy grids) are sent at most once per interval: a message that
 // arrives too early is held back and replaced by newer ones, and the latest is sent when the
@@ -116,8 +119,10 @@ func relayDown(src *websocket.Conn, out *wsOut, throttle map[string]time.Duratio
 		}
 	}()
 
+	// Throttling is per key: the topic, or for "diagnostics" the topic plus its publisher.
 	pending := map[string]frame{}
 	next := map[string]time.Time{}
+	interval := map[string]time.Duration{}
 	for {
 		var timer <-chan time.Time
 		if len(pending) > 0 {
@@ -156,14 +161,21 @@ func relayDown(src *websocket.Conn, out *wsOut, throttle map[string]time.Duratio
 				}
 				continue
 			}
-			if _, held := pending[topic]; held || time.Now().Before(next[topic]) {
+			key := topic
+			if topic == "diagnostics" && len(next) < maxThrottleKeys {
+				if sender, ok := diagnosticsSender(f.data); ok {
+					key = topic + "\x00" + sender
+				}
+			}
+			interval[key] = iv
+			if _, held := pending[key]; held || time.Now().Before(next[key]) {
 				if held {
 					st.held++
 				}
-				pending[topic] = f
+				pending[key] = f
 				continue
 			}
-			next[topic] = time.Now().Add(iv)
+			next[key] = time.Now().Add(iv)
 			if out.send(f) != nil {
 				return
 			}
@@ -173,7 +185,7 @@ func relayDown(src *websocket.Conn, out *wsOut, throttle map[string]time.Duratio
 					continue
 				}
 				delete(pending, t)
-				next[t] = now.Add(throttle[t])
+				next[t] = now.Add(interval[t])
 				if out.send(f) != nil {
 					return
 				}
@@ -338,4 +350,65 @@ func mpSkip(b []byte, p int) (int, bool) {
 		todo += items
 	}
 	return p, true
+}
+
+func mpArrayLen(b []byte, p int) (int, int, bool) {
+	if p >= len(b) {
+		return 0, 0, false
+	}
+	switch c := b[p]; {
+	case c&0xf0 == 0x90:
+		return int(c & 0x0f), p + 1, true
+	case c == 0xdc && p+3 <= len(b):
+		return int(binary.BigEndian.Uint16(b[p+1:])), p + 3, true
+	case c == 0xdd && p+5 <= len(b):
+		return int(binary.BigEndian.Uint32(b[p+1:])), p + 5, true
+	}
+	return 0, 0, false
+}
+
+// mpField returns the offset of the value stored under key in the MessagePack map at p.
+func mpField(b []byte, p int, key string) (int, bool) {
+	n, p, ok := mpMapLen(b, p)
+	if !ok {
+		return 0, false
+	}
+	for i := 0; i < n; i++ {
+		k, q, isStr := mpStr(b, p)
+		if !isStr {
+			// A non-string key: skip it and its value.
+			if q, ok = mpSkip(b, p); !ok {
+				return 0, false
+			}
+		} else if k == key {
+			return q, true
+		}
+		if p, ok = mpSkip(b, q); !ok {
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
+// diagnosticsSender names the publisher of a multiplex "diagnostics" frame: the name of the
+// first status in data.status. ROS nodes publish their own DiagnosticArrays on one topic and
+// the GUI merges them by name, so throttling has to keep each publisher's latest message
+// rather than only the topic's latest (which would let a fast node starve a slow one).
+func diagnosticsSender(b []byte) (string, bool) {
+	p, ok := mpField(b, 0, "data")
+	if !ok {
+		return "", false
+	}
+	if p, ok = mpField(b, p, "status"); !ok {
+		return "", false
+	}
+	n, p, ok := mpArrayLen(b, p)
+	if !ok || n == 0 {
+		return "", false
+	}
+	if p, ok = mpField(b, p, "name"); !ok {
+		return "", false
+	}
+	name, _, ok := mpStr(b, p)
+	return name, ok
 }

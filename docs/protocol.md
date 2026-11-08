@@ -162,7 +162,9 @@ wrapper and get the original frames.
 The agent also gzips uncompressed text responses of at least 1 KB (Cloudflare asks origins for
 gzip), adds `private` to every proxied `Cache-Control` (so Cloudflare's edge never caches content
 behind the gateway), and, in the `mowgli` profile, throttles full-snapshot topics on
-`/api/mowglinext/multiplex` (`MC_THROTTLE`, default `mowProgress=2s,lidarMap=2s,lidar=200ms`):
+`/api/mowglinext/multiplex` (`MC_THROTTLE`, default `mowProgress=2s,lidarMap=2s,lidar=200ms,diagnostics=1s,gnssStatus=1s`;
+`diagnostics` is throttled per publisher, by the name of its first status, because ROS nodes share
+the topic and the GUI merges entries by name):
 a frame arriving early is held and replaced by newer ones, and the latest is sent when the
 interval has passed.
 
