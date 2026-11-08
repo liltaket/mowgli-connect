@@ -15,6 +15,8 @@ FROM cloudflare/cloudflared:2026.10.4@sha256:c6c7ae1d5dfdcb094ad344ed68ccffc2663
 
 # Alpine for nft (egress lock) and setpriv (privilege drop); see entrypoint.sh.
 FROM alpine:3.22@sha256:bfe7ceb9f09ec0566c48fb93356e45a47a00be5a1dd14fa5b909e7709c66b034
+LABEL org.opencontainers.image.licenses="PolyForm-Noncommercial-1.0.0" \
+      org.opencontainers.image.source="https://github.com/liltaket/mowgli-connect"
 # Numeric ids only: 65532 = agent, 65533 = cloudflared (see entrypoint.sh).
 RUN apk add --no-cache nftables setpriv ca-certificates
 COPY --from=cloudflared /usr/local/bin/cloudflared /usr/local/bin/cloudflared

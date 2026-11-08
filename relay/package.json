@@ -2,6 +2,7 @@
   "name": "mowgli-connect-relay",
   "version": "0.0.0",
   "private": true,
+  "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
   "description": "Mowgli Connect relay (control plane) - Cloudflare Worker + D1",
   "scripts": {

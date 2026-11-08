@@ -36,7 +36,7 @@ curl -fsS -o /dev/null -w '%{http_code}\n' https://connect.bronc.app/  # interne
 If `docker info` fails, tell the owner that their user must be in the `docker` group (or that the
 installer must run with sudo), and ask how they want to proceed.
 
-## 2. Ask the owner two questions
+## 2. Ask the owner three questions
 
 1. **Robot name.** It is shown on connect.bronc.app and becomes the robot's address, for example
    `hedgehog` becomes `https://hedgehog.bronc.app` if that name is free. Suggest the robot's
@@ -45,6 +45,9 @@ installer must run with sudo), and ask how they want to proceed.
    you are away. Internet delay can make it react late. The mower's emergency stop and obstacle
    handling stay on the robot either way. The safe choice is no, and you can change it later on
    the robot." Use `no` unless the owner says yes.
+3. **Automatic updates.** Explain: "Once a night the robot fetches a newer Mowgli Connect agent if
+   there is one and restarts it, which interrupts remote access for a few seconds. Security fixes
+   then arrive by themselves." Use `yes` unless the owner says no.
 
 ## 3. Read the installer, then run it
 
@@ -59,7 +62,7 @@ Read `install.sh` and tell the owner in one or two sentences what it does: it wr
 pairing code. Then run it with the owner's answers:
 
 ```sh
-sh install.sh --name "ROBOT NAME" --teleop no --yes
+sh install.sh --name "ROBOT NAME" --teleop no --auto-update yes --yes
 ```
 
 If `~/mowgli-connect` already exists, the robot was installed before. Running the installer again
@@ -105,7 +108,7 @@ connection" meanwhile, which is normal.
 | `502` when opening the robot | The agent must listen on `127.0.0.1:4007`; remove any `MC_LISTEN` override from `~/mowgli-connect/.env`. |
 | The robot's address does not load on one computer, but works on a phone | That computer cached "name not found". Wait up to 30 minutes, or flush its DNS cache. |
 | Everything is slow to start | The robot's DNS server may not answer. Check `/etc/resolv.conf` and tell the owner. |
-| Change the joystick choice later | `sh install.sh --name "ROBOT NAME" --teleop yes --yes` (or `no`). Pairing is kept. |
+| Change the joystick or update choice later | `sh install.sh --name "ROBOT NAME" --teleop no --auto-update yes --yes`. Pairing is kept. |
 
 More detail: https://github.com/liltaket/mowgli-connect/blob/main/docs/install.md
 

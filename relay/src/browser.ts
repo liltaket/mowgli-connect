@@ -14,6 +14,7 @@ import {
   originOk,
   type SessionUser,
 } from "./session";
+import { latestAgentSha, updateAvailable } from "./updates";
 import { cleanLabel, isRobotId, nowSeconds, readBodyText, safeReturnPath } from "./util";
 
 const NOTICES: Record<string, string> = {
@@ -67,16 +68,18 @@ interface RobotListRow {
   tunnel_id: string | null;
   first_online_at: number | null;
   claimed_at: number | null;
+  agent_version: string | null;
 }
 
 async function dashboard(env: Env, user: SessionUser, url: URL): Promise<Response> {
   const rows = await env.DB.prepare(
-    `SELECT r.robot_id, r.name, r.hostname, m.role, m.label, r.allow_teleop, r.tunnel_id, r.first_online_at, r.claimed_at
+    `SELECT r.robot_id, r.name, r.hostname, m.role, m.label, r.allow_teleop, r.tunnel_id, r.first_online_at, r.claimed_at, r.agent_version
      FROM members m JOIN robots r ON r.robot_id = m.robot_id
      WHERE m.user_id = ? AND r.status = 'claimed' ORDER BY m.created_at`,
   )
     .bind(user.id)
     .all<RobotListRow>();
+  const latest = await latestAgentSha(env);
   const prov = createProvisioner(env);
   const online = new Map<string, boolean | null>();
   await Promise.all(
@@ -118,6 +121,8 @@ ${rows.results.map(
           : html`<span class="state">Tunnel ready</span>`
   }<span>${r.role === "owner" ? "Owner" : "Viewer"}</span>${
     r.allow_teleop === null ? "" : html`<span>Remote joystick ${r.allow_teleop ? "on" : "off"}</span>`
+  }${
+    r.role === "owner" && updateAvailable(r.agent_version, latest) ? html`<span class="update">Update available</span>` : ""
   }</span>
 ${
   r.role === "owner"
@@ -125,6 +130,11 @@ ${
 <div><code>${r.robot_id}</code>${r.hostname ? html`<code>${r.hostname}</code>` : ""}</div>
 <form method="post" action="/robots/${r.robot_id}/sessions/revoke"><button>Sign everyone out</button><p>Ends every open session on this robot, including yours.</p></form>
 <p>Remote joystick is ${r.allow_teleop ? "allowed" : "off"} on this robot. Only the robot can change it: rerun the installer there.</p>
+${
+  updateAvailable(r.agent_version, latest)
+    ? html`<div><p>A newer version of the agent is available. On the robot, run:</p><code class="cmdline">cd ~/mowgli-connect &amp;&amp; docker compose pull &amp;&amp; docker compose up -d</code><p>Or rerun the installer and turn on automatic updates.</p></div>`
+    : ""
+}
 <form method="post" action="/robots/${r.robot_id}/unlink"><button class="danger">Unlink robot</button><p>Removes the robot from your account and deletes its tunnel. You will need a new pairing code to add it again.</p></form>
 </div></details>`
     : ""

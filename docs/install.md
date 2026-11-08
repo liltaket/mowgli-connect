@@ -64,9 +64,18 @@ The installer asks whether to allow remote joystick driving. It is **off by defa
 
 ## Update
 
+The installer asks whether to install updates automatically (default yes). If so, it adds a cron
+job for your user, marked `# mowgli-connect auto-update`, that runs once a night at a random minute
+past 03:00:
+
 ```sh
-cd ~/mowgli-connect && docker compose pull && docker compose up -d
+cd ~/mowgli-connect && docker compose pull -q && docker compose up -d
 ```
+
+That restarts the agent only when there is a new image, which interrupts remote access for a few
+seconds. connect.bronc.app shows "Update available" next to a robot with an older agent. To update
+by hand, run the command above. To turn automatic updates on or off, run the installer again with
+`--auto-update yes` or `--auto-update no` (it keeps the robot's identity and pairing).
 
 The robot's key and pairing are kept in the container's data volume, so you do not need to pair
 again.

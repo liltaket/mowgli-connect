@@ -1,0 +1,53 @@
+name: Uptime
+
+# Every 30 minutes: is the relay up, and is the site up? The relay alerts about its own problems
+# (cron); this catches the case where it cannot run at all. Alerts go to ntfy on a change only:
+# once when something goes down, once when it is back. NTFY_URL is a repository secret.
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check the relay and the site
+        id: check
+        run: |
+          down=""
+          for url in https://connect.bronc.app/ https://bronc.app/; do
+            ok=no
+            for try in 1 2 3; do
+              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$url" || true)
+              if [ "$code" = 200 ]; then ok=yes; break; fi
+              sleep 30
+            done
+            [ "$ok" = yes ] || down="$down $url ($code)"
+          done
+          echo "down=$down" >> "$GITHUB_OUTPUT"
+      - name: Alert on a change
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NTFY_URL: ${{ secrets.NTFY_URL }}
+          DOWN: ${{ steps.check.outputs.down }}
+        run: |
+          # The previous finished run: failure = it was down then.
+          prev=$(gh run list -R "$GITHUB_REPOSITORY" -w uptime.yml -s completed -L 1 --json conclusion -q '.[0].conclusion' || true)
+          send() { [ -n "$NTFY_URL" ] && curl -s -o /dev/null --max-time 15 -H "Title: Mowgli Connect" -H "Tags: $2" -d "$1" "$NTFY_URL" || true; }
+          if [ -n "$DOWN" ]; then
+            [ "$prev" = failure ] || send "Down:$DOWN" warning
+            echo "::error::down:$DOWN"
+            exit 1
+          fi
+          [ "$prev" = failure ] && send "Back up: connect.bronc.app and bronc.app answer again." white_check_mark
+          echo "all up"

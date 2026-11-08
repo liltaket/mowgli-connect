@@ -242,6 +242,11 @@ input[type=number]{width:9rem;font:inherit;padding:.6rem .7rem;border:1px solid 
 .address span{font-size:.92rem;color:var(--muted)}
 .quota{font-size:.92rem;color:var(--muted);margin:-.4rem 0 .75rem}
 .panel+p{margin-top:1rem}
+.check{display:flex;align-items:center;gap:.5rem;font-weight:500;margin:0 0 .6rem}
+.check input{width:1.1rem;height:1.1rem;accent-color:var(--grass)}
+.update{color:var(--amber);font-weight:600}
+.manage code.cmdline{color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:.4rem .55rem;margin:.35rem 0;display:block}
+.orphan-unlink{grid-column:1/-1;margin-top:.4rem}
 .empty{display:grid;gap:.25rem}
 .empty strong{color:var(--ink)}
 .actions{display:flex;flex-wrap:wrap;gap:.6rem}

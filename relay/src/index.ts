@@ -3,7 +3,10 @@ import { handleBrowser } from "./browser";
 import { retryPendingCleanups } from "./claim";
 import { page, html, PAIR_JS, SECURITY_HEADERS, STYLE_CSS } from "./html";
 import { APPLE_TOUCH_PNG_B64, FAVICON_ICO_B64, ICON_SVG } from "./icons";
+import { alert, checkHealth } from "./alerts";
 import { createProvisioner } from "./provisioner";
+import { sealStoredTokens } from "./tokenSeal";
+import { refreshLatestAgent } from "./updates";
 import { json, registerRobot, reportHostname, robotSelf } from "./robotApi";
 import { nowSeconds } from "./util";
 
@@ -83,6 +86,18 @@ export default {
           await retryPendingCleanups(env, createProvisioner(env));
         } catch (e) {
           console.error("cleanup retry skipped", e instanceof Error ? e.message : "unknown");
+          await alert(env, "cleanup_error", "Cleaning up unlinked robots failed. Check the Worker logs and the Cloudflare API token.");
+        }
+        try {
+          await sealStoredTokens(env);
+        } catch (e) {
+          console.error("sealing tunnel tokens failed", e instanceof Error ? e.message : "unknown");
+        }
+        await checkHealth(env);
+        try {
+          await refreshLatestAgent(env);
+        } catch (e) {
+          console.error("agent version check skipped", e instanceof Error ? e.message : "unknown");
         }
       })(),
     );

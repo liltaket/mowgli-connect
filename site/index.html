@@ -140,7 +140,7 @@
         <ol class="install-steps">
           <li>
             <h3>Run the installer on the robot</h3>
-            <p>Open a shell on the robot, for example over SSH, and run the command below. It downloads the script and shows it to you in <code>less</code> first (press <code>q</code> to continue) before it runs. The installer asks for a robot name and whether to allow the remote joystick (default no, recommended), starts the container and prints a pairing code.</p>
+            <p>Open a shell on the robot, for example over SSH, and run the command below. It downloads the script and shows it to you in <code>less</code> first (press <code>q</code> to continue) before it runs. The installer asks for a robot name, whether to allow the remote joystick (default no, recommended) and whether to install updates automatically (default yes), starts the container and prints a pairing code.</p>
             <div class="cmd">
               <pre><code id="cmd">curl -fsSL https://bronc.app/install.sh -o install.sh && less install.sh && sh install.sh</code></pre>
               <div class="cmd-bar">
@@ -231,7 +231,7 @@ Follow the guide at https://bronc.app/agents.md step by step. Ask me before you 
         <li><strong>The container locks its own network.</strong><span>Even someone who took over the Cloudflare account could not use the tunnel to reach your home network, the robot's other services or its operating system. They could still use the mower's interface as the owner.</span></li>
         <li><strong>Sign-out reaches the robot within minutes.</strong><span>If the robot loses contact with the login service, remote access stops instead of staying open.</span></li>
         <li><strong>Light on mobile data.</strong><span>Live data is compressed and heavy map layers are sent less often. On a real mower the map page dropped from about 357 KB/s to about 7 KB/s through the tunnel.</span></li>
-        <li><strong>Open source and reviewed.</strong><span>Several independent reviews by AI models are in the repository, and their findings were verified and fixed or documented. See <a href="https://github.com/liltaket/mowgli-connect/tree/main/docs/research">docs/research</a>.</span></li>
+        <li><strong>Source available and reviewed.</strong><span>Several independent reviews by AI models are in the repository, and their findings were verified and fixed or documented. See <a href="https://github.com/liltaket/mowgli-connect/tree/main/docs/research">docs/research</a>.</span></li>
       </ul>
     </div>
   </section>
@@ -281,6 +281,7 @@ Follow the guide at https://bronc.app/agents.md step by step. Ask me before you 
         <li><a href="https://github.com/liltaket/mowgli-connect/blob/main/SECURITY.md">Security</a></li>
         <li><a href="https://github.com/liltaket/mowgli-connect/blob/main/docs/install.md">Install guide</a></li>
         <li><a href="agents.md">Guide for AI agents</a></li>
+        <li><a href="https://github.com/liltaket/mowgli-connect/blob/main/LICENSE.md">License: free for noncommercial use</a></li>
         <li><a href="https://github.com/liltaket/mowgli-connect/blob/main/docs/test-report.md">Test report</a></li>
       </ul>
     </div>

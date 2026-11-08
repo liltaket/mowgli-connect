@@ -155,6 +155,9 @@ touching Cloudflare.
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | **secret** | yes | GitHub OAuth app |
 | `ADMIN_GITHUB_IDS` | var | recommended | comma list of `gh:<numeric id>` (ids only, never logins). These accounts can always sign in, own any number of robots, and use `/admin` to invite people by GitHub username (stored by id), remove access and set robot limits (default 3 per person). |
 | `ALLOWED_GITHUB_LOGINS` | var | no | extra sign-in allowlist for hand-configured relays: comma list of GitHub logins (case-insensitive) and/or `gh:<numeric id>`, or `*` for any GitHub account. Empty and no admins/invites = nobody (fail closed). Applies at login **and** on every session lookup. Prefer `gh:<id>`: logins can be renamed and re-registered by someone else. |
+| `TUNNEL_TOKEN_KEY` | **secret** | recommended | 32 random bytes, base64url (`node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`). Tunnel tokens are then stored AES-256-GCM encrypted and bound to their robot id; plain rows from before are sealed by the cron. Keep a copy: without it robots cannot get their token (unlink and pair again to recover). |
+| `ALERT_NTFY_URL` | **secret** | no | e.g. `https://ntfy.sh/<topic>`: operator alerts (cleanup failing or stuck, tunnel creation failing, registration cap hit, token key missing), at most one per kind every 6 hours. No personal data. |
+| `AGENT_IMAGE_REPO` | var | no | `owner/repo` whose successful `agent-image.yml` builds on `main` define the latest agent (default `liltaket/mowgli-connect`); robots on an older build show "Update available". |
 | `PROVISIONER` | var | no | `cloudflare` (default), `quick` ([zero-cost mode](#zero-cost-quick-tunnel-mode)) or `fake` |
 | `CF_API_TOKEN` | **secret** | cloudflare | API token |
 | `CF_ACCOUNT_ID`, `CF_ZONE_ID`, `ROBOT_ZONE` | var | cloudflare | account, zone id, and zone name for `<robotId>.<ROBOT_ZONE>` |
@@ -189,11 +192,11 @@ Independent check: `python3 -c "import hashlib,base64;print(base64.b32encode(has
 
 ## Security notes
 
-- **Tunnel token is a sensitive secret.** `robots.tunnel_token` stores the cloudflared connector
-  token in plaintext in D1 (the protocol requires `/self` to return it). Anyone with it can run
-  that tunnel. It is cleared on unlink, only returned to the robot's own assertion, and never
-  logged. Recommended next step: encrypt at rest with a Worker secret (envelope encryption) and/or
-  re-issue the token on demand instead of storing it.
+- **Tunnel token is a sensitive secret.** Anyone with it can run that robot's tunnel. With
+  `TUNNEL_TOKEN_KEY` set, `robots.tunnel_token` holds it AES-256-GCM encrypted (`v1.<iv>.<ct>`,
+  additional data = the robot id, so a sealed token cannot be moved to another row); without the
+  key it is plain text. It is cleared on unlink, only returned to the robot's own assertion, and
+  never logged.
 - **Browser state changes** (`/claim`, `/logout`, unlink, sessions/revoke) require `Origin ==
   RELAY_ORIGIN` exactly; a missing Origin is rejected. Cookies are `__Host-mcr_session` (`HttpOnly;
   Secure; SameSite=Lax; Path=/`); only SHA-256 of the token is stored; 7-day absolute lifetime.
@@ -217,9 +220,10 @@ Independent check: `python3 -c "import hashlib,base64;print(base64.b32encode(has
   their relay sessions at once, and their robots drop them at the next sync (members are filtered
   by access). Robot limits are checked before a pairing code is used and again atomically when the
   robot is claimed.
-- **Not yet done / recommended before real use**: add a Cloudflare WAF
-  rate-limit rule on `/v1/robots/register` (unauthenticated: any key can create an `unclaimed` row);
-  encrypt the tunnel token; alerting on the cron cleanup errors.
+- **Tunnel tokens** are encrypted at rest with `TUNNEL_TOKEN_KEY`, and cron problems alert via
+  `ALERT_NTFY_URL`.
+- **Recommended**: a Cloudflare WAF rate-limit rule on `/v1/robots/register` (unauthenticated: any
+  key can create an `unclaimed` row; the relay also caps new robots per hour).
 
 ## Protocol notes, gaps and extensions
 

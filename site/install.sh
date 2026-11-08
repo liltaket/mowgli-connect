@@ -6,9 +6,10 @@
 #   sh install.sh
 #
 # It creates ~/mowgli-connect (its own Docker Compose project: MowgliNext's files and updates
-# are not touched), asks two questions, starts the agent and shows the pairing code.
-# Non-interactive: sh install.sh --name hedgehog --teleop no --yes
-# Options: --dir DIR, --relay URL, --name NAME, --teleop yes|no, --image IMAGE, --yes
+# are not touched), asks three questions, starts the agent and shows the pairing code.
+# Non-interactive: sh install.sh --name hedgehog --teleop no --auto-update yes --yes
+# Options: --dir DIR, --relay URL, --name NAME, --teleop yes|no, --auto-update yes|no,
+#          --image IMAGE, --yes
 set -eu
 
 DIR="$HOME/mowgli-connect"
@@ -16,6 +17,7 @@ RELAY="https://connect.bronc.app"
 IMAGE="ghcr.io/liltaket/mowgli-connect-agent:latest"
 NAME=""
 TELEOP=""
+AUTOUPDATE=""
 YES=no
 
 die() {
@@ -29,9 +31,10 @@ while [ $# -gt 0 ]; do
 	--relay) RELAY=$2; shift 2 ;;
 	--name) NAME=$2; shift 2 ;;
 	--teleop) TELEOP=$2; shift 2 ;;
+	--auto-update) AUTOUPDATE=$2; shift 2 ;;
 	--image) IMAGE=$2; shift 2 ;;
 	--yes | -y) YES=yes; shift ;;
-	-h | --help) sed -n '2,12p' "$0"; exit 0 ;;
+	-h | --help) sed -n '2,13p' "$0"; exit 0 ;;
 	*) die "unknown option $1 (see --help)" ;;
 	esac
 done
@@ -54,6 +57,7 @@ docker info >/dev/null 2>&1 || die "cannot talk to Docker; run as a user in the 
 case $(uname -m) in x86_64 | amd64 | aarch64 | arm64) ;; *) die "unsupported CPU $(uname -m) (amd64 or arm64 only)" ;; esac
 case $RELAY in https://*) ;; *) die "--relay must be an https:// URL" ;; esac
 case $RELAY$IMAGE in *[!A-Za-z0-9:/._@-]*) die "--relay and --image may not contain spaces or quotes" ;; esac
+case $DIR in *[!A-Za-z0-9/._-]*) die "--dir may contain only letters, digits, '/', '.', '_' and '-'" ;; esac
 
 echo "Mowgli Connect: remote access to this robot's web interface."
 echo
@@ -69,6 +73,14 @@ if [ -z "$TELEOP" ] && [ "$YES" != yes ] && [ -t 0 ]; then
 fi
 ask TELEOP "Allow remote joystick driving? (yes/no; safest: no)" "no"
 case $TELEOP in y | Y | yes | YES | Yes) TELEOP=true ;; n | N | no | NO | No) TELEOP=false ;; *) die "--teleop must be yes or no" ;; esac
+
+if [ -z "$AUTOUPDATE" ] && [ "$YES" != yes ] && [ -t 0 ]; then
+	echo
+	echo "Automatic updates: once a night, fetch a newer agent if there is one and restart it"
+	echo "(a few seconds without remote access). Security fixes then arrive by themselves."
+fi
+ask AUTOUPDATE "Install updates automatically? (yes/no)" "yes"
+case $AUTOUPDATE in y | Y | yes | YES | Yes) AUTOUPDATE=yes ;; n | N | no | NO | No) AUTOUPDATE=no ;; *) die "--auto-update must be yes or no" ;; esac
 
 mkdir -p "$DIR"
 if [ -f "$DIR/compose.yaml" ] && [ "$YES" != yes ] && [ -t 0 ]; then
@@ -114,6 +126,26 @@ volumes:
   data:
 EOF
 
+# Nightly update as a cron job of this user (who can already run docker), at a random minute so
+# robots do not all update at once. Marked, so a rerun replaces it and "no" removes it.
+MARK="# mowgli-connect auto-update"
+cron_note=""
+if command -v crontab >/dev/null 2>&1; then
+	current=$(crontab -l 2>/dev/null | grep -vF "$MARK" || true)
+	if [ "$AUTOUPDATE" = yes ]; then
+		min=$(($(od -An -N1 -tu1 /dev/urandom) % 60))
+		dk=$(command -v docker)
+		line="$min 3 * * * cd '$DIR' && $dk compose pull -q && $dk compose up -d >/dev/null 2>&1 $MARK"
+		printf '%s\n%s\n' "$current" "$line" | sed '/^$/d' | crontab -
+		cron_note="  Automatic updates: on (nightly at 03:$(printf %02d "$min"), robot time)"
+	else
+		if [ -n "$current" ]; then printf '%s\n' "$current" | crontab -; else crontab -r 2>/dev/null || true; fi
+		cron_note="  Automatic updates: off. Update: cd $DIR && docker compose pull && docker compose up -d"
+	fi
+elif [ "$AUTOUPDATE" = yes ]; then
+	cron_note="  Automatic updates: not set up (no cron on this robot). Update by hand: cd $DIR && docker compose pull && docker compose up -d"
+fi
+
 echo
 echo "Starting the agent..."
 cd "$DIR"
@@ -125,6 +157,7 @@ i=0
 while [ $i -lt 30 ]; do
 	if docker logs mowgli-connect 2>&1 | grep -q "robot paired\|relay state applied.*status=claimed"; then
 		echo "This robot is already paired. Open it from $RELAY"
+		[ -n "$cron_note" ] && echo "$cron_note"
 		exit 0
 	fi
 	code=$(docker logs mowgli-connect 2>&1 | grep "Code:" | tail -1 | sed 's/^ *Code: *//')
@@ -134,6 +167,7 @@ while [ $i -lt 30 ]; do
 		echo "  Sign in at $RELAY, choose Add a robot and enter the code."
 		echo "  (Show it again: docker logs mowgli-connect)"
 		[ "$TELEOP" = true ] && echo "  Remote joystick: allowed" || echo "  Remote joystick: off"
+		[ -n "$cron_note" ] && echo "$cron_note"
 		exit 0
 	fi
 	i=$((i + 1))

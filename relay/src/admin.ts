@@ -1,9 +1,11 @@
 import { defaultRobotLimit, GITHUB_USER_ID, isAdmin, isUserAllowed, MAX_ROBOT_LIMIT, parseRobotLimit } from "./access";
 import type { Env } from "./env";
+import { unlinkRobot } from "./claim";
 import { GITHUB_LOGIN, lookupGithubUser } from "./github";
 import { html, page } from "./html";
 import type { SessionUser } from "./session";
-import { nowSeconds, readBodyText } from "./util";
+import { createProvisioner } from "./provisioner";
+import { isRobotId, nowSeconds, readBodyText } from "./util";
 
 /**
  * The admin page: who may sign in, and how many robots each person may own. Only accounts in
@@ -15,13 +17,15 @@ const NOTICES: Record<string, string> = {
   invited: "Invitation added. They can sign in now.",
   already: "That account was already invited.",
   removed: "Access removed. Their sessions here have ended, and their robots stop accepting them within a few minutes.",
+  unlinked: "Robot unlinked. Its tunnel is being deleted.",
+  removed_unlinked: "Access removed and their robots unlinked. Their sessions here have ended.",
   removed_config:
     "Invitation removed, but they can still sign in: the relay's configuration (ALLOWED_GITHUB_LOGINS) also lets them in. Remove them there to end their access.",
   limit: "Robot limit saved.",
   settings: "Default robot limit saved.",
 };
 
-const ADMIN_PATH = /^\/admin(?:\/invite|\/settings|\/people\/(gh:[1-9][0-9]{0,19})\/(limit|remove))?$/;
+const ADMIN_PATH = /^\/admin(?:\/invite|\/settings|\/people\/(gh:[1-9][0-9]{0,19})\/(limit|remove)|\/robots\/([a-z2-7]{16})\/unlink)?$/;
 
 export function isAdminPath(pathname: string): boolean {
   return ADMIN_PATH.test(pathname);
@@ -90,6 +94,7 @@ async function adminPage(env: Env, user: SessionUser, url: URL, error?: string, 
   )
     .bind(user.id)
     .first<{ n: number }>();
+  const orphans = await orphanedRobots(env);
   const key = url.searchParams.get("notice") ?? "";
   const notice = Object.hasOwn(NOTICES, key) ? NOTICES[key] : undefined;
   return page(
@@ -123,11 +128,28 @@ ${people.results.map((p) => {
 <form method="post" action="/admin/people/${p.user_id}/limit"><label for="limit-${p.user_id}">Robot limit</label>
 <div class="inline-fields"><input type="number" inputmode="numeric" id="limit-${p.user_id}" name="limit" min="0" max="${MAX_ROBOT_LIMIT}" value="${p.robot_limit ?? ""}" placeholder="${def} (default)"><button>Save</button></div>
 <p>Leave empty to use the default (${def}). A lower limit keeps the robots they already have.</p></form>
-<form method="post" action="/admin/people/${p.user_id}/remove"><button class="danger">Remove access</button>
-<p>They can no longer sign in or open their robots. Their robots stay paired, so they can come back if you invite them again.</p></form>
+<form method="post" action="/admin/people/${p.user_id}/remove">${
+    p.robots > 0
+      ? html`<label class="check"><input type="checkbox" name="unlink" value="1"> Also unlink their ${p.robots === 1 ? "robot" : `${p.robots} robots`}</label>`
+      : ""
+  }<button class="danger">Remove access</button>
+<p>They can no longer sign in or open their robots. ${p.robots > 0 ? "Unless you unlink them, their robots stay paired, so they can come back if you invite them again." : ""}</p></form>
 </div></details></li>`;
 })}
 </ul>
+
+${
+  orphans.length
+    ? html`<h2>Robots nobody can use <span class="count">${orphans.length}</span></h2>
+<p class="muted">Their owners no longer have access. Unlinking deletes the robot's tunnel; it needs a new pairing code to be added again.</p>
+<ul class="people">${orphans.map(
+        (o) => html`<li class="person"><span class="avatar" aria-hidden="true">${initial(o.label ?? o.name ?? "?")}</span>
+<div class="person-main"><span class="person-name">${o.label ?? o.name ?? o.robot_id}</span>
+<span class="meta"><span>${o.hostname ?? o.robot_id}</span><span>Owner @${o.login ?? o.user_id}</span></span></div>
+<form class="orphan-unlink" method="post" action="/admin/robots/${o.robot_id}/unlink"><button class="danger">Unlink</button></form></li>`,
+      )}</ul>`
+    : ""
+}
 
 <h2>Default robot limit</h2>
 <form class="panel" method="post" action="/admin/settings">
@@ -214,6 +236,15 @@ export async function handleAdmin(request: Request, env: Env, url: URL, user: Se
     return redirect("/admin?notice=settings");
   }
 
+  if (m[3]) {
+    // Only robots whose owner has lost access: the admin page is not a way into anyone's robot.
+    const robotId = m[3];
+    if (!isRobotId(robotId) || !(await orphanedRobots(env)).some((o) => o.robot_id === robotId)) return notFound();
+    if (!(await unlinkRobot(env, createProvisioner(env), robotId))) return notFound();
+    console.log("admin: unlinked orphaned robot", robotId, "by", user.id);
+    return redirect("/admin?notice=unlinked");
+  }
+
   const target = m[1]!;
   if (!GITHUB_USER_ID.test(target)) return notFound();
   if (m[2] === "limit") {
@@ -233,7 +264,20 @@ export async function handleAdmin(request: Request, env: Env, url: URL, user: Se
   // Say so when the configuration still lets them in, instead of promising what did not happen.
   const login = await env.DB.prepare("SELECT login FROM users WHERE id = ?").bind(target).first<{ login: string }>();
   const still = await isUserAllowed(env, target, login?.login ?? "");
-  return redirect(still ? "/admin?notice=removed_config" : "/admin?notice=removed");
+  if (still) return redirect("/admin?notice=removed_config");
+  if (form.get("unlink") === "1") {
+    const owned = await env.DB.prepare(
+      `SELECT m.robot_id FROM members m JOIN robots r ON r.robot_id = m.robot_id
+       WHERE m.user_id = ? AND m.role = 'owner' AND r.status = 'claimed'`,
+    )
+      .bind(target)
+      .all<{ robot_id: string }>();
+    const prov = createProvisioner(env);
+    for (const r of owned.results) await unlinkRobot(env, prov, r.robot_id);
+    console.log("admin: unlinked", owned.results.length, "robots of", target, "by", user.id);
+    return redirect("/admin?notice=removed_unlinked");
+  }
+  return redirect("/admin?notice=removed");
 }
 
 function lookupError(reason: "not_found" | "not_a_user" | "unavailable", login?: string): string {
@@ -244,4 +288,28 @@ function lookupError(reason: "not_found" | "not_a_user" | "unavailable", login?:
 
 function methodNotAllowed(allow: string): Response {
   return new Response("Method Not Allowed", { status: 405, headers: { Allow: allow } });
+}
+
+interface OrphanRow {
+  robot_id: string;
+  name: string | null;
+  hostname: string | null;
+  label: string | null;
+  user_id: string;
+  login: string | null;
+}
+
+/** Claimed robots whose owner can no longer sign in (removed from the invites, say). */
+async function orphanedRobots(env: Env): Promise<OrphanRow[]> {
+  const rows = await env.DB.prepare(
+    `SELECT r.robot_id, r.name, r.hostname, m.label, m.user_id, u.login
+     FROM members m JOIN robots r ON r.robot_id = m.robot_id LEFT JOIN users u ON u.id = m.user_id
+     WHERE m.role = 'owner' AND r.status = 'claimed' AND m.user_id NOT IN (SELECT user_id FROM invites)
+     ORDER BY r.robot_id`,
+  ).all<OrphanRow>();
+  const out: OrphanRow[] = [];
+  for (const r of rows.results) {
+    if (!(await isUserAllowed(env, r.user_id, r.login ?? ""))) out.push(r);
+  }
+  return out;
 }

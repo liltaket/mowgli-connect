@@ -1,5 +1,7 @@
 import { isUserAllowed } from "./access";
+import { alert } from "./alerts";
 import type { Env } from "./env";
+import { openToken } from "./tokenSeal";
 import { AssertionError, verifyRobotAssertion, type VerifiedAssertion } from "./assertion";
 import { b64urlDecode, deriveRobotId } from "./crypto";
 import { loadRelayKey } from "./relayKey";
@@ -120,6 +122,7 @@ export async function registerRobot(env: Env, request: Request, url: URL): Promi
     .bind(await deriveRobotId(raw))
     .first<Pick<RobotRow, "robot_id" | "public_key" | "status" | "tunnel_id">>();
   if (!existing && (await recentUnclaimed(env, now)) >= maxNewRobotsPerHour(env)) {
+    await alert(env, "registration_cap", "The hourly cap on new robot registrations was reached. Normal for a launch, otherwise someone may be flooding the relay.");
     return json({ error: "rate_limited" }, 429, { "Retry-After": "600" });
   }
 
@@ -248,7 +251,7 @@ async function selfResponse(env: Env, robotId: string, robot: RobotRow): Promise
     robotId: robot.robot_id,
     status: robot.status,
     hostname: claimed ? robot.hostname : null,
-    tunnelToken: claimed ? robot.tunnel_token : null,
+    tunnelToken: claimed ? await openToken(env, robotId, robot.tunnel_token) : null,
     relayKeys: [{ kid: key.kid, publicKey: key.publicKeyB64 }],
     sessionEpoch: robot.session_epoch,
     members: claimed ? members.map((m) => ({ userId: m.user_id, role: m.role })) : [],

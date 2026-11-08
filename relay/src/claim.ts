@@ -1,5 +1,7 @@
 import { isUserAllowed, ownedRobots, robotLimit } from "./access";
+import { alert } from "./alerts";
 import type { Env } from "./env";
+import { sealToken } from "./tokenSeal";
 import { hashPairingCode, normalizePairingCode } from "./pairing";
 import { HostnameInUseError, robotHostname, robotSubdomain, type TunnelProvisioner } from "./provisioner";
 import { nowSeconds } from "./util";
@@ -179,6 +181,7 @@ export async function claimRobot(
   } catch (e) {
     console.error("tunnel provisioning failed", robotId, e instanceof Error ? e.message : "unknown");
     await restoreCode(); // let the user retry with the same code
+    await alert(env, "provision_failed", "Creating a robot's tunnel failed. Check the Cloudflare API token and the Worker logs.");
     return { ok: false, status: 502, message: "Could not provision the tunnel. Try again in a moment." };
   }
 
@@ -191,7 +194,7 @@ export async function claimRobot(
        WHERE robot_id = ?6 AND status = 'unclaimed'
          AND (?7 IS NULL OR (SELECT COUNT(*) FROM members m JOIN robots o ON o.robot_id = m.robot_id
                              WHERE m.user_id = ?8 AND m.role = 'owner' AND o.status = 'claimed') < ?7)`,
-    ).bind(tunnel.hostname, tunnel.tunnelId, tunnel.dnsRecordId, tunnel.token, now, robotId, limit, userId),
+    ).bind(tunnel.hostname, tunnel.tunnelId, tunnel.dnsRecordId, await sealToken(env, robotId, tunnel.token), now, robotId, limit, userId),
     env.DB.prepare(
       "INSERT INTO members (robot_id, user_id, role, label, created_at) SELECT ?, ?, 'owner', ?, ? WHERE changes() > 0",
     ).bind(robotId, userId, label, now),

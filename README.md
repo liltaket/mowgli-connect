@@ -41,12 +41,13 @@ Requirements: a MowgliNext robot with Docker and Docker Compose v2, internet acc
    curl -fsSL https://bronc.app/install.sh -o install.sh && less install.sh && sh install.sh
    ```
 
-   The installer asks for the robot name and whether to allow the remote joystick (default no,
-   recommended), starts the container and prints a pairing code.
+   The installer asks for the robot name, whether to allow the remote joystick (default no,
+   recommended) and whether to install updates automatically (default yes, nightly), starts the
+   container and prints a pairing code.
 
    Using a coding agent such as Claude Code or Codex? Point it at the
    [agent install guide](https://bronc.app/agents.md); it follows the
-   same steps, asks you the same two questions and hands you the pairing code.
+   same steps, asks you the same questions and hands you the pairing code.
 2. **Pair.** Go to <https://connect.bronc.app>, sign in with GitHub and enter the code.
 3. **Open.** Press Open next to your robot.
 
@@ -178,5 +179,13 @@ joystick latency.
 
 ### License
 
-No license has been chosen yet; all rights reserved for now. `sim/foxglove-sim` is derived from
-MowgliNext and stays under its license.
+[PolyForm Noncommercial 1.0.0](LICENSE.md): free to use, change and share for any noncommercial
+purpose (personal use, hobby projects, research, schools, charities). Commercial use needs a
+separate license; [open an issue](https://github.com/liltaket/mowgli-connect/issues) to ask. It is
+source-available, not an OSI open-source license.
+
+Third-party parts keep their own licenses: `sim/foxglove-sim` is derived from MowgliNext (GPLv3
+with its commercial clause, see `sim/foxglove-sim/LICENSE`), the pairing word list is the EFF
+short wordlist (CC BY 3.0 US, credited in `relay/src/wordlist.ts`), the site font is Atkinson
+Hyperlegible Next (SIL Open Font License, `site/assets/fonts/`), and the agent image includes
+cloudflared (Apache-2.0).

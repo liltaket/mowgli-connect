@@ -18,6 +18,9 @@ export interface RelayEnv {
   GITHUB_CLIENT_ID: string;
   GITHUB_CLIENT_SECRET: string;
   CF_API_TOKEN?: string;
+  AGENT_IMAGE_REPO?: string; // owner/repo whose agent-image builds define the latest agent (default liltaket/mowgli-connect)
+  ALERT_NTFY_URL?: string; // operator alerts, e.g. https://ntfy.sh/<topic>
+  TUNNEL_TOKEN_KEY?: string; // 32 bytes base64url: encrypts tunnel tokens at rest
 }
 
 declare global {
