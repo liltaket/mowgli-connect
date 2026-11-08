@@ -7,12 +7,16 @@ grant and the same session on the robot as a browser does.
 
 ## Design goals
 
-1. **No bearer secrets on the phone.** The app's identity is a P-256 key created in the Secure
-   Enclave, which cannot be copied out. Every API call is signed with it. A backup, a log or a
-   network capture of the phone holds nothing that can be replayed for more than a minute.
-2. **Only the genuine app can sign in.** The sign-in result comes back on an HTTPS URL of the
+1. **No long-lived relay secret on the phone.** The app's identity is a P-256 key the app creates
+   in the Secure Enclave, which cannot be copied out. Every relay call is signed with it and works
+   once, within a minute. What the phone does hold is the robot's own session cookie (up to 12
+   hours per robot, as in a browser); signing the device out ends those too (see below).
+2. **Only the genuine app receives the sign-in.** The result comes back on an HTTPS URL of the
    relay that iOS hands only to apps the relay names in its `apple-app-site-association` file
-   (Team ID + bundle ID). Another app on the phone cannot receive it.
+   (Team ID + bundle ID), when the app uses the system's `ASWebAuthenticationSession`. This
+   protects the delivery; the relay cannot prove which app or which kind of key it talks to (that
+   would need App Attest, a possible later addition), so a person who approves a sign-in in some
+   other app's own web view is trusting that app.
 3. **Nothing is issued without the person seeing it.** Every sign-in shows a consent page naming
    the device, and every device is listed under "Devices" on connect.bronc.app with a Sign out
    button.
@@ -114,6 +118,20 @@ API (`/api/...`, `/api/mowglinext/multiplex`), as on the home network. Optional 
 `__mcz=1` to the WebSocket URL; each message is then one flag byte (1 = text, 2 = deflate) and the
 payload, deflate-raw when flagged (`COMPRESSION_ZLIB` in Apple's Compression framework).
 
+### What the app should do
+
+- Create the key with `SecureEnclave.P256.Signing.PrivateKey`, access control
+  `.privateKeyUsage` and `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, so it never leaves the
+  phone and is not in backups; add `.userPresence` if opening a robot should need Face ID.
+- Keep robot sessions out of backups and off disk: use a `URLSessionConfiguration.ephemeral`
+  session (in-memory cookies) for robot traffic and get a fresh grant when the app starts.
+- Use `ASWebAuthenticationSession` with the HTTPS callback, never an embedded web view, for
+  sign-in.
+- Treat `outcomeUnknown` on changing requests as the app already does: never replay them.
+
+Devices unused for 180 days are signed out automatically. Request bodies are not covered by the
+signature (method and URL are); TLS protects them, and a signed request works only once.
+
 ## Threat model
 
 | Threat | What stops it |
@@ -124,10 +142,10 @@ payload, deflate-raw when flagged (`COMPRESSION_ZLIB` in Apple's Compression fra
 | A link tricks someone into approving a sign-in | The result goes to the genuine app on that person's own phone; the attacker gets nothing. The consent page names the device, and the device appears under Devices. |
 | Cross-site request to the consent form | Origin check on the POST; the page cannot be framed (`frame-ancestors 'none'`). |
 | Open redirect through `redirect_uri` | Exact match against the relay's own callback URL. |
-| A lost or sold phone | Sign it out under Devices; keys can also require Face ID or the passcode for use (app side). An admin removing the person deletes all their devices. |
+| A lost or sold phone | Sign it out under Devices. That also signs everyone out of the robots its owner owns, which ends the robot sessions the app still had (they would otherwise last up to 12 hours); on robots the person only views, the owner can sign everyone out. Keys can also require Face ID or the passcode (app side). An admin removing the person deletes all their devices, and their robots drop them at the next sync. |
 | Replay of a signed request | Single-use `jti`, 60-second lifetime, method and URL bound. |
 | A copy of the relay database | Devices hold only public keys and names; codes are stored as hashes and expire in 60 s. |
-| Abuse of the endpoints | Sign-in needs an invited account; at most 10 devices and 5 open codes per person; the existing per-IP WAF rule covers the relay. |
+| Abuse of the endpoints | Sign-in needs an invited account; at most 10 devices and 5 open codes per person, both enforced in single statements; a wrong or made-up code writes nothing and does not use up the real one; the existing per-IP WAF rule covers the relay. |
 | Relay or Cloudflare account compromised | Unchanged: they are the root of trust (SECURITY.md). |
 
 What this adds to the attack surface: `/app/authorize` (behind the browser session),

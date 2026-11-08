@@ -20,6 +20,8 @@ export const MAX_DEVICES_PER_USER = 10;
 const MAX_OPEN_CODES = 5;
 const CODE_TTL_SECONDS = 60;
 const LAST_USED_REFRESH_SECONDS = 15 * 60;
+/** A device unused this long is signed out (the cron deletes it; calls refuse it before that). */
+export const DEVICE_IDLE_SECONDS = 180 * 86400;
 
 const APP_ID = /^[A-Z0-9]{10}\.[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/; // <TeamID>.<bundle id>
 const CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
@@ -91,7 +93,7 @@ function back(p: AuthorizeParams, q: Record<string, string>): Response {
 }
 
 function appPage(title: string, body: ReturnType<typeof html>, status: number, user?: PageUser | null): Response {
-  return page(title, body, status, { "Referrer-Policy": "no-referrer" }, user);
+  return page(title, body, status, {}, user);
 }
 
 async function deviceCount(env: Env, userId: string, except?: string): Promise<number> {
@@ -117,11 +119,14 @@ export async function handleAppBrowser(
   if (url.pathname === "/app/callback" && request.method === "GET") {
     // Normally the app receives this URL before it loads. If a browser does load it, show nothing
     // of the code and send no Referer anywhere.
-    return appPage(
+    const res = appPage(
       "Return to the app",
-      html`<div class="standby"><h1>Return to the Mowgli app</h1><p class="muted">Sign-in finished. If the app did not open by itself, switch back to it and try again.</p></div>`,
+      html`<div class="standby"><h1>Return to the Mowgli app</h1><p class="muted">Sign-in finished. If the app did not open by itself, switch back to it and start the sign-in again there.</p>
+<p class="error">Never copy or send the address of this page to anyone. It works as a one-time key to your account.</p></div>`,
       200,
     );
+    res.headers.set("Referrer-Policy", "no-referrer");
+    return res;
   }
   if (url.pathname !== "/app/authorize") return null;
 
@@ -144,7 +149,7 @@ export async function handleAppBrowser(
 <div class="panel invitee"><span class="avatar big" aria-hidden="true">${(user.name ?? user.login).charAt(0).toUpperCase()}</span>
 <div><strong>${p.deviceName}</strong><span class="muted">signs in as @${user.login}</span></div></div>
 <p>The app on this device will see your robots and can open them as you, from anywhere. You can sign it out at any time under Devices on your robots page.</p>
-<p class="muted">Only continue if you started this sign-in yourself, in the Mowgli app on your own phone.</p>
+<p class="muted">Only continue if you started this sign-in yourself, a moment ago, in the Mowgli app on your own phone. If you got here from a link someone sent you, press Cancel.</p>
 <form method="post" action="/app/authorize">
 ${hidden("redirect_uri", p.redirectUri)}${hidden("code_challenge", p.challenge)}${hidden("code_challenge_method", "S256")}${hidden("state", p.state)}${hidden("key_thumbprint", p.thumbprint)}${hidden("device_name", p.deviceName)}
 <p class="actions"><button class="primary" name="decision" value="allow">Sign in</button> <button name="decision" value="deny">Cancel</button></p>
@@ -229,27 +234,33 @@ async function token(request: Request, env: Env, url: URL): Promise<Response> {
     throw e;
   }
   const now = nowSeconds();
-  if (!(await consumeJti(env, thumbprint, a.jti, a.exp))) return authFailure(new DeviceAuthError("replayed_jti"));
-  // Single use: the DELETE is the gate, before any other check, so a code never works twice.
+  // The code is used up only together with its verifier and its key, in one statement: a wrong or
+  // made-up code writes nothing, and someone who saw a code cannot spoil the real sign-in with it.
   const row = await env.DB.prepare(
-    "DELETE FROM app_codes WHERE code_hash = ? AND expires_at > ? RETURNING user_id, code_challenge, key_thumbprint, device_name",
+    `DELETE FROM app_codes WHERE code_hash = ? AND expires_at > ? AND code_challenge = ? AND key_thumbprint = ?
+     RETURNING user_id, device_name`,
   )
-    .bind(await sha256Hex(`mc-app-code:${code}`), now)
-    .first<{ user_id: string; code_challenge: string; key_thumbprint: string; device_name: string }>();
-  if (!row || row.code_challenge !== (await b64urlSha256(verifier)) || row.key_thumbprint !== thumbprint) {
-    return json({ error: "invalid_grant" }, 400);
-  }
+    .bind(await sha256Hex(`mc-app-code:${code}`), now, await b64urlSha256(verifier), thumbprint)
+    .first<{ user_id: string; device_name: string }>();
+  if (!row) return json({ error: "invalid_grant" }, 400);
+  if (!(await consumeJti(env, thumbprint, a.jti, a.exp))) return authFailure(new DeviceAuthError("replayed_jti"));
   const user = await env.DB.prepare("SELECT id, login, name FROM users WHERE id = ?").bind(row.user_id).first<SessionUser>();
   if (!user || !(await isUserAllowed(env, user.id, user.login))) return json({ error: "no_access" }, 403);
-  const existing = await env.DB.prepare("SELECT user_id FROM devices WHERE device_id = ?").bind(thumbprint).first<{ user_id: string }>();
-  if (existing && existing.user_id !== user.id) return json({ error: "device_belongs_to_another_account" }, 409);
-  if ((await deviceCount(env, user.id, thumbprint)) >= MAX_DEVICES_PER_USER) return json({ error: "too_many_devices" }, 403);
-  await env.DB.prepare(
-    `INSERT INTO devices (device_id, user_id, name, public_jwk, created_at, last_used_at) VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+  // One statement: the device limit and "a key belongs to one person" hold under concurrency.
+  const saved = await env.DB.prepare(
+    `INSERT INTO devices (device_id, user_id, name, public_jwk, created_at, last_used_at)
+     SELECT ?1, ?2, ?3, ?4, ?5, ?5
+     WHERE (SELECT COUNT(*) FROM devices WHERE user_id = ?2 AND device_id != ?1) < ?6
      ON CONFLICT(device_id) DO UPDATE SET name = excluded.name, last_used_at = excluded.last_used_at WHERE devices.user_id = ?2`,
   )
-    .bind(thumbprint, user.id, row.device_name, JSON.stringify(jwk), now)
+    .bind(thumbprint, user.id, row.device_name, JSON.stringify(jwk), now, MAX_DEVICES_PER_USER)
     .run();
+  if (saved.meta.changes !== 1) {
+    const owner = await env.DB.prepare("SELECT user_id FROM devices WHERE device_id = ?").bind(thumbprint).first<{ user_id: string }>();
+    return owner && owner.user_id !== user.id
+      ? json({ error: "device_belongs_to_another_account" }, 409)
+      : json({ error: "too_many_devices" }, 403);
+  }
   console.log("app: device signed in", thumbprint.slice(0, 8), "for", user.id);
   return json({ deviceId: thumbprint, login: user.login, name: user.name });
 }
@@ -282,7 +293,7 @@ async function authenticate(request: Request, env: Env, url: URL): Promise<{ dev
     throw e;
   }
   const d = device as DeviceRow | null;
-  if (!d) return authFailure(new DeviceAuthError("unknown_device"));
+  if (!d || nowSeconds() - d.last_used_at > DEVICE_IDLE_SECONDS) return authFailure(new DeviceAuthError("unknown_device"));
   if (!(await consumeJti(env, d.device_id, a.jti, a.exp))) return authFailure(new DeviceAuthError("replayed_jti"));
   const user = await env.DB.prepare("SELECT id, login, name FROM users WHERE id = ?").bind(d.user_id).first<SessionUser>();
   if (!user || !(await isUserAllowed(env, user.id, user.login))) return json({ error: "no_access" }, 403);

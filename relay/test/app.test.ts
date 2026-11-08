@@ -197,24 +197,49 @@ describe("app sign-in", () => {
     const ch = await pkce();
 
     let code = await authorize(user, dev, ch);
-    expect((await exchange(dev, code, (await pkce()).verifier)).status).toBe(400); // wrong verifier burns the code
-    expect((await exchange(dev, code, ch.verifier)).status).toBe(400);
-
-    code = await authorize(user, dev, ch);
-    expect((await exchange(other, code, ch.verifier)).status).toBe(400); // another key than the bound thumbprint
-
-    code = await authorize(user, dev, ch);
-    // Signed by another key than the one being registered: no proof of possession.
-    const res = await exchange(dev, code, ch.verifier, env, other);
-    expect(res.status).toBe(401);
+    // Wrong verifier, another key, or a signature by another key: refused, and the code survives
+    // for the rightful exchange (someone who saw it cannot spoil the sign-in).
+    expect((await exchange(dev, code, (await pkce()).verifier)).status).toBe(400);
+    expect((await exchange(other, code, ch.verifier)).status).toBe(400);
+    expect((await exchange(dev, code, ch.verifier, env, other)).status).toBe(401);
+    expect((await exchange(dev, code, ch.verifier)).status).toBe(200);
+    expect((await exchange(dev, code, ch.verifier)).status).toBe(400); // used
 
     code = await authorize(user, dev, ch);
     await testEnv.DB.prepare("UPDATE app_codes SET expires_at = ? WHERE user_id = ?").bind(nowSeconds() - 1, user.id).run();
     expect((await exchange(dev, code, ch.verifier)).status).toBe(400);
 
-    code = await authorize(user, dev, ch);
-    expect((await exchange(dev, code, ch.verifier)).status).toBe(200);
-    expect((await exchange(dev, code, ch.verifier)).status).toBe(400); // used
+  });
+
+  it("writes nothing for made-up codes (review 11)", async () => {
+    const count = async () => (await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM jti_seen WHERE robot_id LIKE 'dev:%'").first<{ n: number }>())!.n;
+    const before = await count();
+    const dev = await newDevice();
+    for (let i = 0; i < 10; i++) expect((await exchange(dev, randomToken(32), randomToken(32))).status).toBe(400);
+    expect(await count()).toBe(before);
+  });
+
+  it("holds the device limit and key ownership under concurrency (review 11)", async () => {
+    const user = await newUser();
+    for (let i = 0; i < 9; i++) await signedIn(user);
+    const devs = await Promise.all(Array.from({ length: 5 }, () => newDevice()));
+    const ready = await Promise.all(
+      devs.map(async (d) => {
+        const ch = await pkce();
+        return { d, ch, code: await authorize(user, d, ch) };
+      }),
+    );
+    const codes = (await Promise.all(ready.map((r) => exchange(r.d, r.code, r.ch.verifier)))).map((r) => r.status);
+    expect(codes.filter((c) => c === 200)).toHaveLength(1);
+    expect(await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM devices WHERE user_id = ?").bind(user.id).first()).toEqual({ n: 10 });
+
+    const shared = await newDevice();
+    const [a, b] = [await newUser(), await newUser()];
+    const ca = await pkce();
+    const cb = await pkce();
+    const [codeA, codeB] = [await authorize(a, shared, ca), await authorize(b, shared, cb)];
+    const both = (await Promise.all([exchange(shared, codeA, ca.verifier), exchange(shared, codeB, cb.verifier)])).map((r) => r.status).sort();
+    expect(both).toEqual([200, 409]);
   });
 
   it("limits open codes and devices per person", async () => {
@@ -301,7 +326,45 @@ describe("signed app calls", () => {
       call(`/devices/${dev.thumbprint}/revoke`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: origin, Cookie: u.cookie }, body: "", redirect: "manual" }, env);
     expect((await revoke(other)).status).toBe(404);
     expect((await revoke(user, "https://evil.example")).status).toBe(403);
+    // Signing a device out also signs everyone out of the robots its owner owns (its open
+    // robot sessions end too), and not of anyone else's robots.
+    const robot = await newRobot();
+    const { pairingCode } = (await (await register(robot, "revoke-me")).json()) as { pairingCode: string };
+    await api(dev, "POST", "/v1/app/claim", { code: pairingCode, step: "confirm" });
+    const epoch = async (id: string) => (await testEnv.DB.prepare("SELECT session_epoch AS e FROM robots WHERE robot_id = ?").bind(id).first<{ e: number }>())!.e;
+    const before = await epoch(robot.robotId);
     expect((await revoke(user)).status).toBe(303);
     expect((await api(dev, "GET", "/v1/app/me")).status).toBe(401);
+    expect(await epoch(robot.robotId)).toBe(before + 1);
+  });
+});
+
+describe("review 11 (Opus) fixes", () => {
+  it("drops invisible and text-direction characters from device names", async () => {
+    const user = await newUser();
+    const dev = await newDevice();
+    const q = authorizeQuery({ challenge: (await pkce()).challenge, thumbprint: dev.thumbprint, name: "Bruno‮s iPh​one⁦x" });
+    const body = await (await call(`/app/authorize?${q}`, { headers: { Cookie: user.cookie } }, env)).text();
+    expect(body).toContain("Brunos iPhonex");
+    expect(body).not.toMatch(/[​‮⁦]/);
+  });
+
+  it("sends a real Origin from the consent page and keeps the callback page's address to itself", async () => {
+    const user = await newUser();
+    const dev = await newDevice();
+    const q = authorizeQuery({ challenge: (await pkce()).challenge, thumbprint: dev.thumbprint });
+    const consent = await call(`/app/authorize?${q}`, { headers: { Cookie: user.cookie } }, env);
+    expect(consent.headers.get("Referrer-Policy")).toBe("same-origin");
+    const cb = await call("/app/callback?code=x&state=y", {}, env);
+    expect(cb.headers.get("Referrer-Policy")).toBe("no-referrer");
+    const text = await cb.text();
+    expect(text).toContain("Never copy or send the address of this page");
+    expect(text).not.toContain("code=x");
+  });
+
+  it("signs out devices unused for 180 days", async () => {
+    const { dev } = await signedIn();
+    await testEnv.DB.prepare("UPDATE devices SET last_used_at = last_used_at - 181 * 86400 WHERE device_id = ?").bind(dev.thumbprint).run();
+    expect(await (await api(dev, "GET", "/v1/app/me")).json()).toMatchObject({ detail: "unknown_device" });
   });
 });

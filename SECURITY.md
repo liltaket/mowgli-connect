@@ -86,6 +86,7 @@ or documented:
 - [security-review-8.md](docs/research/security-review-8.md) (admin page, invites, robot limits)
 - [security-review-9.md](docs/research/security-review-9.md) (encrypted tunnel tokens, alerts, updates)
 - [security-review-10.md](docs/research/security-review-10.md) (whole system: components and attacker chains)
+- [security-review-11.md](docs/research/security-review-11.md) (native app API)
 - [security-review-gemini.md](docs/research/security-review-gemini.md)
 - [security-review-mistral.md](docs/research/security-review-mistral.md)
 

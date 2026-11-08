@@ -4,7 +4,7 @@ import { NAME_QUARANTINE_SECONDS, retryPendingCleanups } from "./claim";
 import { page, html, PAIR_JS, SECURITY_HEADERS, STYLE_CSS } from "./html";
 import { APPLE_TOUCH_PNG_B64, FAVICON_ICO_B64, ICON_SVG } from "./icons";
 import { alert, checkHealth } from "./alerts";
-import { appleAppSiteAssociation, handleAppApi } from "./appApi";
+import { appleAppSiteAssociation, DEVICE_IDLE_SECONDS, handleAppApi } from "./appApi";
 import { createProvisioner } from "./provisioner";
 import { sealStoredTokens } from "./tokenSeal";
 import { refreshLatestAgent } from "./updates";
@@ -70,6 +70,7 @@ export async function runCleanup(env: Env): Promise<void> {
     env.DB.prepare("DELETE FROM claim_failures WHERE at < ?").bind(now - 3600),
     env.DB.prepare("DELETE FROM released_hostnames WHERE released_at < ?").bind(now - NAME_QUARANTINE_SECONDS),
     env.DB.prepare("DELETE FROM app_codes WHERE expires_at < ?").bind(now),
+    env.DB.prepare("DELETE FROM devices WHERE last_used_at < ?").bind(now - DEVICE_IDLE_SECONDS),
     // Registration spam: forget robots that never got claimed and stopped calling.
     env.DB.prepare("DELETE FROM robots WHERE status = 'unclaimed' AND last_seen_at < ?").bind(now - 7 * 86400),
   ]);

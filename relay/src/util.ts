@@ -41,7 +41,12 @@ export function safeReturnPath(p: string | null | undefined): string {
 
 export function cleanLabel(s: unknown, max = 64): string | null {
   if (typeof s !== "string") return null;
-  const t = s.replace(/[\u0000-\u001f\u007f]/g, " ").trim();
+  // Control characters become spaces; invisible and text-direction characters (zero-width,
+  // bidi overrides and isolates) are dropped, so a name cannot look like something else.
+  const t = s
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+    .replace(/[\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g, "")
+    .trim();
   if (!t) return null;
   return t.slice(0, max);
 }
