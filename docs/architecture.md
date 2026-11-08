@@ -40,8 +40,8 @@ Browser ──HTTPS──> relay  (Cloudflare Worker + D1, free tier)
    authenticated channel. No per-request relay call.
 4. **One tunnel per robot** (T3 does the same). Simple revocation (delete tunnel), blast radius of
    one connector token = one robot, and the free account limit is 1,000 tunnels.
-5. **Pairing**: the agent generates an Ed25519 identity, registers, prints a 10-char code
-   (50 bits, 15 min, single use); the owner signs in and enters it. The robot id is derived from
+5. **Pairing**: the agent generates an Ed25519 identity, registers, prints a three-word code
+   (e.g. `sunny-tiger-moss`, ~31 bits, 15 min, single use, rate-limited claims); the owner signs in and enters it. The robot id is derived from
    the key, so it cannot be chosen or spoofed.
 6. **Safety stays local.** E-stop, firmware cmd_vel watchdog (200 ms), collision monitoring and the
    behavior tree are on the robot and independent of the tunnel. Remote joystick (teleop publish

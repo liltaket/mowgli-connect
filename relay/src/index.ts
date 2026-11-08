@@ -1,7 +1,7 @@
 import type { Env } from "./env";
 import { handleBrowser } from "./browser";
 import { retryPendingCleanups } from "./claim";
-import { page, html, SECURITY_HEADERS, STYLE_CSS } from "./html";
+import { page, html, PAIR_JS, SECURITY_HEADERS, STYLE_CSS } from "./html";
 import { createProvisioner } from "./provisioner";
 import { json, registerRobot, reportHostname, robotSelf } from "./robotApi";
 import { nowSeconds } from "./util";
@@ -15,6 +15,10 @@ async function route(request: Request, env: Env): Promise<Response> {
 
   if (url.pathname === "/style.css" && request.method === "GET") {
     return new Response(STYLE_CSS, { headers: { ...SECURITY_HEADERS, "Content-Type": "text/css; charset=utf-8", "Cache-Control": "public, max-age=300" } });
+  }
+
+  if (url.pathname === "/pair.js" && request.method === "GET") {
+    return new Response(PAIR_JS, { headers: { ...SECURITY_HEADERS, "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "public, max-age=300" } });
   }
 
   // Robot API (assertion-authenticated JSON; no cookies, no Origin semantics).

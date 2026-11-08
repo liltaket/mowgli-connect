@@ -77,11 +77,12 @@ assertion signed by that key (proof of possession; `iss` must equal derive(publi
 
 Response `200`:
 ```json
-{"robotId":"…","pairingCode":"ABCD-EFGH-JK","claimUrl":"https://relay/claim?code=ABCDEFGHJK","expiresAt":1767225600}
+{"robotId":"…","pairingCode":"sunny-tiger-moss","claimUrl":"https://relay/claim?code=sunny-tiger-moss","expiresAt":1767225600}
 ```
-Pairing code: 10 Crockford-base32 chars (50 bits), shown grouped `XXXX-XXXX-XX`, input is
-case-insensitive and ignores `-`/spaces. Valid 15 min, single use, stored only as SHA-256.
-Claim attempts are rate-limited per user (max 10 failures/hour).
+Pairing code: three words from a 1,295-word list (EFF short wordlist 1, about 31 bits), e.g.
+`sunny-tiger-moss`. Input is case-insensitive and any run of non-letters separates words. Valid
+15 min, single use, stored only as SHA-256. Claim attempts are rate-limited per user (max 10
+failures/hour), so guessing any of the few codes alive at a time is impractical.
 
 ### `GET /v1/robots/self`
 

@@ -13,8 +13,8 @@ describe("robot assertion verification", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { robotId: string; pairingCode: string; claimUrl: string; expiresAt: number };
     expect(body.robotId).toBe(robot.robotId);
-    expect(body.pairingCode).toMatch(/^[0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{2}$/);
-    expect(body.claimUrl).toBe(`${ORIGIN}/claim?code=${body.pairingCode.replaceAll("-", "")}`);
+    expect(body.pairingCode).toMatch(/^[a-z]{3,5}-[a-z]{3,5}-[a-z]{3,5}$/);
+    expect(body.claimUrl).toBe(`${ORIGIN}/claim?code=${body.pairingCode}`);
     expect(body.expiresAt - nowSeconds()).toBeGreaterThan(14 * 60);
     expect(body.expiresAt - nowSeconds()).toBeLessThanOrEqual(15 * 60);
   });

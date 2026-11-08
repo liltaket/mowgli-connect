@@ -39,13 +39,24 @@ describe("base64url", () => {
 });
 
 describe("pairing codes", () => {
-  it("generates 10 Crockford chars, groups XXXX-XXXX-XX, normalizes input", () => {
-    const code = generatePairingCode();
-    expect(code).toMatch(/^[0-9A-HJKMNP-TV-Z]{10}$/);
-    expect(formatPairingCode("ABCDEFGHJK")).toBe("ABCD-EFGH-JK");
-    expect(normalizePairingCode("abcd-efgh jk")).toBe("ABCDEFGHJK");
-    expect(normalizePairingCode("ABCD-EFGH-J")).toBeNull();
-    expect(normalizePairingCode("ABCD-EFGH-JU")).toBeNull();
+  it("generates three known words and accepts any case and separators", async () => {
+    const { WORDS } = await import("../src/wordlist");
+    const seen = new Set<string>();
+    for (let i = 0; i < 200; i++) {
+      const code = generatePairingCode();
+      expect(code).toMatch(/^[a-z]{3,5}-[a-z]{3,5}-[a-z]{3,5}$/);
+      for (const w of code.split("-")) expect(WORDS).toContain(w);
+      expect(normalizePairingCode(code)).toBe(code);
+      seen.add(code);
+    }
+    expect(seen.size).toBeGreaterThan(195); // random, not a fixed sequence
+    expect(formatPairingCode("acid-acorn-acre")).toBe("acid-acorn-acre");
+    for (const spelled of ["ACID ACORN ACRE", " Acid-acorn_acre ", "acid--acorn  acre", "acid.acorn,acre"]) {
+      expect(normalizePairingCode(spelled)).toBe("acid-acorn-acre");
+    }
+    for (const bad of ["acid-acorn", "acid-acorn-acre-acid", "acid-acorn-qqqq", "", "1234-5678-90", "ABCD-EFGH-JK"]) {
+      expect(normalizePairingCode(bad)).toBeNull();
+    }
   });
 });
 

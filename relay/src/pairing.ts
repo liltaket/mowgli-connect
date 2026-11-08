@@ -1,29 +1,40 @@
 import { sha256Hex } from "./util";
+import { WORDS } from "./wordlist";
 
-// Crockford base32 alphabet (no I, L, O, U).
-const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 export const PAIRING_TTL_SECONDS = 15 * 60;
+export const PAIRING_WORDS = 3;
 
-/** 10 chars = 50 bits. 256 % 32 == 0 so `byte & 31` is unbiased. */
+const WORD_SET = new Set(WORDS);
+
+/**
+ * Three random words from the 1,295-word list, e.g. "sunny-tiger-moss": about 31 bits, easy to
+ * read aloud and type on a phone. Enough because a code lives 15 minutes, works once, and claim
+ * attempts are limited per account (CLAIM_FAILURES_PER_HOUR). Words are drawn without modulo
+ * bias (rejection sampling on 16-bit values).
+ */
 export function generatePairingCode(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(10));
-  return Array.from(bytes, (b) => ALPHABET[b & 31]).join("");
+  const limit = 65536 - (65536 % WORDS.length);
+  const out: string[] = [];
+  while (out.length < PAIRING_WORDS) {
+    const [n] = crypto.getRandomValues(new Uint16Array(1));
+    if (n! < limit) out.push(WORDS[n! % WORDS.length]!);
+  }
+  return out.join("-");
 }
 
+/** Codes are stored and shown in their canonical form already ("word-word-word"). */
 export function formatPairingCode(code: string): string {
-  return `${code.slice(0, 4)}-${code.slice(4, 8)}-${code.slice(8)}`;
+  return code;
 }
 
-/** Case-insensitive, ignores '-' and whitespace; Crockford O->0, I/L->1. Returns null if invalid. */
+/**
+ * Accepts any case and any separators ("Sunny Tiger-moss", "sunny_tiger moss"). Returns the
+ * canonical "sunny-tiger-moss", or null unless it is exactly three known words.
+ */
 export function normalizePairingCode(input: string): string | null {
-  const s = input
-    .toUpperCase()
-    .replace(/[\s-]+/g, "")
-    .replace(/O/g, "0")
-    .replace(/[IL]/g, "1");
-  if (s.length !== 10) return null;
-  for (const ch of s) if (!ALPHABET.includes(ch)) return null;
-  return s;
+  const words = input.toLowerCase().split(/[^a-z]+/).filter(Boolean);
+  if (words.length !== PAIRING_WORDS || !words.every((w) => WORD_SET.has(w))) return null;
+  return words.join("-");
 }
 
 export function hashPairingCode(normalized: string): Promise<string> {

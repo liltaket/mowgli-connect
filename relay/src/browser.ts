@@ -91,12 +91,13 @@ ${
 <h2>Add a robot</h2>
 <form class="panel" method="post" action="/claim">
 <div class="fields">
-<div><label for="code">Pairing code</label><input class="code" type="text" id="code" name="code" value="${code}" placeholder="XXXX-XXXX-XX" autocomplete="off" autocapitalize="characters" spellcheck="false" required maxlength="32"></div>
+<div><label for="code">Pairing code</label><input class="code" type="text" id="code" name="code" value="${code}" placeholder="sunny-tiger-moss" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="go" required maxlength="40" aria-describedby="code-hint"></div>
 <div><label for="label">Name <span class="muted">(optional)</span></label><input type="text" id="label" name="label" placeholder="Front lawn" maxlength="64"></div>
 <button class="primary">Add robot</button>
 </div>
-<p class="muted" style="margin:.75rem 0 0">The code is shown in the agent's log (<code>docker logs mowgli-connect</code>) and is valid for 15 minutes.</p>
-</form>`,
+<p class="muted hint" id="code-hint">Three words, shown by the installer on your robot (or <code>docker logs mowgli-connect</code>). Spaces, dashes and capitals don't matter. Valid for 15 minutes.</p>
+</form>
+<script src="/pair.js"></script>`,
   );
 }
 

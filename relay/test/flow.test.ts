@@ -316,7 +316,8 @@ describe("output hardening", () => {
     const csp = res.headers.get("Content-Security-Policy")!;
     expect(csp).toContain("default-src 'none'");
     expect(csp).not.toContain("unsafe-inline");
-    expect(csp).not.toContain("script-src");
+    expect(csp).toContain("script-src 'self'"); // only the same-origin /pair.js
+    expect(body).not.toMatch(/<script>|<script [^>]*>[^<]+<\/script>|<[^>]*\son[a-z]+=/i); // no inline script or handlers
     // No Referer leaves the relay, but same-origin POSTs keep a real Origin header.
     expect(res.headers.get("Referrer-Policy")).toBe("same-origin");
   });

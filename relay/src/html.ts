@@ -37,6 +37,7 @@ export function html(strings: TemplateStringsArray, ...values: Interp[]): SafeHt
 export const CSP = [
   "default-src 'none'",
   "style-src 'self'",
+  "script-src 'self'", // only /pair.js; no inline script anywhere
   "form-action 'self'",
   "base-uri 'none'",
   "frame-ancestors 'none'",
@@ -116,7 +117,8 @@ label{display:block;font-weight:600;margin:0 0 .35rem}
 .fields{display:grid;gap:.75rem}
 @media (min-width:40rem){.fields{grid-template-columns:1fr 1fr auto;align-items:end}}
 input[type=text]{width:100%;font:inherit;padding:.6rem .7rem;border:1px solid var(--line);border-radius:.5rem;background:var(--bg);color:inherit}
-input.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.08em;text-transform:uppercase}
+input.code{font-size:1.15rem;letter-spacing:.02em}
+.hint{margin:.75rem 0 0}
 button,.btn{font:inherit;font-weight:500;padding:.6rem 1rem;border:1px solid var(--line);border-radius:.5rem;background:transparent;color:inherit;cursor:pointer;text-decoration:none;display:inline-block;text-align:center;white-space:nowrap}
 button.primary,.btn.primary{background:var(--signal);border-color:var(--signal);color:var(--on-signal)}
 button.danger{color:var(--danger);border-color:var(--danger)}
@@ -125,4 +127,22 @@ form.inline{display:inline}
 .error{border-left-color:var(--danger)}
 .hero{padding:1rem 0 .5rem}
 .hero p{font-size:1.1rem;max-width:34rem}
+`;
+
+// Formats the pairing-code field while typing: lower case, any run of other characters becomes
+// one dash, at most three words. The server accepts any spelling anyway; this only helps.
+export const PAIR_JS = `(() => {
+  const el = document.getElementById("code");
+  if (!el) return;
+  el.addEventListener("input", () => {
+    const atEnd = el.selectionStart === el.value.length;
+    let v = el.value.toLowerCase().replace(/[^a-z]+/g, "-").replace(/^-/, "");
+    const words = v.split("-");
+    if (words.length > 3) v = words.slice(0, 3).join("-");
+    if (v !== el.value) {
+      el.value = v;
+      if (atEnd) el.setSelectionRange(v.length, v.length);
+    }
+  });
+})();
 `;
