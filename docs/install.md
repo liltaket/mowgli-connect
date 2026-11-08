@@ -57,8 +57,10 @@ The installer asks whether to allow remote joystick driving. It is **off by defa
   real mower. Leave it off unless you have validated it
   where you can watch the mower, and only drive with the mower in sight.
 - The choice is the agent's `MC_ALLOW_TELEOP` setting (see the
-  [configuration table](../README.md#agent-configuration)). To change it later, change it in the
-  Compose project in `~/mowgli-connect` on the robot and run `docker compose up -d` there.
+  [configuration table](../README.md#agent-configuration)), stored in `~/mowgli-connect/.env`. To
+  change it later, run the installer again on the robot (it keeps the robot's identity and
+  pairing), or edit `MC_ALLOW_TELEOP` in that file and run `docker compose up -d` in
+  `~/mowgli-connect`. The relay shows the current setting as "Remote joystick on/off".
 
 ## Update
 
