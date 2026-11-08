@@ -139,6 +139,17 @@ describe("browser CSRF / Origin checks", () => {
     expect(((await (await self(robot)).json()) as SelfBody).status).toBe("claimed");
   });
 
+  it("accepts Origin: null only with Sec-Fetch-Site: same-origin (form POST under a strict referrer policy)", async () => {
+    const robot = await newRobot();
+    const { pairingCode } = (await (await register(robot)).json()) as { pairingCode: string };
+    const user = await newUser();
+    for (const site of ["cross-site", "same-site", "none"]) {
+      expect((await post("/claim", user, { code: pairingCode }, "null", site)).status).toBe(403);
+    }
+    expect((await post("/claim", user, { code: pairingCode }, "https://evil.example", "same-origin")).status).toBe(403);
+    expect((await post("/claim", user, { code: pairingCode }, "null", "same-origin")).status).toBe(303);
+  });
+
   it("requires login for POST /claim", async () => {
     const res = await post("/claim", null, { code: "ABCD-EFGH-JK" });
     expect(res.status).toBe(303);
@@ -293,7 +304,8 @@ describe("output hardening", () => {
     expect(csp).toContain("default-src 'none'");
     expect(csp).not.toContain("unsafe-inline");
     expect(csp).not.toContain("script-src");
-    expect(res.headers.get("Referrer-Policy")).toBe("no-referrer");
+    // No Referer leaves the relay, but same-origin POSTs keep a real Origin header.
+    expect(res.headers.get("Referrer-Policy")).toBe("same-origin");
   });
 
   it("returns 421 for a foreign Host", async () => {

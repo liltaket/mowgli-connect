@@ -34,7 +34,7 @@ func fakeGUI(t *testing.T) *httptest.Server {
 		return err == nil && o.Host == r.Host
 	}}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/mowglinext/multiplex", func(w http.ResponseWriter, r *http.Request) {
+	echoWS := func(w http.ResponseWriter, r *http.Request) {
 		c, err := up.Upgrade(w, r, nil)
 		if err != nil {
 			return
@@ -47,7 +47,9 @@ func fakeGUI(t *testing.T) *httptest.Server {
 			}
 			_ = c.WriteMessage(typ, append([]byte("echo:"), msg...))
 		}
-	})
+	}
+	mux.HandleFunc("/api/mowglinext/multiplex", echoWS)
+	mux.HandleFunc("/api/containers/", echoWS) // owner-only log socket
 	mux.HandleFunc("/api/mowglinext/publish/", func(w http.ResponseWriter, r *http.Request) {
 		c, err := up.Upgrade(w, r, nil)
 		if err == nil {
@@ -334,7 +336,8 @@ func TestViewerAndMembership(t *testing.T) {
 	if r := f.req("GET", "/api/system/info", h, ""); r.StatusCode != 200 {
 		t.Fatalf("viewer read: %d", r.StatusCode)
 	}
-	for _, p := range []string{"/api/config/envs", "/api/settings/yaml", "/api/remote-access/settings", "/api/tools/rosbag/download/x"} {
+	for _, p := range []string{"/api/config/envs", "/api/settings", "/api/settings/yaml", "/api/remote-access/settings",
+		"/api/tools/rosbag/download/x", "/api/diagnostics/snapshot", "/api/params", "/api/fleet/robots", "/api/new-endpoint", "/swagger/index.html"} {
 		if r := f.req("GET", p, h, ""); r.StatusCode != 403 {
 			t.Errorf("viewer GET %s: %d", p, r.StatusCode)
 		}

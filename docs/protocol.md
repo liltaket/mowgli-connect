@@ -109,6 +109,11 @@ hostnames may be same-site with the relay). Session cookie `__Host-mcr_session`,
 Secure; SameSite=Lax; Path=/`.
 
 - `GET /login`, `GET /auth/github/callback` — GitHub OAuth (state + PKCE). User id `gh:<numeric id>`.
+  Starting a login writes nothing: state, PKCE verifier, expiry and return path live only in the
+  host-only `__Host-mcr_oauth` cookie (10 min); the callback requires `state` to match it.
+- State-changing browser requests require `Origin == RELAY_ORIGIN`, or `Origin` absent/`null`
+  together with `Sec-Fetch-Site: same-origin` (some browsers send `null` on form POSTs). Pages
+  send `Referrer-Policy: same-origin`.
 - `POST /logout`
 - `GET /` — list my robots, claim form.
 - `GET /claim?code=…` — prefilled confirm page (never claims on GET).
@@ -160,8 +165,15 @@ Everything else:
 - `Host` must equal the claimed hostname (else 421).
 - No valid session → `GET` with `Accept: text/html` → `302 <relay>/open/<robotId>`; otherwise `401`.
 - Unsafe methods and WebSocket upgrades require `Origin == https://<hostname>` (CSRF; the GUI
-  itself allows CORS `*`).
-- Role policy (deny by default for `viewer`), then remote policy (e.g. teleop disabled unless
+  itself allows CORS `*`). For HTTP (not WebSockets) an absent/`null` Origin is accepted only with
+  `Sec-Fetch-Site: same-origin`.
+- Open WebSockets are rechecked every 5 s: the session must still exist (not logged out or
+  purged), be valid, and its current role must still allow the route; otherwise the agent closes
+  the socket with 1008.
+- Consumed grant ids are persisted with the sessions until they expire, so a grant cannot be
+  redeemed again after an agent restart.
+- Role policy (`viewer`: the app plus an explicit allow list of read-only API endpoints and the
+  multiplex socket; everything else denied), then remote policy (e.g. teleop disabled unless
   `MC_ALLOW_TELEOP=true`).
 - Proxy to upstream with `Host` and `Origin` preserved (the GUI's WS check compares them),
   `__Host-mc_session` stripped from `Cookie`, fresh `X-Forwarded-For/Proto/Host`, streaming

@@ -56,10 +56,11 @@ type MowgliPolicy struct {
 	AllowTeleop bool
 }
 
-// Viewers must not read endpoints that can return secrets or bulk data.
-var mowgliViewerDeniedGET = []string{
-	"/api/config/", "/api/settings/yaml", "/api/remote-access/", "/api/notifications/",
-	"/api/tools/", "/api/containers", "/api/diagnostics/", "/swagger/",
+// Viewers get the app itself plus an explicit allow list of read-only API endpoints. A deny
+// list is not enough: several GUI endpoints (e.g. /api/settings) return unredacted
+// configuration including credentials, and new endpoints appear with GUI updates.
+var mowgliViewerAPI = map[string]bool{
+	"/api/system/info": true, "/api/system/versions": true, "/api/schedules": true, "/api/weather": true,
 }
 
 var mowgliViewerSockets = []string{"/api/mowglinext/multiplex", "/api/mowglinext/subscribe/"}
@@ -84,7 +85,13 @@ func (m MowgliPolicy) Allow(role, method, path string, ws bool) bool {
 		if ws {
 			return method == "GET" && hasAnyPrefix(path, mowgliViewerSockets)
 		}
-		return safeMethod(method) && !hasAnyPrefix(path, mowgliViewerDeniedGET)
+		if !safeMethod(method) {
+			return false
+		}
+		if path == "/api" || strings.HasPrefix(path, "/api/") {
+			return mowgliViewerAPI[path]
+		}
+		return !hasAnyPrefix(path, []string{"/swagger/"})
 	}
 	return false
 }

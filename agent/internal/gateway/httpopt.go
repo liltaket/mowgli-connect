@@ -50,12 +50,25 @@ func injectShim(resp *http.Response) error {
 		!strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
 		return nil
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxInjectHTML+1))
-	resp.Body.Close()
+	if resp.ContentLength > maxInjectHTML {
+		return nil
+	}
+	orig := resp.Body
+	body, err := io.ReadAll(io.LimitReader(orig, maxInjectHTML+1))
 	if err != nil {
+		orig.Close()
 		return err
 	}
-	if loc := headTag.FindIndex(body); loc != nil && len(body) <= maxInjectHTML {
+	if len(body) > maxInjectHTML {
+		// Too large to rewrite: send the buffered prefix and then the rest, unchanged.
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(body), orig), orig}
+		return nil
+	}
+	orig.Close()
+	if loc := headTag.FindIndex(body); loc != nil {
 		body = append(body[:loc[1]:loc[1]], append([]byte(shimTag), body[loc[1]:]...)...)
 	}
 	resp.Body = io.NopCloser(bytes.NewReader(body))

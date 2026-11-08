@@ -46,9 +46,36 @@ export function cleanLabel(s: unknown, max = 64): string | null {
   return t.slice(0, max);
 }
 
-/** Reads a request body as UTF-8 text, refusing anything larger than `max` bytes. */
+/**
+ * Reads a request body as UTF-8 text, refusing anything larger than `max` bytes. The body is
+ * streamed and cancelled as soon as it exceeds the limit, so an oversized upload is never
+ * buffered.
+ */
 export async function readBodyText(request: Request, max: number): Promise<string | null> {
-  const buf = await request.arrayBuffer();
-  if (buf.byteLength > max) return null;
+  const declared = Number(request.headers.get("Content-Length") ?? "0");
+  if (declared > max) {
+    await request.body?.cancel().catch(() => {});
+    return null;
+  }
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const buf = new Uint8Array(size);
+  let off = 0;
+  for (const c of chunks) {
+    buf.set(c, off);
+    off += c.byteLength;
+  }
   return new TextDecoder().decode(buf);
 }

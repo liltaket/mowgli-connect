@@ -1,8 +1,8 @@
 import type { Env } from "./env";
-import { b64urlEncode } from "./crypto";
 import { page, html } from "./html";
 import { createSession, isUserAllowed, sessionCookie } from "./session";
-import { nowSeconds, parseCookies, randomToken, safeReturnPath, sha256Hex } from "./util";
+import { b64urlDecode, b64urlEncode } from "./crypto";
+import { nowSeconds, parseCookies, randomToken, safeReturnPath } from "./util";
 
 const OAUTH_COOKIE = "__Host-mcr_oauth";
 const OAUTH_TTL_SECONDS = 600;
@@ -11,14 +11,40 @@ function oauthCookie(value: string, maxAge: number): string {
   return `${OAUTH_COOKIE}=${value}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${maxAge}`;
 }
 
+/**
+ * In-flight login state, kept only in the `__Host-` cookie (never in D1, so starting a login
+ * costs no database write): `state~verifier~expiresAt~base64url(returnTo)`. The cookie is
+ * host-only and HttpOnly, so another site or a robot hostname cannot set or read it; the
+ * callback requires the `state` query parameter to match it (login CSRF), and GitHub accepts
+ * each code once and only with the matching PKCE verifier.
+ */
+interface LoginState {
+  state: string;
+  verifier: string;
+  returnTo: string;
+}
+
+function encodeLoginState(s: LoginState, expiresAt: number): string {
+  return [s.state, s.verifier, String(expiresAt), b64urlEncode(new TextEncoder().encode(s.returnTo))].join("~");
+}
+
+function decodeLoginState(raw: string | undefined, now: number): LoginState | null {
+  const parts = raw?.split("~");
+  if (!parts || parts.length !== 4) return null;
+  const [state, verifier, exp, rt] = parts as [string, string, string, string];
+  if (!/^[A-Za-z0-9_-]{43}$/.test(state) || !/^[A-Za-z0-9_-]{43}$/.test(verifier) || !(Number(exp) > now)) return null;
+  try {
+    return { state, verifier, returnTo: safeReturnPath(new TextDecoder().decode(b64urlDecode(rt))) };
+  } catch {
+    return null;
+  }
+}
+
 export async function startLogin(env: Env, returnTo: string | null): Promise<Response> {
   const state = randomToken(32);
   const verifier = randomToken(32);
   const challenge = b64urlEncode(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
-  const now = nowSeconds();
-  await env.DB.prepare("INSERT INTO oauth_states (state_hash, code_verifier, return_to, expires_at) VALUES (?, ?, ?, ?)")
-    .bind(await sha256Hex(state), verifier, safeReturnPath(returnTo), now + OAUTH_TTL_SECONDS)
-    .run();
+  const cookieValue = encodeLoginState({ state, verifier, returnTo: safeReturnPath(returnTo) }, nowSeconds() + OAUTH_TTL_SECONDS);
   const u = new URL("https://github.com/login/oauth/authorize");
   u.searchParams.set("client_id", env.GITHUB_CLIENT_ID);
   u.searchParams.set("redirect_uri", `${env.RELAY_ORIGIN}/auth/github/callback`);
@@ -28,7 +54,7 @@ export async function startLogin(env: Env, returnTo: string | null): Promise<Res
   u.searchParams.set("allow_signup", "false");
   return new Response(null, {
     status: 302,
-    headers: { Location: u.toString(), "Set-Cookie": oauthCookie(state, OAUTH_TTL_SECONDS), "Cache-Control": "no-store" },
+    headers: { Location: u.toString(), "Set-Cookie": oauthCookie(cookieValue, OAUTH_TTL_SECONDS), "Cache-Control": "no-store" },
   });
 }
 
@@ -47,16 +73,9 @@ interface GithubUser {
 export async function finishLogin(env: Env, url: URL, request: Request): Promise<Response> {
   const state = url.searchParams.get("state");
   const code = url.searchParams.get("code");
-  const cookieState = parseCookies(request.headers.get("Cookie"))[OAUTH_COOKIE];
-  if (!state || !code || !cookieState || cookieState !== state) return fail("Invalid login state. Please try again.");
-
-  // Single use: consume atomically.
-  const row = await env.DB.prepare(
-    "DELETE FROM oauth_states WHERE state_hash = ? AND expires_at > ? RETURNING code_verifier, return_to",
-  )
-    .bind(await sha256Hex(state), nowSeconds())
-    .first<{ code_verifier: string; return_to: string }>();
-  if (!row) return fail("Login expired. Please try again.");
+  const login = decodeLoginState(parseCookies(request.headers.get("Cookie"))[OAUTH_COOKIE], nowSeconds());
+  if (!state || !code || !login || login.state !== state) return fail("Invalid or expired login. Please try again.");
+  const row = { code_verifier: login.verifier, return_to: login.returnTo };
 
   let gh: GithubUser;
   try {

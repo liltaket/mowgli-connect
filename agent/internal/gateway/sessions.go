@@ -17,6 +17,14 @@ type storedSession struct {
 	Expires int64  `json:"expires"`
 }
 
+// sessionFile is the on-disk format. Consumed grant ids are kept until they expire, so a grant
+// cannot be redeemed again after an agent restart inside its acceptance window. (Older files
+// were a bare list of sessions.)
+type sessionFile struct {
+	Sessions []storedSession  `json:"sessions"`
+	Grants   map[string]int64 `json:"consumedGrants"` // jti -> unix time it may be forgotten
+}
+
 func (g *Gateway) loadSessions() {
 	if g.cfg.SessionFile == "" {
 		return
@@ -25,13 +33,20 @@ func (g *Gateway) loadSessions() {
 	if err != nil {
 		return
 	}
-	var list []storedSession
-	if err := json.Unmarshal(b, &list); err != nil {
-		g.cfg.Logger.Warn("ignoring unreadable session file", "err", err)
-		return
+	var f sessionFile
+	if err := json.Unmarshal(b, &f); err != nil {
+		if err := json.Unmarshal(b, &f.Sessions); err != nil {
+			g.cfg.Logger.Warn("ignoring unreadable session file", "err", err)
+			return
+		}
 	}
 	now := g.cfg.Now()
-	for _, s := range list {
+	for jti, until := range f.Grants {
+		if exp := time.Unix(until, 0); now.Before(exp) && exp.Before(now.Add(GrantMaxTTL+2*ClockSkew)) && len(g.jtis) < maxSessions*4 {
+			g.jtis[jti] = exp
+		}
+	}
+	for _, s := range f.Sessions {
 		raw, err := hex.DecodeString(s.Hash)
 		exp := time.Unix(s.Expires, 0)
 		if err != nil || len(raw) != 32 || !now.Before(exp) || exp.After(now.Add(SessionTTL)) || roleRank(s.Role) == 0 {
@@ -39,7 +54,7 @@ func (g *Gateway) loadSessions() {
 		}
 		var key [32]byte
 		copy(key[:], raw)
-		g.sessions[key] = &session{sub: s.Sub, name: s.Name, role: s.Role, epoch: s.Epoch, expires: exp}
+		g.sessions[key] = &session{key: key, sub: s.Sub, name: s.Name, role: s.Role, epoch: s.Epoch, expires: exp}
 	}
 }
 
@@ -48,11 +63,17 @@ func (g *Gateway) persistLocked() {
 	if g.cfg.SessionFile == "" {
 		return
 	}
-	list := make([]storedSession, 0, len(g.sessions))
+	f := sessionFile{Sessions: make([]storedSession, 0, len(g.sessions)), Grants: map[string]int64{}}
 	for k, s := range g.sessions {
-		list = append(list, storedSession{Hash: hex.EncodeToString(k[:]), Sub: s.sub, Name: s.name, Role: s.role, Epoch: s.epoch, Expires: s.expires.Unix()})
+		f.Sessions = append(f.Sessions, storedSession{Hash: hex.EncodeToString(k[:]), Sub: s.sub, Name: s.name, Role: s.role, Epoch: s.epoch, Expires: s.expires.Unix()})
 	}
-	b, err := json.Marshal(list)
+	now := g.cfg.Now()
+	for jti, exp := range g.jtis {
+		if now.Before(exp) {
+			f.Grants[jti] = exp.Unix()
+		}
+	}
+	b, err := json.Marshal(f)
 	if err == nil {
 		err = writeFileAtomic(g.cfg.SessionFile, b)
 	}

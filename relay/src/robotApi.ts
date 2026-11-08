@@ -1,6 +1,6 @@
 import type { Env } from "./env";
 import { AssertionError, verifyRobotAssertion, type VerifiedAssertion } from "./assertion";
-import { b64urlDecode } from "./crypto";
+import { b64urlDecode, deriveRobotId } from "./crypto";
 import { loadRelayKey } from "./relayKey";
 import { formatPairingCode, generatePairingCode, hashPairingCode, PAIRING_TTL_SECONDS } from "./pairing";
 import { SECURITY_HEADERS } from "./html";
@@ -65,6 +65,13 @@ async function readJson(request: Request, max = 4096): Promise<Record<string, un
   }
 }
 
+async function recentUnclaimed(env: Env, now: number): Promise<number> {
+  const r = await env.DB.prepare("SELECT COUNT(*) AS n FROM robots WHERE status = 'unclaimed' AND created_at > ?")
+    .bind(now - 3600)
+    .first<{ n: number }>();
+  return r?.n ?? 0;
+}
+
 function maxNewRobotsPerHour(env: Env): number {
   const n = Number.parseInt(env.MAX_NEW_ROBOTS_PER_HOUR ?? "", 10);
   return Number.isFinite(n) && n > 0 ? n : 30;
@@ -86,6 +93,16 @@ export async function registerRobot(env: Env, request: Request, url: URL): Promi
     return json({ error: "bad_request", detail: "publicKey" }, 400);
   }
 
+  // Admission before authentication: a new identity beyond the hourly cap is refused before
+  // anything (not even its assertion jti) is written.
+  const now = nowSeconds();
+  const existing = await env.DB.prepare("SELECT robot_id, public_key, status, tunnel_id FROM robots WHERE robot_id = ?")
+    .bind(await deriveRobotId(raw))
+    .first<Pick<RobotRow, "robot_id" | "public_key" | "status" | "tunnel_id">>();
+  if (!existing && (await recentUnclaimed(env, now)) >= maxNewRobotsPerHour(env)) {
+    return json({ error: "rate_limited" }, 429, { "Retry-After": "600" });
+  }
+
   let a: VerifiedAssertion;
   try {
     a = await authenticate(env, request, url, async () => raw);
@@ -94,12 +111,7 @@ export async function registerRobot(env: Env, request: Request, url: URL): Promi
     throw e;
   }
   const robotId = a.robotId;
-  const now = nowSeconds();
   const robotName = typeof name === "string" ? cleanLabel(name) : null;
-
-  const existing = await env.DB.prepare("SELECT robot_id, public_key, status, tunnel_id FROM robots WHERE robot_id = ?")
-    .bind(robotId)
-    .first<Pick<RobotRow, "robot_id" | "public_key" | "status" | "tunnel_id">>();
 
   if (existing) {
     if (existing.public_key !== publicKey) return json({ error: "key_mismatch" }, 409);
@@ -110,19 +122,16 @@ export async function registerRobot(env: Env, request: Request, url: URL): Promi
       .run();
   } else {
     // Registration is unauthenticated (self-signed keys), so bound how fast new robot rows can
-    // appear. Unclaimed rows are deleted after 7 days idle, which caps the table size.
-    const recent = await env.DB.prepare("SELECT COUNT(*) AS n FROM robots WHERE status = 'unclaimed' AND created_at > ?")
-      .bind(now - 3600)
-      .first<{ n: number }>();
-    if ((recent?.n ?? 0) >= maxNewRobotsPerHour(env)) {
-      return json({ error: "rate_limited" }, 429, { "Retry-After": "600" });
-    }
-    await env.DB.prepare(
-      `INSERT INTO robots (robot_id, public_key, name, status, session_epoch, created_at, updated_at, last_seen_at)
-       VALUES (?, ?, ?, 'unclaimed', 1, ?, ?, ?)`,
+    // appear; the count and insert are one statement so concurrent requests cannot overshoot.
+    // Unclaimed rows are deleted after 7 days idle, which caps the table size.
+    const ins = await env.DB.prepare(
+      `INSERT OR IGNORE INTO robots (robot_id, public_key, name, status, session_epoch, created_at, updated_at, last_seen_at)
+       SELECT ?, ?, ?, 'unclaimed', 1, ?, ?, ?
+       WHERE (SELECT COUNT(*) FROM robots WHERE status = 'unclaimed' AND created_at > ?) < ?`,
     )
-      .bind(robotId, publicKey, robotName, now, now, now)
+      .bind(robotId, publicKey, robotName, now, now, now, now - 3600, maxNewRobotsPerHour(env))
       .run();
+    if (ins.meta.changes !== 1) return json({ error: "rate_limited" }, 429, { "Retry-After": "600" });
   }
 
   // Re-register invalidates any previous code.

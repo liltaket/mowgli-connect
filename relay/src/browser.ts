@@ -15,7 +15,7 @@ import {
 import { cleanLabel, isRobotId, nowSeconds, readBodyText, safeReturnPath } from "./util";
 
 const NOTICES: Record<string, string> = {
-  claimed: "Robot claimed.",
+  claimed: "Robot added. It connects within a few seconds; then press Open.",
   unlinked: "Robot unlinked.",
   revoked: "All sessions on that robot were signed out.",
 };
@@ -57,37 +57,41 @@ async function dashboard(env: Env, user: SessionUser, url: URL): Promise<Respons
   return page(
     "Robots",
     html`
-${notice ? html`<p class="notice">${notice}</p>` : ""}
-<div class="row"><span>Signed in as <strong>${user.login}</strong></span>
-<form class="inline" method="post" action="/logout"><button>Sign out</button></form></div>
-<h2>My robots</h2>
+${notice ? html`<p class="notice" role="status">${notice}</p>` : ""}
+<div class="who"><h1>My robots</h1>
+<form class="inline" method="post" action="/logout"><span class="muted">Signed in as <strong>${user.login}</strong></span> <button>Sign out</button></form></div>
 ${
   rows.results.length === 0
-    ? html`<p class="muted">No robots yet. Enter the pairing code shown by your robot below.</p>`
-    : html`<table>
-<tr><th>Robot</th><th>Hostname</th><th>Role</th><th></th></tr>
+    ? html`<p class="muted">No robots yet. Start the Mowgli Connect agent on your robot and enter the pairing code it shows.</p>`
+    : html`<ul class="robots">
 ${rows.results.map(
-  (r) => html`<tr>
-<td>${r.label ?? r.name ?? r.robot_id}<br><code>${r.robot_id}</code></td>
-<td>${r.hostname ? html`<code>${r.hostname}</code>` : html`<span class="muted">waiting for tunnel</span>`}</td>
-<td>${r.role}</td>
-<td class="actions">
-<a class="btn primary" href="/open/${r.robot_id}">Open</a>
+  (r) => html`<li class="robot">
+<span class="name">${r.label ?? r.name ?? r.robot_id}</span>
+<a class="btn primary open" href="/open/${r.robot_id}">Open</a>
+<span class="meta">${
+    r.hostname ? html`<span class="state">Tunnel ready</span>` : html`<span class="state wait">waiting for tunnel</span>`
+  } · ${r.role === "owner" ? "Owner" : "Viewer"}</span>
 ${
   r.role === "owner"
-    ? html`<form class="inline" method="post" action="/robots/${r.robot_id}/sessions/revoke"><button>Sign everyone out</button></form>
-<form class="inline" method="post" action="/robots/${r.robot_id}/unlink"><button class="danger">Unlink</button></form>`
+    ? html`<details><summary>Manage</summary><div class="manage">
+<div><code>${r.robot_id}</code>${r.hostname ? html`<br><code>${r.hostname}</code>` : ""}</div>
+<form method="post" action="/robots/${r.robot_id}/sessions/revoke"><button>Sign everyone out</button><p>Ends every open session on this robot, including yours.</p></form>
+<form method="post" action="/robots/${r.robot_id}/unlink"><button class="danger">Unlink robot</button><p>Removes the robot from your account and deletes its tunnel. You will need a new pairing code to add it again.</p></form>
+</div></details>`
     : ""
 }
-</td></tr>`,
+</li>`,
 )}
-</table>`
+</ul>`
 }
-<h2>Claim a robot</h2>
-<form method="post" action="/claim">
-<div class="row"><input type="text" name="code" value="${code}" placeholder="XXXX-XXXX-XX" autocomplete="off" required maxlength="32">
-<input type="text" name="label" placeholder="Label (optional)" maxlength="64">
-<button class="primary">Claim</button></div>
+<h2>Add a robot</h2>
+<form class="panel" method="post" action="/claim">
+<div class="fields">
+<div><label for="code">Pairing code</label><input class="code" type="text" id="code" name="code" value="${code}" placeholder="XXXX-XXXX-XX" autocomplete="off" autocapitalize="characters" spellcheck="false" required maxlength="32"></div>
+<div><label for="label">Name <span class="muted">(optional)</span></label><input type="text" id="label" name="label" placeholder="Front lawn" maxlength="64"></div>
+<button class="primary">Add robot</button>
+</div>
+<p class="muted" style="margin:.75rem 0 0">The code is shown in the agent's log (<code>docker logs mowgli-connect</code>) and is valid for 15 minutes.</p>
 </form>`,
   );
 }
@@ -95,7 +99,10 @@ ${
 function loggedOutPage(): Response {
   return page(
     "Sign in",
-    html`<p>Sign in to manage and open your robots.</p><p><a class="btn primary" href="/login">Sign in with GitHub</a></p>`,
+    html`<div class="hero"><h1>Open your mower from anywhere</h1>
+<p>Sign in to see your robots and open their own web interface securely, without VPN or port forwarding.</p>
+<p><a class="btn primary" href="/login">Sign in with GitHub</a></p>
+<p class="muted">Access is invite-only while Mowgli Connect is a prototype.</p></div>`,
   );
 }
 
@@ -104,12 +111,13 @@ function claimConfirm(code: string, robotId: string, name: string | null, error?
     "Claim robot",
     html`
 ${error ? html`<p class="error">${error}</p>` : ""}
-<h2>Claim this robot?</h2>
-<p>Robot <code>${robotId}</code>${name ? html` (reported name: <em>${name}</em>)` : ""}</p>
-<p class="muted">Only claim a robot you control. You will become its owner.</p>
-<form method="post" action="/claim">
+<h1>Add this robot?</h1>
+<p>${name ? html`The robot calls itself <strong>${name}</strong>.` : "The robot did not report a name."} <code>${robotId}</code></p>
+<p class="muted">Only add a robot you control. You will become its owner.</p>
+<form class="panel" method="post" action="/claim">
 <input type="hidden" name="code" value="${code}">
-<div class="row"><input type="text" name="label" placeholder="Label (optional)" maxlength="64"><button class="primary">Claim robot</button></div>
+<div class="fields"><div><label for="label">Name <span class="muted">(optional)</span></label><input type="text" id="label" name="label" placeholder="Front lawn" maxlength="64"></div><span></span>
+<button class="primary">Add robot</button></div>
 </form>
 <p><a href="/">Cancel</a></p>`,
     status,
@@ -216,7 +224,7 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
       // Quick-tunnel mode: claimed, but the robot has not reported its tunnel hostname yet.
       return page(
         "Robot starting",
-        html`<p>The robot is starting its tunnel. Retry in a moment.</p><p><a class="btn primary" href="/open/${robotId}">Retry</a> <a href="/">Back</a></p>`,
+        html`<h1>Robot starting</h1><p>The robot is starting its tunnel. This usually takes a few seconds.</p><p><a class="btn primary" href="/open/${robotId}">Try again</a> <a class="btn" href="/">Back</a></p>`,
         503,
         { "Retry-After": "10" },
       );

@@ -4,3 +4,4 @@ node_modules/
 *.key
 /agent/connect-agent
 /relay/wrangler.prod.jsonc
+*.log

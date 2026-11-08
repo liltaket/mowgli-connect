@@ -81,10 +81,17 @@ export async function newUser(login?: string): Promise<TestUser> {
   return { id, cookie: `__Host-mcr_session=${token}` };
 }
 
-export function post(path: string, user: TestUser | null, form: Record<string, string>, origin: string | null = ORIGIN): Promise<Response> {
+export function post(
+  path: string,
+  user: TestUser | null,
+  form: Record<string, string>,
+  origin: string | null = ORIGIN,
+  fetchSite?: string,
+): Promise<Response> {
   const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded" };
   if (user) headers.Cookie = user.cookie;
   if (origin !== null) headers.Origin = origin;
+  if (fetchSite) headers["Sec-Fetch-Site"] = fetchSite;
   return call(path, { method: "POST", headers, body: new URLSearchParams(form).toString(), redirect: "manual" });
 }
 

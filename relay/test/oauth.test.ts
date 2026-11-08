@@ -11,15 +11,23 @@ async function startLogin(returnTo?: string) {
   const res = await get(`/login${returnTo ? `?return_to=${encodeURIComponent(returnTo)}` : ""}`, null);
   const loc = new URL(res.headers.get("Location")!);
   const state = loc.searchParams.get("state")!;
-  return { res, loc, state, cookie: `__Host-mcr_oauth=${state}` };
+  const cookie = setCookies(res).find((c) => c.startsWith("__Host-mcr_oauth="))!.split(";")[0]!;
+  return { res, loc, state, cookie };
 }
 
 function stubGithub(profile: { id: number; login: string; name?: string | null }) {
   const calls: { url: string; body?: any }[] = [];
+  const usedCodes = new Set<string>();
   vi.stubGlobal("fetch", async (input: string | Request, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.url;
-    calls.push({ url, body: init?.body ? JSON.parse(init.body as string) : undefined });
-    if (url === "https://github.com/login/oauth/access_token") return Response.json({ access_token: "gho_fake" });
+    const body = init?.body ? JSON.parse(init.body as string) : undefined;
+    calls.push({ url, body });
+    if (url === "https://github.com/login/oauth/access_token") {
+      // Like GitHub: each code works once.
+      if (usedCodes.has(body.code)) return Response.json({ error: "bad_verification_code" });
+      usedCodes.add(body.code);
+      return Response.json({ access_token: "gho_fake" });
+    }
     if (url === "https://api.github.com/user") return Response.json(profile);
     return new Response("unexpected", { status: 500 });
   });
@@ -39,6 +47,23 @@ describe("GitHub OAuth login", () => {
     const cookie = setCookies(res)[0]!;
     expect(cookie).toContain(`__Host-mcr_oauth=${state}`);
     expect(cookie).toMatch(/HttpOnly; Secure; SameSite=Lax; Path=\//);
+  });
+
+  it("starting a login writes nothing to the database", async () => {
+    const count = async () => (await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM oauth_states").first<{ n: number }>())!.n;
+    const before = await count();
+    for (let i = 0; i < 5; i++) await startLogin();
+    expect(await count()).toBe(before);
+  });
+
+  it("rejects expired or malformed login cookies", async () => {
+    const { state, cookie } = await startLogin();
+    stubGithub({ id: 4244, login: "octo-cat" });
+    const [st, ver, , rt] = cookie.slice("__Host-mcr_oauth=".length).split("~");
+    for (const bad of [`${st}~${ver}~1~${rt}`, `${st}~short~9999999999~${rt}`, `${st}~${ver}`, "garbage"]) {
+      const res = await call(`/auth/github/callback?code=abc&state=${state}`, { headers: { Cookie: `__Host-mcr_oauth=${bad}` }, redirect: "manual" });
+      expect(res.status).toBe(400);
+    }
   });
 
   it("rejects a callback whose state does not match the browser cookie", async () => {
@@ -69,9 +94,11 @@ describe("GitHub OAuth login", () => {
     const stored = await testEnv.DB.prepare("SELECT token_hash FROM sessions WHERE user_id = 'gh:4242'").all<{ token_hash: string }>();
     expect(stored.results.map((r) => r.token_hash)).not.toContain(token);
 
-    // state is single use
+    // A replayed callback fails: GitHub codes are single use (and the browser's cookie is cleared).
+    expect(cookies).toContain("__Host-mcr_oauth=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0");
     const replay = await call(`/auth/github/callback?code=abc&state=${state}`, { headers: { Cookie: cookie }, redirect: "manual" });
-    expect(replay.status).toBe(400);
+    expect(replay.status).toBe(502);
+    expect(setCookies(replay).some((c) => c.startsWith("__Host-mcr_session=") && !c.includes("Max-Age=0"))).toBe(false);
 
     // and the cookie works
     const dash = await call("/", { headers: { Cookie: `__Host-mcr_session=${token}` } });

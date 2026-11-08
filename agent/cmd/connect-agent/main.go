@@ -278,15 +278,16 @@ func run() error {
 	defer health.Stop()
 	started := time.Now()
 	var syncWaiters []chan struct{}
+	// The relay is polled only when nextPoll is due or the gateway asked for a resync; health
+	// checks and hostname reports wake the loop without an extra /self call.
+	var nextPoll time.Time
 	for {
-		wait := cfg.poll
-		unclaimedWait := unclaimedSlowPoll
-		if time.Since(started) < unclaimedFastFor {
-			unclaimedWait = unclaimedFastPoll
-		}
 		if pendingHost != "" && current != nil && current.Status == "claimed" {
 			if s, err := client.ReportHostname(ctx, pendingHost); err != nil {
 				log.Warn("reporting quick-tunnel hostname", "err", err)
+				if retry := time.Now().Add(10 * time.Second); retry.Before(nextPoll) {
+					nextPoll = retry
+				}
 			} else {
 				log.Info("quick tunnel ready", "url", "https://"+pendingHost+"/")
 				pendingHost, healthFails = "", 0
@@ -294,50 +295,58 @@ func run() error {
 				gw.MarkFresh()
 			}
 		}
-		self, err := client.Self(ctx)
-		switch {
-		case err == nil && self.Status == "claimed":
-			apply(self)
-			gw.MarkFresh()
-			if pairing != nil {
-				log.Info("robot paired", "hostname", self.Hostname)
-				pairing = nil
-				_ = os.Remove(pairingPath)
+		if !time.Now().Before(nextPoll) || len(syncWaiters) > 0 {
+			wait := cfg.poll
+			unclaimedWait := unclaimedSlowPoll
+			if time.Since(started) < unclaimedFastFor {
+				unclaimedWait = unclaimedFastPoll
 			}
-			backoff = 5 * time.Second
-		case err == nil || errors.Is(err, relay.ErrUnknownRobot):
-			if self != nil {
+			self, err := client.Self(ctx)
+			switch {
+			case err == nil && self.Status == "claimed":
 				apply(self)
 				gw.MarkFresh()
-			}
-			if pairing == nil || time.Now().Unix() > pairing.ExpiresAt-30 {
-				pairing, err = client.Register(ctx, cfg.name)
-				if errors.Is(err, relay.ErrAlreadyClaimed) {
+				if pairing != nil {
+					log.Info("robot paired", "hostname", self.Hostname)
 					pairing = nil
-					wait = unclaimedSlowPoll
-					break
+					_ = os.Remove(pairingPath)
 				}
-				if err != nil {
-					log.Error("registering with relay", "err", err)
-					pairing = nil
-					wait = backoff
-					break
+				backoff = 5 * time.Second
+			case err == nil || errors.Is(err, relay.ErrUnknownRobot):
+				if self != nil {
+					apply(self)
+					gw.MarkFresh()
 				}
-				printPairing(pairing)
-				if b, err := json.Marshal(pairing); err == nil {
-					_ = os.WriteFile(pairingPath, b, 0o600)
+				if pairing == nil || time.Now().Unix() > pairing.ExpiresAt-30 {
+					pairing, err = client.Register(ctx, cfg.name)
+					if errors.Is(err, relay.ErrAlreadyClaimed) {
+						pairing = nil
+						wait = unclaimedSlowPoll
+						break
+					}
+					if err != nil {
+						log.Error("registering with relay", "err", err)
+						pairing = nil
+						wait = backoff
+						break
+					}
+					printPairing(pairing)
+					if b, err := json.Marshal(pairing); err == nil {
+						_ = os.WriteFile(pairingPath, b, 0o600)
+					}
 				}
+				wait = unclaimedWait
+			default:
+				log.Warn("relay unreachable; keeping last known state", "err", err, "retry", backoff)
+				wait = backoff
+				backoff = min(backoff*2, 5*time.Minute)
 			}
-			wait = unclaimedWait
-		default:
-			log.Warn("relay unreachable; keeping last known state", "err", err, "retry", backoff)
-			wait = backoff
-			backoff = min(backoff*2, 5*time.Minute)
+			nextPoll = time.Now().Add(wait)
+			for _, d := range syncWaiters {
+				close(d)
+			}
+			syncWaiters = nil
 		}
-		for _, d := range syncWaiters {
-			close(d)
-		}
-		syncWaiters = nil
 		select {
 		case d := <-syncReq:
 			syncWaiters = append(syncWaiters, d)
@@ -362,7 +371,7 @@ func run() error {
 					sup.Restart()
 				}
 			}
-		case <-time.After(wait):
+		case <-time.After(time.Until(nextPoll)):
 		}
 	}
 }

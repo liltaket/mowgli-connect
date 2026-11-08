@@ -229,3 +229,103 @@ func TestResyncAdmitsNewMember(t *testing.T) {
 		t.Fatalf("resync not rate limited: calls %d", calls)
 	}
 }
+
+// Browsers send "Origin: null" on same-origin POSTs under strict referrer policies; that is
+// accepted only with Sec-Fetch-Site: same-origin, and never for WebSocket upgrades.
+func TestNullOriginNeedsSameOriginFetchSite(t *testing.T) {
+	f := newFixture(t, MowgliPolicy{})
+	tok, _ := f.login(f.grant(nil))
+	for site, want := range map[string]int{"cross-site": 403, "same-site": 403, "": 403, "same-origin": 200} {
+		h := map[string]string{"Cookie": cookie(tok), "Origin": "null"}
+		if site != "" {
+			h["Sec-Fetch-Site"] = site
+		}
+		if r := f.req("POST", "/api/system/reboot", h, ""); r.StatusCode != want {
+			t.Errorf("Sec-Fetch-Site %q: got %d, want %d", site, r.StatusCode, want)
+		}
+	}
+	d := websocket.Dialer{}
+	u := strings.Replace(f.srv.URL, "http", "ws", 1) + "/api/mowglinext/multiplex"
+	if _, resp, err := d.Dial(u, http.Header{"Host": {testHost}, "Cookie": {cookie(tok)}, "Origin": {"null"}, "Sec-Fetch-Site": {"same-origin"}}); err == nil || resp == nil || resp.StatusCode != 403 {
+		t.Fatalf("websocket with null origin accepted")
+	}
+}
+
+// An open socket must end when its session is logged out, and an owner-only socket must end
+// when the member is downgraded to viewer (security review 3, MC3-01).
+func TestSocketEndsOnLogoutAndDowngrade(t *testing.T) {
+	f := newFixture(t, MowgliPolicy{})
+	closed := func(c *websocket.Conn) bool {
+		_ = c.SetReadDeadline(time.Now().Add(wsAuthRecheck + 3*time.Second))
+		for {
+			if _, _, err := c.ReadMessage(); err != nil {
+				return websocket.IsCloseError(err, websocket.ClosePolicyViolation)
+			}
+		}
+	}
+
+	tok, _ := f.login(f.grant(nil))
+	c, _, err := f.dialWS("/api/mowglinext/multiplex", tok, "https://"+testHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := f.req("POST", "/_connect/logout", map[string]string{"Cookie": cookie(tok), "Origin": "https://" + testHost}, ""); r.StatusCode != 204 {
+		t.Fatalf("logout: %d", r.StatusCode)
+	}
+	if !closed(c) {
+		t.Fatal("socket survived logout")
+	}
+
+	tok, _ = f.login(f.grant(nil))
+	c, _, err = f.dialWS("/api/containers/x/logs", tok, "https://"+testHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := f.state
+	st.Members = map[string]string{"gh:1": RoleViewer}
+	f.gw.UpdateState(st)
+	if !closed(c) {
+		t.Fatal("owner-only socket survived downgrade to viewer")
+	}
+}
+
+// A consumed grant must stay consumed across an agent restart (MC3-05).
+func TestGrantNotReusableAfterRestart(t *testing.T) {
+	f := newFixture(t, MowgliPolicy{})
+	f.gw.cfg.SessionFile = t.TempDir() + "/sessions.json"
+	g := f.grant(nil)
+	if tok, _ := f.login(g); tok == "" {
+		t.Fatal("first login failed")
+	}
+	cfg := f.gw.cfg
+	f.gw = New(cfg) // restart: same data dir, same moment
+	f.gw.UpdateState(f.state)
+	f.gw.MarkFresh()
+	f.srv.Config.Handler = f.gw
+	if tok, status := f.login(g); tok != "" {
+		t.Fatalf("consumed grant accepted after restart (status %d)", status)
+	}
+	if tok, _ := f.login(f.grant(nil)); tok == "" {
+		t.Fatal("fresh grant rejected after restart")
+	}
+}
+
+// HTML too large to rewrite is passed through complete (MC3-06).
+func TestLargeHTMLPassesThroughUnchanged(t *testing.T) {
+	f := newFixture(t, MowgliPolicy{})
+	big := "<html><head></head><body>" + strings.Repeat("x", maxInjectHTML+1000) + "</body></html>"
+	f.useUpstream(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		if r.URL.Path == "/chunked" {
+			w.(http.Flusher).Flush() // no Content-Length
+		}
+		io.WriteString(w, big)
+	}))
+	tok, _ := f.login(f.grant(nil))
+	for _, p := range []string{"/", "/chunked"} {
+		r := f.req("GET", p, map[string]string{"Cookie": cookie(tok), "Accept": "text/html"}, "")
+		if body, _ := io.ReadAll(r.Body); string(body) != big {
+			t.Fatalf("%s: got %d bytes, want %d unchanged", p, len(body), len(big))
+		}
+	}
+}

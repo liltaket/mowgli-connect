@@ -69,6 +69,7 @@ type Config struct {
 }
 
 type session struct {
+	key             [32]byte // SHA-256 of the cookie value; the sessions map key
 	sub, name, role string
 	epoch           int64
 	expires         time.Time
@@ -187,6 +188,19 @@ func (g *Gateway) authorizedLocked(s *session) bool {
 		return false
 	}
 	return minRole(s.role, g.state.Members[s.sub]) != ""
+}
+
+// socketAllowed decides whether an open WebSocket may keep running: its session must still
+// be registered (not logged out or purged) and valid, and the route must still be allowed for
+// the session's current role (a downgrade can remove access to owner-only sockets).
+func (g *Gateway) socketAllowed(s *session, method, path string) bool {
+	g.mu.Lock()
+	role := ""
+	if g.sessions[s.key] == s && g.validLocked(s) {
+		role = minRole(s.role, g.state.Members[s.sub])
+	}
+	g.mu.Unlock()
+	return role != "" && g.cfg.Policy.Allow(role, method, path, true)
 }
 
 // effectiveRole is the session role capped by the user's current membership ("" = invalid).
@@ -343,7 +357,7 @@ func (g *Gateway) redeemGrant(token string) (string, *session, error) {
 		return "", nil, err
 	}
 	tok := base64.RawURLEncoding.EncodeToString(raw)
-	s := &session{sub: c.Sub, name: c.Name, role: role, epoch: c.Epoch, expires: now.Add(SessionTTL)}
+	s := &session{key: sha256.Sum256([]byte(tok)), sub: c.Sub, name: c.Name, role: role, epoch: c.Epoch, expires: now.Add(SessionTTL)}
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -360,7 +374,7 @@ func (g *Gateway) redeemGrant(token string) (string, *session, error) {
 	if len(g.sessions) >= maxSessions {
 		return "", nil, grantError("too many sessions")
 	}
-	g.sessions[sha256.Sum256([]byte(tok))] = s
+	g.sessions[s.key] = s
 	g.persistLocked()
 	return tok, s, nil
 }
@@ -401,8 +415,14 @@ func canonicalPath(u *url.URL) bool {
 	return clean == p
 }
 
+// sameOrigin is the CSRF check. Browsers send "Origin: null" for same-origin POSTs under some
+// referrer policies, so that is accepted only with the browser-set Sec-Fetch-Site: same-origin.
 func sameOrigin(r *http.Request, host string) bool {
-	return strings.EqualFold(r.Header.Get("Origin"), "https://"+host)
+	o := r.Header.Get("Origin")
+	if strings.EqualFold(o, "https://"+host) {
+		return true
+	}
+	return (o == "" || o == "null") && r.Header.Get("Sec-Fetch-Site") == "same-origin" && !websocket.IsWebSocketUpgrade(r)
 }
 
 func stripSessionCookie(r *http.Request) {

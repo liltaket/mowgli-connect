@@ -59,7 +59,13 @@ export function clearSessionCookie(): string {
   return `${SESSION_COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`;
 }
 
-/** State-changing browser requests must come from the relay origin itself. */
+/**
+ * CSRF check for state-changing browser requests. Browsers send `Origin: null` on form POSTs
+ * under some referrer policies, so a missing/null Origin is accepted only together with the
+ * browser-set (unforgeable by page script) `Sec-Fetch-Site: same-origin`.
+ */
 export function originOk(request: Request, env: Env): boolean {
-  return request.headers.get("Origin") === env.RELAY_ORIGIN;
+  const origin = request.headers.get("Origin");
+  if (origin === env.RELAY_ORIGIN) return true;
+  return (origin === null || origin === "null") && request.headers.get("Sec-Fetch-Site") === "same-origin";
 }

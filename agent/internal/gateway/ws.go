@@ -113,7 +113,7 @@ func (g *Gateway) proxyWebSocket(w http.ResponseWriter, r *http.Request, sess *s
 				return
 			}
 		case <-auth.C:
-			if g.effectiveRole(sess) == "" {
+			if !g.socketAllowed(sess, r.Method, r.URL.Path) {
 				msg := websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "session ended")
 				_ = client.WriteControl(websocket.CloseMessage, msg, time.Now().Add(wsWriteTimeout))
 				return
