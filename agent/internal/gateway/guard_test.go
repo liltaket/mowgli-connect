@@ -11,9 +11,9 @@ import (
 
 func TestContainerGuard(t *testing.T) {
 	const (
-		self = "f55e0e2b7ed7e924732138633de16a4f1a1293592fe999261ef9909c673a5a15"
-		gui  = "c20b51c2db61aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-		ros  = "b909d106f6be362d57e7360f023f14917f0ace7e758611cc67f9835e89feb460"
+		self = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9a"
+		gui  = "c0ffee0000000000000000000000000000000000000000000000000000000001"
+		ros  = "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
 	)
 	calls := 0
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

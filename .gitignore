@@ -6,3 +6,4 @@ node_modules/
 /relay/wrangler.prod.jsonc
 *.log
 /.claude/
+/docs/drafts/

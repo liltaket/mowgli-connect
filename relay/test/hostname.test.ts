@@ -8,7 +8,7 @@ interface SelfBody {
 
 async function claimWith(label: string | null) {
   const robot = await newRobot();
-  const { pairingCode } = (await (await register(robot, "kuffe-sim")).json()) as { pairingCode: string };
+  const { pairingCode } = (await (await register(robot, "garden-sim")).json()) as { pairingCode: string };
   const user = await newUser();
   const form: Record<string, string> = { code: pairingCode };
   if (label !== null) form.label = label;
@@ -20,7 +20,7 @@ describe("readable robot hostnames", () => {
   it("derives a DNS label from a name", () => {
     expect(robotSubdomain("Front lawn")).toBe("front-lawn");
     expect(robotSubdomain("Gräsklippare Åsa!")).toBe("grasklippare-asa");
-    expect(robotSubdomain("  --Kuffe--  ")).toBe("kuffe");
+    expect(robotSubdomain("  --Garden--  ")).toBe("garden");
     expect(robotSubdomain("x".repeat(40))).toBe("x".repeat(32));
     expect(robotSubdomain("xn--abc")).toBe("xn-abc"); // dashes collapse, so never punycode
     for (const bad of ["ab", "www", "Login", "connect", "Hedgehog", "example", "abcdefghijklmnop", "!!!", "", null]) {
@@ -39,7 +39,7 @@ describe("readable robot hostnames", () => {
     const c = await claimWith("admin"); // reserved
     expect(c.hostname).toBe(`${c.robot.robotId}.robots.test`);
     const d = await claimWith(null); // robot's reported name
-    expect(d.hostname).toBe("kuffe-sim.robots.test");
+    expect(d.hostname).toBe("garden-sim.robots.test");
   });
 });
 

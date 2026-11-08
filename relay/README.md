@@ -7,7 +7,9 @@ The binding contract with the robot agent is [`../docs/protocol.md`](../docs/pro
 implementation follows it as written; deviations and gaps are listed under
 [Protocol notes](#protocol-notes-gaps-and-extensions).
 
-**Status: prototype, never deployed.** All IDs in `wrangler.jsonc` are placeholders.
+**Status: beta.** The hosted relay runs at <https://connect.bronc.app>. All IDs in `wrangler.jsonc`
+are placeholders; keep your own deployment config in a gitignored file (the hosted one uses
+`wrangler.prod.jsonc`).
 
 ## Layout
 
@@ -218,9 +220,11 @@ Independent check: `python3 -c "import hashlib,base64;print(base64.b32encode(has
   and the ingress service is `AGENT_ORIGIN` from relay config.
 - **Replay**: robot jti stored in D1 until `exp + 30 s`; `htu` is built from `RELAY_ORIGIN` + path
   (not from the Host header). Grants live 60 s and travel only in a URL fragment.
-- **Pairing**: 50-bit code, 15 min, single use (atomic `DELETE ... RETURNING`), hash-only storage,
-  10 failures/hour/user (failed `GET /claim` previews count too). Provisioning failure restores the
-  code so the user can retry.
+- **Pairing**: three-word code (~31 bits), 15 min, single use (atomic `DELETE ... RETURNING`),
+  stored as an HMAC under a key derived from `TUNNEL_TOKEN_KEY` (plain SHA-256 without it). At most
+  10 wrong codes per user per hour, each attempt reserved atomically (previews count too; a code
+  link loaded by another page does not). Provisioning failure restores the code so the user can
+  retry.
 - **Access**: admins (`ADMIN_GITHUB_IDS`), invites from `/admin` (D1 `invites`, by id) and
   `ALLOWED_GITHUB_LOGINS` are checked at login and on every session lookup. Removing someone ends
   their relay sessions at once, and their robots drop them at the next sync (members are filtered
@@ -229,7 +233,10 @@ Independent check: `python3 -c "import hashlib,base64;print(base64.b32encode(has
 - **Tunnel tokens** are encrypted at rest with `TUNNEL_TOKEN_KEY`, and cron problems alert via
   `ALERT_NTFY_URL`.
 - **Recommended**: a Cloudflare WAF rate-limit rule on `/v1/robots/register` (unauthenticated: any
-  key can create an `unclaimed` row; the relay also caps new robots per hour).
+  key can create an `unclaimed` row; the relay also caps new robots at `MAX_NEW_ROBOTS_PER_HOUR`
+  overall and 5 per network per hour).
+- **Robot hostnames** are never cached by Cloudflare (Cache Rule, see Setup) and a released name
+  rests 90 days before another robot can take it.
 
 ## Protocol notes, gaps and extensions
 
@@ -240,13 +247,12 @@ amend `docs/protocol.md`):
    revoked robot with the same key may register again and becomes `unclaimed` with a fresh pairing
    code (members were already dropped on unlink). If Cloudflare cleanup is still pending, `503 {"error":"cleanup_pending"}`.
 2. **Revocation latency (protocol weakness)**: epoch bumps / member removal only reach the robot on
-   its next `/self` poll (≤ 60 s once claimed). Unlink also deletes the tunnel immediately, but
+   its next `/self` poll (every `MC_POLL_INTERVAL`, 3 min by default). Unlink also deletes the tunnel immediately, but
    "sign everyone out" leaves existing robot sessions alive for up to a poll interval. Consider a
    shorter poll or a push channel if that matters.
-3. **Pairing-code brute force (protocol weakness)**: rate limiting is per *user*, and 50 bits
-   guessed by many accounts is not covered. The allowlist is the real mitigation for the prototype.
-4. **Pairing code input** additionally maps Crockford `O→0`, `I/L→1` (superset of "case-insensitive,
-   ignores `-`/spaces"). Stored hash is `SHA-256("mc-pairing-code:" + normalized)` (domain separated), not bare SHA-256.
+3. **Pairing-code brute force (protocol weakness)**: rate limiting is per *user*, so many accounts
+   guessing together are not covered by it. Invitations are the real mitigation.
+4. **Pairing code input** is case-insensitive and any run of non-letters separates the words.
 5. **`/self` for an unknown robot** returns `404 {"error":"unknown_robot"}` (agent should re-register);
    other assertion failures return `401 {"error":"invalid_assertion","detail":"<code>"}`.
 6. **`/open` for non-members and unknown robots** both return `404` (no robot enumeration).

@@ -8,9 +8,10 @@ forwarding. Free.
 
 Project site: <https://bronc.app/>
 
-> **Status: prototype.** Tested end to end through real Cloudflare with the real MowgliNext GUI and
-> a simulated robot, from a phone on 5G. Not yet run on a real mower. Sign-in is invite-only for now.
-> Details: [docs/test-report.md](docs/test-report.md).
+> **Status: beta, invite-only.** Runs on a real MowgliNext mower (Raspberry Pi, arm64) through real
+> Cloudflare, used from a phone on 5G and from a computer, including the remote joystick, and
+> tested against restarts, network cuts, relay outages and a full reboot. Not yet used for weeks of
+> everyday mowing or by many people. Details: [docs/test-report.md](docs/test-report.md).
 
 - [For robot owners](#for-robot-owners)
 - [For developers and self-hosters](#for-developers-and-self-hosters)
@@ -140,6 +141,7 @@ deployment between modes while robots are claimed.
 | Variable | Default | |
 |---|---|---|
 | `MC_RELAY_URL` | (required) | Relay origin, https only |
+| `MC_ROBOT_NAME` | the hostname | The robot's name: shown on the relay and used for its address (`<name>.<zone>` when free). The installer sets it. |
 | `MC_UPSTREAM` | `http://127.0.0.1:4006` (binary), `http://host.docker.internal:4006` (container) | The app to expose |
 | `MC_LISTEN` | `127.0.0.1:4007` | Only cloudflared needs to reach this |
 | `MC_TUNNEL_MODE` | `named` | `named` (token from relay) or `quick` (free trycloudflare.com) |
@@ -152,6 +154,8 @@ deployment between modes while robots are claimed.
 | `MC_MAX_STALE` | `10m` | If the relay is unreachable this long, remote sessions stop working (so revocations cannot be outwaited). LAN access is unaffected. |
 | `MC_EGRESS_LOCK` | `true` (container) | Container only: network lock so cloudflared can reach nothing but the agent, even if the Cloudflare account pushes another tunnel ingress ([why](docs/research/security-review-4.md)). The agent may also reach `MC_UPSTREAM`. |
 | `MC_DATA_DIR` | `/data` | `robot.key`, `state.json` (contains the tunnel token, mode 0600) |
+| `MC_CLOUDFLARED` | `cloudflared` | Path of the cloudflared binary. |
+| `MC_AGENT_UID`, `MC_CONNECTOR_UID`, `MC_EDGE_V4`, `MC_EDGE_V6`, `MC_CLOUDFLARED_USER` | (container) | Set by `entrypoint.sh` for the network lock and privilege drop; change only if you know why (e.g. Cloudflare publishes new tunnel edge ranges). |
 
 `connect-agent status` prints the robot id, pairing code or URL.
 
@@ -171,11 +175,12 @@ reviews by several AI models, with findings verified and fixed or documented:
 [3](docs/research/security-review-3.md), [4](docs/research/security-review-4.md),
 [5](docs/research/security-review-5.md), [6](docs/research/security-review-6.md),
 [7](docs/research/security-review-7.md), [Gemini](docs/research/security-review-gemini.md),
-[Mistral](docs/research/security-review-mistral.md). To report a vulnerability, see
-[SECURITY.md](SECURITY.md).
+[Mistral](docs/research/security-review-mistral.md), [8](docs/research/security-review-8.md),
+[9](docs/research/security-review-9.md), [10](docs/research/security-review-10.md). To report a
+vulnerability, see [SECURITY.md](SECURITY.md).
 
-**Not yet:** a real robot and its uplink, and remote
-joystick latency.
+**Not yet:** weeks of everyday use, other people's robots and networks, and measured joystick
+latency over a mobile connection.
 
 ### License
 

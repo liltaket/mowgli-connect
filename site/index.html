@@ -55,7 +55,7 @@
         <a class="button primary" href="https://connect.bronc.app">Open your robot</a>
         <a class="button secondary" href="#install">Install on your robot</a>
       </div>
-      <p class="hero-note">Prototype, invite-only for now. Read the <a href="#status">status</a> before you install it.</p>
+      <p class="hero-note">Beta, invite-only for now. Read the <a href="#status">status</a> before you install it.</p>
     </div>
     <figure class="hero-art">
       <svg viewBox="0 0 520 380" role="img" aria-labelledby="art-title art-desc">
@@ -228,7 +228,7 @@ Follow the guide at https://bronc.app/agents.md step by step. Ask me before you 
         <li><strong>Each robot stands alone.</strong><span>It has its own Ed25519 key and its own tunnel. Access to one robot does not give access to another.</span></li>
         <li><strong>Remote joystick is off by default.</strong><span>It can only be turned on on the robot itself, when you install. The login service cannot enable it.</span></li>
         <li><strong>Safety stays on the mower.</strong><span>Emergency stop, collision handling and the firmware watchdog run on the robot and work without internet.</span></li>
-        <li><strong>The container locks its own network.</strong><span>Even someone who took over the Cloudflare account could not use the tunnel to reach your home network, the robot's other services or its operating system. They could still use the mower's interface as the owner.</span></li>
+        <li><strong>The container locks its own network.</strong><span>Even someone who took over the Cloudflare account could not point the tunnel at your home network, the robot's other services or its operating system. They could still use the mower's interface as its owner, which is why the agent also refuses, from a distance, the few settings that would open a way further in.</span></li>
         <li><strong>Sign-out reaches the robot within minutes.</strong><span>If the robot loses contact with the login service, remote access stops instead of staying open.</span></li>
         <li><strong>Light on mobile data.</strong><span>Live data is compressed and heavy map layers are sent less often. On a real mower the map page dropped from about 357 KB/s to about 7 KB/s through the tunnel.</span></li>
         <li><strong>Source available and reviewed.</strong><span>Several independent reviews by AI models are in the repository, and their findings were verified and fixed or documented. See <a href="https://github.com/liltaket/mowgli-connect/tree/main/docs/research">docs/research</a>.</span></li>
@@ -259,14 +259,14 @@ Follow the guide at https://bronc.app/agents.md step by step. Ask me before you 
   <section class="section" id="status" aria-labelledby="status-title">
     <div class="wrap status">
       <div>
-        <h2 id="status-title">Still a prototype</h2>
-        <p class="muted">Sign-in is invite-only while it is being tested.</p>
+        <h2 id="status-title">An invite-only beta</h2>
+        <p class="muted">Sign-in is by invitation while it is being tested.</p>
       </div>
       <ul class="status-list">
-        <li>Tested end to end through real Cloudflare with the real MowgliNext interface and a simulated robot, from a phone on 5G.<br><span>Details in the <a href="https://github.com/liltaket/mowgli-connect/blob/main/docs/test-report.md">test report</a>.</span></li>
-        <li>Installed, paired and opened on one real mower so far: a lab mower on a Raspberry Pi, using the published image.</li>
+        <li>Runs on a real mower: a lab mower on a Raspberry Pi, installed with the published image and used from a phone on 5G and from a computer, remote joystick included.<br><span>Details in the <a href="https://github.com/liltaket/mowgli-connect/blob/main/docs/test-report.md">test report</a>.</span></li>
+        <li>Tested against container restarts, network cuts, a 12-minute outage of the login service and a full reboot of the robot: remote access comes back by itself within seconds, 78 s after a reboot.</li>
         <li>The agent image is <code>ghcr.io/liltaket/mowgli-connect-agent</code>, for linux/amd64 and linux/arm64.</li>
-        <li class="todo">Not yet tested: the remote joystick over a real connection, and longer everyday use.</li>
+        <li class="todo">Not yet: weeks of everyday use, other people's robots and networks, and measured joystick latency on mobile data.</li>
       </ul>
     </div>
   </section>

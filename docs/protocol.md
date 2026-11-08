@@ -82,8 +82,10 @@ Response `200`:
 Pairing code: three words from a 1,295-word list (EFF short wordlist 1, about 31 bits), e.g.
 `lemon-otter-crisp`. Documentation uses `clover-hedgehog-dew`, which has words outside the list
 and so can never be issued. Input is case-insensitive and any run of non-letters separates words. Valid
-15 min, single use, stored only as SHA-256. Claim attempts are rate-limited per user (max 10
-failures/hour), so guessing any of the few codes alive at a time is impractical.
+15 min, single use, stored as an HMAC (key derived from the relay's `TUNNEL_TOKEN_KEY`; plain
+SHA-256 without it). Claim attempts are rate-limited per user (max 10 wrong codes/hour, reserved
+atomically), so guessing any of the few codes alive at a time is impractical. New robots are capped
+per hour overall and per network.
 
 ### `GET /v1/robots/self`
 

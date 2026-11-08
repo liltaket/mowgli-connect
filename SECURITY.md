@@ -1,7 +1,8 @@
 # Security policy
 
-Mowgli Connect is a prototype. It has been tested end to end with a simulated robot but not yet on a
-real mower, so please treat it accordingly and report anything that looks wrong.
+Mowgli Connect is an invite-only beta. It runs on a real mower and has been through ten security
+reviews, but it is young software from one maintainer: treat it accordingly and report anything that
+looks wrong.
 
 ## Reporting a vulnerability
 

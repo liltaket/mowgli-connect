@@ -67,7 +67,7 @@ older browsers get uncompressed frames).
 
 ## Real mower (2026-11-08)
 
-The lab mower `automower` is a Raspberry Pi, arm64, running Debian 13, Docker 29 and Compose v5,
+The lab mower is a Raspberry Pi, arm64, running Debian 13, Docker 29 and Compose v5,
 with MowgliNext running. It was installed with the published `install.sh` and the GHCR arm64
 image, with the joystick off, and paired from Bruno's account as `mowgli.bronc.app`.
 
@@ -92,6 +92,54 @@ image, with the joystick off, and paired from Bruno's account as `mowgli.bronc.a
   negative answer for the zone's SOA minimum of 30 minutes. Fixed: the relay now waits for the
   tunnel to be connected before redirecting ("Connecting to your robot…", auto-retry) and shows
   Online/Offline.
+
+### Robustness on the real mower (2026-11-08, evening)
+
+Faults were injected only into the Mowgli Connect container and its own network namespace (a
+temporary nftables table that removed itself), timed from outside through the tunnel
+(`/_connect/healthz`). MowgliNext was not touched, except for the final full reboot with the mower
+idle.
+
+| Fault | Before the fixes | After |
+|---|---:|---:|
+| Container restart | 30 s | **6 s** |
+| cloudflared killed (SIGTERM) | 61 s | **6 s** |
+| Tunnel network cut for 90 s | – | back **3 s** after the cut ends |
+| Relay unreachable for 12 min | – | tunnel up throughout; the agent retries about every 80 s |
+| Full reboot of the robot (mower idle) | – | remote access back after **78 s** (SSH after 49 s), all containers up, auto-update job intact |
+
+What made it slow, and the fixes:
+
+- The LAN's DNS server did not answer, so every lookup inside the container waited 4–12 s for a
+  timeout and each tunnel start took ~29 s. The installer now measures this and only then gives
+  the container public resolvers first (`--dns auto`); lookups dropped to 56–121 ms and the tunnel
+  starts in about 1 s.
+- cloudflared waited its default 30 s grace period on shutdown; now 5 s.
+- The agent backed off up to 5 minutes between relay retries; now at most 1 minute, and it logs
+  when the relay is reachable again.
+- From the GUI, an owner could remotely stop the Mowgli Connect or GUI container (or shut the robot
+  down) and so lock themselves out; the agent now refuses that remotely. Restarts stay allowed:
+  restarting six MowgliNext containers from the GUI over the tunnel, the agent itself included,
+  recovered by itself.
+
+Also seen: the remote joystick was used successfully over the tunnel (latency not measured).
+
+### Where remote data goes
+
+The agent now logs a summary per closed WebSocket. A 9.5-minute dashboard session sent 71.6 MB of
+app data and 23.8 MB over the tunnel (41.8 kB/s), 87 % of it the `diagnostics` topic. A 30-second
+capture of the GUI's multiplex socket on the robot showed why:
+
+| Source | Messages/s | Raw |
+|---|---:|---:|
+| diagnostics from `universal_gnss/summary` | 10 | 106 kB/s (78 % of everything) |
+| gnssStatus | 9.7 | 11.8 kB/s |
+| everything else | | ~18 kB/s |
+
+ROS nodes share the diagnostics topic and the GUI merges entries by name, so the agent now
+throttles diagnostics per publisher (each publisher's latest at most once a second) and
+gnssStatus to 1 s. On the captured frames that cuts raw downstream from 136 to 28 kB/s before
+compression; the effect on a live session is to be confirmed from the new log lines.
 
 ## Findings
 
@@ -119,5 +167,7 @@ Open / by design:
 7. Quick Tunnels: no SSE (firmware flash progress — do flashing locally anyway), 200 in-flight
    requests, hostname changes on restart (re-login, localStorage prefs reset), no SLA.
 
-Not tested: a real robot and its uplink, a named Cloudflare tunnel with a domain, real GitHub
-OAuth, the deployed Worker, the Docker image, mobile browsers, teleop latency.
+Not tested at the time of the simulator run above: a real robot, a named tunnel with a domain,
+real GitHub OAuth, the deployed Worker, the Docker image, mobile browsers. All of these have since
+been used on the real mower (sections above). Still not measured: joystick latency over a mobile
+connection, and behaviour over weeks of everyday use.

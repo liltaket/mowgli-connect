@@ -68,6 +68,11 @@ agent pings the browser every 25 s. SSE (firmware flash) and large downloads str
 Workers Free allows 100,000 requests/day **per account** (shared with any other Worker or Pages
 Functions on it; over the limit requests fail, nothing is billed). The relay's budget at 30
 claimed robots: 30 × 480 polls + 96 cron runs + a few requests per login ≈ 15,000/day (15 %).
+D1 Free allows 100,000 rows written per day: a poll writes about 2 rows (one replay record and,
+later, its deletion; `last_seen_at` only every 15 minutes), about 1,000 per robot per day. So the
+free plan carries roughly 95 robots by D1 writes and 200 by Worker requests; a 5-minute poll
+interval would stretch both. Measured on 2026-11-08 (one or two robots, a day of heavy testing):
+1,905 Worker requests and 6,128 rows written, before the write reduction.
 An unclaimed robot left running costs ~1,500/day. Anyone can still send requests to a public
 Worker, so to make it impossible for the relay to affect another site, run it in **its own free
 Cloudflare account** (see `docs/research/cloudflare-account-coexistence.md`).
@@ -91,7 +96,7 @@ SSL does not cover deeper names. Put the relay on a **different registrable doma
   in its own repo, MIT-compatible, with no MowgliNext code copied. Get maintainer/legal clarity
   before any commercial launch. Talk to MowgliNext maintainers anyway: this is new public exposure.
 - **Revocation latency:** member removal and "sign everyone out" reach the robot on its next poll
-  (≤ 60 s). Unlink is immediate (tunnel deleted). If the relay is unreachable for longer than
+  (every 3 min by default, `MC_POLL_INTERVAL`). Unlink is immediate (tunnel deleted). If the relay is unreachable for longer than
   `MC_MAX_STALE` (10 min), the agent fails closed: remote sessions stop until it syncs again. Local
   LAN access to the GUI never depends on the cloud. Push-based revocation can come later.
 - **Viewer role:** implemented as a deny-by-default policy in the agent but not validated against

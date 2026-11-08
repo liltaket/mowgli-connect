@@ -57,9 +57,10 @@ curl -fsSL https://bronc.app/install.sh -o install.sh
 ```
 
 Read `install.sh` and tell the owner in one or two sentences what it does: it writes
-`~/mowgli-connect/.env` and `~/mowgli-connect/compose.yaml`, pulls
-`ghcr.io/liltaket/mowgli-connect-agent`, starts a container named `mowgli-connect` and prints a
-pairing code. Then run it with the owner's answers:
+`~/mowgli-connect/.env` and `~/mowgli-connect/compose.yaml`, optionally adds a nightly update job
+to the user's crontab, checks whether the network's DNS is slow (then the container uses public
+resolvers first), pulls `ghcr.io/liltaket/mowgli-connect-agent`, starts a container named
+`mowgli-connect` and prints a pairing code. Then run it with the owner's answers:
 
 ```sh
 sh install.sh --name "ROBOT NAME" --teleop no --auto-update yes --yes
@@ -107,7 +108,7 @@ connection" meanwhile, which is normal.
 | No pairing code after a minute | `docker logs mowgli-connect`; usually no internet or DNS on the robot. |
 | `502` when opening the robot | The agent must listen on `127.0.0.1:4007`; remove any `MC_LISTEN` override from `~/mowgli-connect/.env`. |
 | The robot's address does not load on one computer, but works on a phone | That computer cached "name not found". Wait up to 30 minutes, or flush its DNS cache. |
-| Everything is slow to start | The robot's DNS server may not answer. Check `/etc/resolv.conf` and tell the owner. |
+| Everything is slow to start | The network's DNS server may not answer. The installer detects this and works around it for Mowgli Connect (it says so); tell the owner, since it slows MowgliNext too. |
 | Change the joystick or update choice later | `sh install.sh --name "ROBOT NAME" --teleop no --auto-update yes --yes`. Pairing is kept. |
 
 More detail: https://github.com/liltaket/mowgli-connect/blob/main/docs/install.md

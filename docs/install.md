@@ -3,8 +3,9 @@
 This guide covers installing, updating and removing the Mowgli Connect agent on a MowgliNext robot.
 For the overview see the [README](../README.md).
 
-Mowgli Connect is a prototype and has not yet been run on a real mower. Sign-in at
-<https://connect.bronc.app> is invite-only for now.
+Mowgli Connect is an invite-only beta, tested on a real mower. Sign-in at
+<https://connect.bronc.app> needs an invitation; using a coding agent? See
+[agents.md](https://bronc.app/agents.md).
 
 ## Requirements
 
@@ -28,10 +29,16 @@ continue), and then runs it.
 
 1. Asks for a name for the robot.
 2. Asks whether to allow the remote joystick. The default is no, and no is recommended (see below).
-3. Creates the project in `~/mowgli-connect`, a Docker Compose project of its own. It does not edit
+3. Asks whether to install updates automatically (default yes, see [Update](#update)).
+4. Creates the project in `~/mowgli-connect`, a Docker Compose project of its own. It does not edit
    MowgliNext's files, and MowgliNext updates do not touch it.
-4. Starts the agent container, named `mowgli-connect`, which pulls the image from GHCR.
-5. Prints a pairing code.
+5. Checks whether the network's DNS server is slow, and if so gives the container public resolvers
+   first (see [troubleshooting](#the-robot-takes-long-to-connect-30-s-or-more)).
+6. Starts the agent container, named `mowgli-connect`, which pulls the image from GHCR.
+7. Prints a pairing code.
+
+Without questions (for scripts and coding agents):
+`sh install.sh --name hedgehog --teleop no --auto-update yes --yes`. All options: `sh install.sh --help`.
 
 ### Pair and open
 
