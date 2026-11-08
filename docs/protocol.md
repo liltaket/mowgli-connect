@@ -30,6 +30,10 @@ Browser ──HTTPS──> relay (Worker, control plane only: login, pairing, gr
 ### Robot assertion (`typ: "mc-robot+jwt"`)
 
 Sent by the agent on every relay API call: `Authorization: MC-Robot <jws>`.
+It also sends `MC-Agent: version=<token>; teleop=on|off`. The relay stores it and only displays
+it (agent version, and whether remote joystick is allowed on the robot); it never changes
+authorization. The joystick setting is local to the robot (`MC_ALLOW_TELEOP`, asked by the
+installer) and cannot be changed from the relay.
 
 | claim | value |
 |---|---|
