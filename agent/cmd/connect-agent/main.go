@@ -34,6 +34,7 @@ var version = "dev"
 type config struct {
 	relayURL, listen, upstream, dataDir, name, profile, cloudflared string
 	tunnelMode                                                      string
+	cloudflaredWrap                                                 []string
 	allowTeleop, wsCompression                                      bool
 	maxBodyMB                                                       int64
 	maxStale, poll                                                  time.Duration
@@ -117,6 +118,19 @@ func loadConfig() (config, error) {
 	}
 	if u.Scheme != "https" && !(u.Scheme == "http" && envBool("MC_INSECURE_RELAY", false)) {
 		return c, errors.New("MC_RELAY_URL must use https (MC_INSECURE_RELAY=true only for local development)")
+	}
+	// MC_CLOUDFLARED_USER=uid:gid runs cloudflared as its own user, with every capability
+	// dropped, so egress rules can tell it apart from the agent (set by the container image).
+	if u := env("MC_CLOUDFLARED_USER", ""); u != "" {
+		uid, gid, ok := strings.Cut(u, ":")
+		if _, e1 := strconv.Atoi(uid); !ok || e1 != nil {
+			return c, errors.New("MC_CLOUDFLARED_USER must be uid:gid")
+		}
+		if _, e2 := strconv.Atoi(gid); e2 != nil {
+			return c, errors.New("MC_CLOUDFLARED_USER must be uid:gid")
+		}
+		c.cloudflaredWrap = []string{"setpriv", "--reuid=" + uid, "--regid=" + gid, "--clear-groups",
+			"--inh-caps=-all", "--ambient-caps=-all", "--bounding-set=-all", "--no-new-privs", "--"}
 	}
 	if c.tunnelMode != "named" && c.tunnelMode != "quick" {
 		return c, fmt.Errorf("MC_TUNNEL_MODE must be named or quick, got %q", c.tunnelMode)
@@ -218,7 +232,7 @@ func run() error {
 	// Quick mode: cloudflared announces a new random hostname on every start; the latest one
 	// waits here until it has been reported to the relay.
 	hostCh := make(chan string, 1)
-	sup := &tunnel.Supervisor{Binary: cfg.cloudflared, Logger: log, OnHostname: func(h string) {
+	sup := &tunnel.Supervisor{Binary: cfg.cloudflared, Wrap: cfg.cloudflaredWrap, Logger: log, OnHostname: func(h string) {
 		select {
 		case <-hostCh:
 		default:

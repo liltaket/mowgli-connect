@@ -57,7 +57,7 @@ deployment between modes while robots are claimed.
 | Variable | Default | |
 |---|---|---|
 | `MC_RELAY_URL` | (required) | Relay origin, https only |
-| `MC_UPSTREAM` | `http://127.0.0.1:4006` | The app to expose |
+| `MC_UPSTREAM` | `http://127.0.0.1:4006` (binary), `http://host.docker.internal:4006` (container) | The app to expose |
 | `MC_LISTEN` | `127.0.0.1:4007` | Only cloudflared needs to reach this |
 | `MC_TUNNEL_MODE` | `named` | `named` (token from relay) or `quick` (free trycloudflare.com) |
 | `MC_PROFILE` | `mowgli` | `mowgli` (GUI-aware policy) or `generic` (any app) |
@@ -67,6 +67,7 @@ deployment between modes while robots are claimed.
 | `MC_POLL_INTERVAL` | `3m` | How often a claimed robot syncs with the relay (≤ half of `MC_MAX_STALE`). New members are admitted at once regardless. |
 | `MC_MAX_BODY_MB` | `64` | Request body limit |
 | `MC_MAX_STALE` | `10m` | If the relay is unreachable this long, remote sessions stop working (so revocations cannot be outwaited). LAN access is unaffected. |
+| `MC_EGRESS_LOCK` | `true` (container) | Container only: network lock so cloudflared can reach nothing but the agent, even if the Cloudflare account pushes another tunnel ingress ([why](docs/research/security-review-4.md)). The agent may also reach `MC_UPSTREAM`. |
 | `MC_DATA_DIR` | `/data` | `robot.key`, `state.json` (contains the tunnel token, mode 0600) |
 
 `connect-agent status` prints the robot id, pairing code or URL.

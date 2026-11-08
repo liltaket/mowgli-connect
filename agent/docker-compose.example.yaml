@@ -5,7 +5,10 @@ services:
     image: ghcr.io/OWNER/mowgli-connect-agent:latest # or build: ../mowgli-connect/agent
     container_name: mowgli-connect
     restart: unless-stopped
-    network_mode: host # reach the GUI on 127.0.0.1:4006; the agent itself binds 127.0.0.1:4007 only
+    # Own network namespace (not host): entrypoint.sh locks egress so cloudflared can reach only
+    # the agent, whatever ingress the Cloudflare account pushes. The GUI (host network, :4006)
+    # is reached through the Docker host gateway.
+    extra_hosts: ["host.docker.internal:host-gateway"]
     environment:
       MC_RELAY_URL: https://connect.example.com
       MC_PROFILE: mowgli
@@ -15,8 +18,10 @@ services:
       - mowgli-connect-data:/data # robot.key + state.json (tunnel token). Back it up, keep it private.
     read_only: true
     cap_drop: [ALL]
+    # NET_ADMIN: the entrypoint installs the egress rules (this container's namespace only),
+    # then drops it. SETUID/SETGID: the agent starts cloudflared as a separate, capability-free user.
+    cap_add: [NET_ADMIN, SETUID, SETGID]
     security_opt: [no-new-privileges:true]
-    user: "65532:65532"
 
 volumes:
   mowgli-connect-data:

@@ -82,3 +82,62 @@ In addition, ten sequential re-registrations by the one admitted self-created id
 | MC4-02 | Hostname reports have their own `nextReport` deadline, separate from `nextPoll`. The loop wakes at the earlier of the two, and only while a claimed robot has a pending hostname, so there is no busy loop. | Control-flow review only, no loop test |
 | MC4-03 | The login cookie is capped at 2048 bytes. A longer return path falls back to `/`, and oversized cookies are rejected on decode. | `falls back to / for return paths too long for a cookie` |
 | MC3-04 residual | Registration verifies the assertion without writing. A refused request (a new identity over the cap, or a known identity re-registering within 30 s) writes nothing, its jti included. The jti is consumed only after admission. | Re-register and rate-limit tests now assert unchanged `jti_seen` counts |
+
+## Lead finding MC4-04 (High): the Cloudflare account can route a named tunnel to anything the robot reaches
+
+Found 2026-11-08 while answering "what happens if the service is hacked" and confirmed against
+real Cloudflare with a throwaway tunnel, `lockprobe.bronc.app`. Two local test servers ran on the
+connector host: one standing in for the agent, one standing in for a LAN service.
+
+| Connector started with | Remote config pushed via API (`PUT …/configurations`) | Result |
+|---|---|---|
+| `--url http://127.0.0.1:9101` + token | while it ran | ignored, still the agent |
+| same, after a cloudflared restart | earlier push | **the LAN service was served** |
+| local `config.yml` ingress + credentials file (no token) | earlier push | **the LAN service was served** |
+
+Pushing a configuration turns the tunnel into a remotely managed one. cloudflared then follows
+the account's ingress rules, whatever flags or local file it was started with. Anyone with
+**Cloudflare Tunnel: Edit** on the account (the relay's token, the admin token, or the account
+login) can therefore expose any HTTP/TCP service the robot's cloudflared can reach. That
+includes, bypassing the agent:
+- robot-local ROS/Foxglove bridges, which can publish `cmd_vel`
+- the GUI on :4006 directly
+- devices on the home LAN
+
+Quick-tunnel mode is not affected, because those tunnels belong to no account.
+
+The control plane is a root of trust in any tunnel or VPN product. This case is worse than it
+needs to be, though, because the agent container runs with `network_mode: host`.
+
+**Fix:** the robot locks the connector's network itself, so whatever ingress Cloudflare pushes,
+cloudflared can reach only the agent.
+- The container no longer uses the host network; it has its own namespace.
+- `agent/entrypoint.sh` installs nftables output rules in it, then drops privileges:
+  - the agent runs as uid 65532 and cloudflared as uid 65533, with all capabilities removed
+    through `setpriv`;
+  - cloudflared may reach `127.0.0.1:<agent port>` and the internet, nothing else on loopback,
+    nothing private, link-local or CGNAT;
+  - only the agent uid may reach the app (`MC_UPSTREAM`, the GUI through the Docker host
+    gateway, that port only);
+  - DNS to the configured resolvers is allowed.
+
+Verified on putte (Docker 29, x86_64) with the built image, `--read-only`, `cap_drop ALL` +
+`NET_ADMIN, SETUID, SETGID`, and `no-new-privileges`:
+
+| From | 127.0.0.1:4007 agent | GUI (host gateway :14006) | other host port | host's LAN IP | router | internet |
+|---|---|---|---|---|---|---|
+| cloudflared uid | reachable | **blocked** | blocked | blocked | blocked | reachable |
+| agent uid | reachable | reachable | blocked | blocked | blocked | reachable |
+
+The real attack was repeated against that container. A remotely managed tunnel
+(`lockprobe2.bronc.app`) ran in it as the connector uid, and its ingress was pushed to:
+- the GUI directly: no response;
+- the LAN router: no response;
+- the agent: served, and the agent answered `robot_not_paired`, because an unauthenticated
+  request gets nothing.
+
+Residual risks:
+- The Cloudflare account can still point a robot's hostname at the agent of *another*
+  robot, or at an attacker's server. Users would then talk to the wrong origin. The relay stays
+  the root of trust for grants.
+- Running the agent outside this container (e.g. the native binary) has no lock.

@@ -21,6 +21,9 @@ type Spec struct {
 
 type Supervisor struct {
 	Binary string // path to cloudflared
+	// Wrap, if set, is a command prefix that cloudflared runs under, e.g. setpriv dropping it
+	// to its own uid so the container's egress rules can confine it (see Dockerfile).
+	Wrap   []string
 	Logger *slog.Logger
 	// OnHostname is called (from a supervisor goroutine) with each quick-tunnel hostname
 	// cloudflared reports, i.e. once per (re)start in quick mode.
@@ -82,7 +85,8 @@ func (s *Supervisor) loop(ctx context.Context, spec Spec, done chan struct{}) {
 		} else {
 			args = append(args, "--url", spec.QuickURL)
 		}
-		cmd := exec.CommandContext(ctx, s.Binary, args...)
+		argv := append(append(append([]string{}, s.Wrap...), s.Binary), args...)
+		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 		cmd.Env = env
 		cmd.Stdout = os.Stderr
 		cmd.WaitDelay = 10 * time.Second
