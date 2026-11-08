@@ -126,7 +126,7 @@ deployment between modes while robots are claimed.
 ### Self-hosting the relay, manual agent setup
 
 1. Deploy the relay: follow [relay/README.md](relay/README.md) (D1, signing key, GitHub OAuth,
-   Cloudflare API token, `ALLOWED_GITHUB_LOGINS` = your login).
+   Cloudflare API token, `ADMIN_GITHUB_IDS` = your `gh:<id>`; invite others from `/admin`).
 2. On the robot, add the service from
    [`agent/docker-compose.example.yaml`](agent/docker-compose.example.yaml) to MowgliNext's
    `docker/stack-overrides.yaml` (gitignored, kept across updates), set `MC_RELAY_URL`, and start it.

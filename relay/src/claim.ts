@@ -1,4 +1,4 @@
-import { ownedRobots, robotLimit } from "./access";
+import { isUserAllowed, ownedRobots, robotLimit } from "./access";
 import type { Env } from "./env";
 import { hashPairingCode, normalizePairingCode } from "./pairing";
 import { HostnameInUseError, robotHostname, robotSubdomain, type TunnelProvisioner } from "./provisioner";
@@ -153,8 +153,12 @@ export async function claimRobot(
   }
   const robotId = consumed.robot_id;
 
+  // Only while the robot is still unclaimed: somebody else may have added it in the meantime.
   const restoreCode = () =>
-    env.DB.prepare("INSERT OR IGNORE INTO pairing_codes (code_hash, robot_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO pairing_codes (code_hash, robot_id, created_at, expires_at)
+       SELECT ?1, ?2, ?3, ?4 WHERE EXISTS (SELECT 1 FROM robots WHERE robot_id = ?2 AND status = 'unclaimed')`,
+    )
       .bind(codeHash, robotId, consumed.created_at, consumed.expires_at)
       .run();
 
@@ -196,16 +200,22 @@ export async function claimRobot(
   if (upd?.meta.changes !== 1) {
     const still = await env.DB.prepare("SELECT status FROM robots WHERE robot_id = ?").bind(robotId).first<{ status: string }>();
     if (still?.status === "unclaimed") {
-      // Another robot was added to this account at the same moment and filled its limit: undo
-      // this tunnel and keep the code valid.
-      await provisioner.deprovision({ robotId, ...tunnel });
-      await env.DB.prepare("UPDATE robots SET hostname = NULL WHERE robot_id = ? AND status = 'unclaimed'").bind(robotId).run();
+      // Another robot was added to this account at the same moment and filled its limit. Keep the
+      // code valid. The tunnel and the reserved name stay with the robot and are reused when it is
+      // added again: deleting them here could race with somebody else claiming the same robot
+      // under a new code, and take down their tunnel.
       await restoreCode();
       return limitReached((await robotLimit(env, userId)) ?? 0);
     }
     // Lost a race; the tunnel (idempotent by name) now belongs to the winner, so leave it alone.
     await recordClaimFailure(env, userId);
     return INVALID;
+  }
+  // Access removed while the robot was being added: do not leave it owned by nobody usable.
+  const who = await env.DB.prepare("SELECT login FROM users WHERE id = ?").bind(userId).first<{ login: string }>();
+  if (!who || !(await isUserAllowed(env, userId, who.login))) {
+    await unlinkRobot(env, provisioner, robotId);
+    return { ok: false, status: 403, message: "Your account no longer has access." };
   }
   return { ok: true, robotId };
 }

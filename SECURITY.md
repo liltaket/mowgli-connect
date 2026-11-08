@@ -41,6 +41,9 @@ Out of scope: vulnerabilities in MowgliNext itself, in Cloudflare or GitHub, and
 - Remote joystick driving is off by default and can only be enabled on the robot itself at install
   time. The relay cannot enable it. Emergency stop, collision handling and the firmware watchdog
   stay on the robot.
+- Who may sign in is decided by GitHub **id**, never by login: the admin (`ADMIN_GITHUB_IDS`) and
+  the people they invite from the relay's admin page. Removing someone ends their relay sessions at
+  once; their robots stop accepting them at the next sync, within a few minutes.
 - If the robot cannot reach the relay for longer than `MC_MAX_STALE` (10 minutes by default), remote
   sessions stop working, so a revocation cannot be outwaited.
 
@@ -56,6 +59,7 @@ or documented:
 - [security-review-5.md](docs/research/security-review-5.md)
 - [security-review-6.md](docs/research/security-review-6.md)
 - [security-review-7.md](docs/research/security-review-7.md)
+- [security-review-8.md](docs/research/security-review-8.md) (admin page, invites, robot limits)
 - [security-review-gemini.md](docs/research/security-review-gemini.md)
 - [security-review-mistral.md](docs/research/security-review-mistral.md)
 

@@ -255,9 +255,11 @@ describe("robot limits", () => {
     };
     const res = await claimRobot(env, stub, u.id, pairingCode, null);
     expect(res).toMatchObject({ ok: false, status: 403 });
-    expect(deprovisioned).toEqual([robot.robotId]);
+    // The tunnel is left alone (it may already serve a concurrent claim of the same robot), and
+    // the reserved name stays with the robot for its next attempt.
+    expect(deprovisioned).toEqual([]);
     const row = await testEnv.DB.prepare("SELECT status, hostname FROM robots WHERE robot_id = ?").bind(robot.robotId).first();
-    expect(row).toEqual({ status: "unclaimed", hostname: null });
+    expect(row).toEqual({ status: "unclaimed", hostname: "racer.robots.test" });
     expect(((await (await self(robot)).json()) as { status: string }).status).toBe("unclaimed");
     expect(await testEnv.DB.prepare("SELECT 1 AS ok FROM pairing_codes WHERE robot_id = ?").bind(robot.robotId).first()).not.toBeNull();
   });
@@ -288,5 +290,53 @@ describe("address before adding", () => {
     const done = await post("/claim", u, { code, label: "Front lawn", shown_label: "Front lawn", step: "confirm" });
     expect(done.status).toBe(303);
     expect(((await (await self(r2)).json()) as { hostname: string }).hostname).toBe("front-lawn.robots.test");
+  });
+});
+
+describe("review fixes", () => {
+  it("does not leave a robot owned by someone whose access was removed while adding it", async () => {
+    await setup();
+    stubGithub([{ id: 7801, login: "carol" }]);
+    await invite("carol", 7801);
+    const now = Math.floor(Date.now() / 1000);
+    await testEnv.DB.prepare("INSERT INTO users (id, login, name, created_at, last_login_at) VALUES ('gh:7801', 'carol', NULL, ?, ?)").bind(now, now).run();
+    const robot = await newRobot();
+    const { pairingCode } = (await (await register(robot, "carols")).json()) as { pairingCode: string };
+    const { claimRobot } = await import("../src/claim");
+    const { robotHostname } = await import("../src/provisioner");
+    const deprovisioned: string[] = [];
+    const stub = {
+      assignsHostnames: true,
+      async provision(robotId: string, label?: string) {
+        await testEnv.DB.prepare("DELETE FROM invites WHERE user_id = 'gh:7801'").run(); // admin removes carol meanwhile
+        return { hostname: robotHostname(label ?? robotId, "robots.test"), tunnelId: "t-c", dnsRecordId: "d", token: "tok" };
+      },
+      async deprovision(ref: { robotId: string }) {
+        deprovisioned.push(ref.robotId);
+      },
+    };
+    expect(await claimRobot(env, stub, "gh:7801", pairingCode, null)).toMatchObject({ ok: false, status: 403 });
+    expect(deprovisioned).toEqual([robot.robotId]);
+    expect(await testEnv.DB.prepare("SELECT status FROM robots WHERE robot_id = ?").bind(robot.robotId).first()).toEqual({ status: "revoked" });
+    expect(await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM members WHERE robot_id = ?").bind(robot.robotId).first()).toEqual({ n: 0 });
+  });
+
+  it("says so when the configuration still lets a removed person in", async () => {
+    await setup({ ALLOWED_GITHUB_LOGINS: "gh:7901" });
+    stubGithub([{ id: 7901, login: "dave" }]);
+    await invite("dave", 7901);
+    const res = await post("/admin/people/gh:7901/remove", admin, {});
+    expect(res.headers.get("Location")).toBe("/admin?notice=removed_config");
+    expect(await (await get("/admin?notice=removed_config", admin)).text()).toContain("ALLOWED_GITHUB_LOGINS");
+  });
+
+  it("removing someone who is not invited changes nothing, and notices ignore inherited names", async () => {
+    await setup();
+    const res = await post(`/admin/people/${admin.id}/remove`, admin, {});
+    expect(res.status).toBe(404);
+    expect((await get("/admin", admin)).status).toBe(200); // the admin's own session survived
+    for (const path of ["/admin?notice=toString", "/?notice=constructor"]) {
+      expect(await (await get(path, admin)).text()).not.toContain("native code");
+    }
   });
 });

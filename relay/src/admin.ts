@@ -1,4 +1,4 @@
-import { defaultRobotLimit, GITHUB_USER_ID, isAdmin, MAX_ROBOT_LIMIT, parseRobotLimit } from "./access";
+import { defaultRobotLimit, GITHUB_USER_ID, isAdmin, isUserAllowed, MAX_ROBOT_LIMIT, parseRobotLimit } from "./access";
 import type { Env } from "./env";
 import { GITHUB_LOGIN, lookupGithubUser } from "./github";
 import { html, page } from "./html";
@@ -15,6 +15,8 @@ const NOTICES: Record<string, string> = {
   invited: "Invitation added. They can sign in now.",
   already: "That account was already invited.",
   removed: "Access removed. Their sessions here have ended, and their robots stop accepting them within a few minutes.",
+  removed_config:
+    "Invitation removed, but they can still sign in: the relay's configuration (ALLOWED_GITHUB_LOGINS) also lets them in. Remove them there to end their access.",
   limit: "Robot limit saved.",
   settings: "Default robot limit saved.",
 };
@@ -88,7 +90,8 @@ async function adminPage(env: Env, user: SessionUser, url: URL, error?: string, 
   )
     .bind(user.id)
     .first<{ n: number }>();
-  const notice = NOTICES[url.searchParams.get("notice") ?? ""];
+  const key = url.searchParams.get("notice") ?? "";
+  const notice = Object.hasOwn(NOTICES, key) ? NOTICES[key] : undefined;
   return page(
     "Admin",
     html`
@@ -223,13 +226,14 @@ export async function handleAdmin(request: Request, env: Env, url: URL, user: Se
     return redirect("/admin?notice=limit");
   }
   // remove
-  const [del] = await env.DB.batch([
-    env.DB.prepare("DELETE FROM invites WHERE user_id = ?").bind(target),
-    env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(target),
-  ]);
-  if (del?.meta.changes !== 1) return notFound();
+  const del = await env.DB.prepare("DELETE FROM invites WHERE user_id = ?").bind(target).run();
+  if (del.meta.changes !== 1) return notFound(); // only invited people, never an admin
+  await env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(target).run();
   console.log("admin: removed", target, "by", user.id);
-  return redirect("/admin?notice=removed");
+  // Say so when the configuration still lets them in, instead of promising what did not happen.
+  const login = await env.DB.prepare("SELECT login FROM users WHERE id = ?").bind(target).first<{ login: string }>();
+  const still = await isUserAllowed(env, target, login?.login ?? "");
+  return redirect(still ? "/admin?notice=removed_config" : "/admin?notice=removed");
 }
 
 function lookupError(reason: "not_found" | "not_a_user" | "unavailable", login?: string): string {

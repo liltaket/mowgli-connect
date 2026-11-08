@@ -87,7 +87,8 @@ async function dashboard(env: Env, user: SessionUser, url: URL): Promise<Respons
       if (up && r.first_online_at === null) await markFirstOnline(env, r.robot_id);
     }),
   );
-  const notice = NOTICES[url.searchParams.get("notice") ?? ""];
+  const key = url.searchParams.get("notice") ?? "";
+  const notice = Object.hasOwn(NOTICES, key) ? NOTICES[key] : undefined;
   const code = url.searchParams.get("code") ?? "";
   const limit = await robotLimit(env, user.id);
   const owned = await ownedRobots(env, user.id);

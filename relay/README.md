@@ -67,7 +67,9 @@ npx wrangler login
    npx wrangler secret put CF_API_TOKEN
    ```
 5. **Vars in `wrangler.jsonc`**: `RELAY_ORIGIN`, `CF_ACCOUNT_ID`, `CF_ZONE_ID`, `ROBOT_ZONE`,
-   `ALLOWED_GITHUB_LOGINS` (**required**: empty means nobody can sign in; `gh:<id>` entries, or `*` for open sign-up).
+   `ADMIN_GITHUB_IDS` (your `gh:<id>`, from `gh api users/<login> -q .id`; you then invite people
+   from `/admin`), and optionally `ALLOWED_GITHUB_LOGINS` (`gh:<id>` entries, or `*` for open
+   sign-up). With neither, nobody can sign in.
    Add a `routes` entry so the Worker is served on exactly `RELAY_ORIGIN` (custom domain).
 6. **Deploy**: `npm run deploy` (not done by this repo's tooling; run it yourself).
 
@@ -151,7 +153,8 @@ touching Cloudflare.
 | `RELAY_KEY_ID` | var | yes | `kid` of the relay signing key |
 | `RELAY_SIGNING_KEY` | **secret** | yes | Ed25519 private key (JWK or PKCS#8 b64) |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | **secret** | yes | GitHub OAuth app |
-| `ALLOWED_GITHUB_LOGINS` | var | recommended | comma list of GitHub logins (case-insensitive) and/or `gh:<numeric id>`. Empty = open. Applies at login **and** on every session lookup. Prefer `gh:<id>`: logins can be renamed and re-registered by someone else. |
+| `ADMIN_GITHUB_IDS` | var | recommended | comma list of `gh:<numeric id>` (ids only, never logins). These accounts can always sign in, own any number of robots, and use `/admin` to invite people by GitHub username (stored by id), remove access and set robot limits (default 3 per person). |
+| `ALLOWED_GITHUB_LOGINS` | var | no | extra sign-in allowlist for hand-configured relays: comma list of GitHub logins (case-insensitive) and/or `gh:<numeric id>`, or `*` for any GitHub account. Empty and no admins/invites = nobody (fail closed). Applies at login **and** on every session lookup. Prefer `gh:<id>`: logins can be renamed and re-registered by someone else. |
 | `PROVISIONER` | var | no | `cloudflare` (default), `quick` ([zero-cost mode](#zero-cost-quick-tunnel-mode)) or `fake` |
 | `CF_API_TOKEN` | **secret** | cloudflare | API token |
 | `CF_ACCOUNT_ID`, `CF_ZONE_ID`, `ROBOT_ZONE` | var | cloudflare | account, zone id, and zone name for `<robotId>.<ROBOT_ZONE>` |
@@ -209,7 +212,12 @@ Independent check: `python3 -c "import hashlib,base64;print(base64.b32encode(has
 - **Pairing**: 50-bit code, 15 min, single use (atomic `DELETE ... RETURNING`), hash-only storage,
   10 failures/hour/user (failed `GET /claim` previews count too). Provisioning failure restores the
   code so the user can retry.
-- **Not yet done / recommended before real use**: set `ALLOWED_GITHUB_LOGINS`; add a Cloudflare WAF
+- **Access**: admins (`ADMIN_GITHUB_IDS`), invites from `/admin` (D1 `invites`, by id) and
+  `ALLOWED_GITHUB_LOGINS` are checked at login and on every session lookup. Removing someone ends
+  their relay sessions at once, and their robots drop them at the next sync (members are filtered
+  by access). Robot limits are checked before a pairing code is used and again atomically when the
+  robot is claimed.
+- **Not yet done / recommended before real use**: add a Cloudflare WAF
   rate-limit rule on `/v1/robots/register` (unauthenticated: any key can create an `unclaimed` row);
   encrypt the tunnel token; alerting on the cron cleanup errors.
 
