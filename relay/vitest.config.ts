@@ -26,7 +26,7 @@ export default defineConfig(async () => {
             ROBOT_ZONE: "robots.test",
             GITHUB_CLIENT_ID: "test-client-id",
             GITHUB_CLIENT_SECRET: "test-client-secret",
-            ALLOWED_GITHUB_LOGINS: "",
+            ALLOWED_GITHUB_LOGINS: "*", // tests: any user (empty would mean nobody)
             TEST_MIGRATIONS: migrations,
           },
         },

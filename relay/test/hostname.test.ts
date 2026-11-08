@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { newUser, post, register, newRobot, self } from "./helpers";
+import { newUser, post, register, newRobot, self, testEnv } from "./helpers";
 import { robotSubdomain } from "../src/provisioner";
 
 interface SelfBody {
@@ -37,5 +37,29 @@ describe("readable robot hostnames", () => {
     expect(c.hostname).toBe(`${c.robot.robotId}.robots.test`);
     const d = await claimWith(null); // robot's reported name
     expect(d.hostname).toBe("kuffe-sim.robots.test");
+  });
+});
+
+describe("readable hostname used elsewhere in the zone", () => {
+  it("falls back to the robot id instead of touching the other record", async () => {
+    const { claimRobot } = await import("../src/claim");
+    const { HostnameInUseError, robotHostname } = await import("../src/provisioner");
+    const robot = await newRobot();
+    const { pairingCode } = (await (await register(robot, "garden shed")).json()) as { pairingCode: string };
+    const user = await newUser();
+    const labels: (string | undefined)[] = [];
+    const stub = {
+      assignsHostnames: true,
+      async provision(robotId: string, label?: string) {
+        labels.push(label);
+        if (label) throw new HostnameInUseError("taken");
+        return { hostname: robotHostname(robotId, "robots.test"), tunnelId: "t", dnsRecordId: "d", token: "tok" };
+      },
+      async deprovision() {},
+    };
+    const res = await claimRobot(testEnv, stub, user.id, pairingCode, null);
+    expect(res.ok).toBe(true);
+    expect(labels).toEqual(["garden-shed", undefined]);
+    expect(((await (await self(robot)).json()) as SelfBody).hostname).toBe(`${robot.robotId}.robots.test`);
   });
 });

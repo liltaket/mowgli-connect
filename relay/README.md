@@ -67,7 +67,7 @@ npx wrangler login
    npx wrangler secret put CF_API_TOKEN
    ```
 5. **Vars in `wrangler.jsonc`**: `RELAY_ORIGIN`, `CF_ACCOUNT_ID`, `CF_ZONE_ID`, `ROBOT_ZONE`,
-   `ALLOWED_GITHUB_LOGINS` (**set this**, otherwise any GitHub user can sign in and claim robots).
+   `ALLOWED_GITHUB_LOGINS` (**required**: empty means nobody can sign in; `gh:<id>` entries, or `*` for open sign-up).
    Add a `routes` entry so the Worker is served on exactly `RELAY_ORIGIN` (custom domain).
 6. **Deploy**: `npm run deploy` (not done by this repo's tooling; run it yourself).
 

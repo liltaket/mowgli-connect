@@ -461,7 +461,8 @@ func hardenResponse(h http.Header) {
 	if sc := h.Values("Set-Cookie"); len(sc) > 0 {
 		h.Del("Set-Cookie")
 		for _, v := range sc {
-			if !strings.HasPrefix(strings.TrimSpace(v), CookieName+"=") {
+			name, _, _ := strings.Cut(v, "=")
+			if strings.TrimSpace(name) != CookieName { // browsers trim the name, so must we
 				h.Add("Set-Cookie", v)
 			}
 		}

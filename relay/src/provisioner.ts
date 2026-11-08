@@ -101,6 +101,9 @@ export class QuickProvisioner implements TunnelProvisioner {
   async deprovision(_ref: TunnelRef): Promise<void> {}
 }
 
+/** The hostname already has DNS records that are not a robot tunnel; nothing was changed. */
+export class HostnameInUseError extends Error {}
+
 export class CloudflareApiError extends Error {
   constructor(
     readonly status: number,
@@ -188,12 +191,20 @@ export class CloudflareTunnelProvisioner implements TunnelProvisioner {
     return list?.find((t) => t.name === name && !t.deleted_at) ?? null;
   }
 
+  /**
+   * The CNAME for a robot hostname, or null. Throws HostnameInUseError if the name has any record
+   * that is not a proxied CNAME to a tunnel: the zone may hold other services (a website, mail),
+   * and those must never be overwritten or later deleted.
+   */
   private async findDns(hostname: string): Promise<CfDnsRecord | null> {
-    const list = await this.call<CfDnsRecord[]>(
-      "GET",
-      `/zones/${this.cfg.zoneId}/dns_records?type=CNAME&name.exact=${encodeURIComponent(hostname)}`,
-    );
-    return list?.find((r) => r.type === "CNAME" && r.name.toLowerCase() === hostname) ?? null;
+    const list =
+      (await this.call<CfDnsRecord[]>("GET", `/zones/${this.cfg.zoneId}/dns_records?name.exact=${encodeURIComponent(hostname)}`)) ??
+      [];
+    const mine = list.filter((r) => r.name.toLowerCase() === hostname);
+    if (mine.some((r) => r.type !== "CNAME" || !r.content.toLowerCase().endsWith(".cfargotunnel.com"))) {
+      throw new HostnameInUseError(`${hostname} already has other DNS records`);
+    }
+    return mine[0] ?? null;
   }
 
   async provision(robotId: string, label?: string): Promise<ProvisionedTunnel> {
@@ -241,7 +252,13 @@ export class CloudflareTunnelProvisioner implements TunnelProvisioner {
 
     // DNS first so the name stops resolving to the tunnel.
     let dnsId = ref.dnsRecordId;
-    if (!dnsId) dnsId = (await this.findDns(hostname))?.id ?? null;
+    if (!dnsId) {
+      try {
+        dnsId = (await this.findDns(hostname))?.id ?? null;
+      } catch (e) {
+        if (!(e instanceof HostnameInUseError)) throw e; // not ours: leave it alone
+      }
+    }
     if (dnsId) await this.call("DELETE", `/zones/${this.cfg.zoneId}/dns_records/${dnsId}`, undefined, [404]);
 
     let tunnelId = ref.tunnelId;

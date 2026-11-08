@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CloudflareTunnelProvisioner, createProvisioner, FakeProvisioner, robotHostname } from "../src/provisioner";
+import { CloudflareTunnelProvisioner, createProvisioner, FakeProvisioner, HostnameInUseError, robotHostname } from "../src/provisioner";
 import { testEnv } from "./helpers";
 
 interface Seen {
@@ -104,6 +104,20 @@ describe("CloudflareTunnelProvisioner", () => {
     expect(patch.path).toBe("/zones/ZONE/dns_records/dns-9");
     expect(patch.body.content).toBe("tun-1.cfargotunnel.com");
     expect(patch.body.proxied).toBe(true);
+  });
+
+  it("never touches a name that is used by something other than a tunnel (security review G-01)", async () => {
+    for (const rec of [
+      { id: "web", type: "CNAME", name: "garden-shed.robots.example.com", content: "example.github.io" },
+      { id: "a", type: "A", name: "garden-shed.robots.example.com", content: "192.0.2.1" },
+      { id: "mx", type: "MX", name: "garden-shed.robots.example.com", content: "mail.example.com" },
+    ]) {
+      const { seen, fetchFn } = cfDouble({ dns: [rec] });
+      await expect(new CloudflareTunnelProvisioner(cfg(fetchFn)).provision("abcdefghijklmnop", "garden-shed")).rejects.toBeInstanceOf(
+        HostnameInUseError,
+      );
+      expect(seen.filter((s) => s.path.startsWith("/zones/") && s.method !== "GET")).toEqual([]);
+    }
   });
 
   it("deprovision removes DNS then clears connections and deletes the tunnel", async () => {

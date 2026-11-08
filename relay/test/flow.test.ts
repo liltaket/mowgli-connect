@@ -284,6 +284,14 @@ describe("sessions and allowlist", () => {
     expect(await (await get("/", user)).text()).toContain("Sign in with GitHub");
   });
 
+  it("an empty ALLOWED_GITHUB_LOGINS admits nobody (fail closed); * admits everyone", async () => {
+    const user = await newUser("someone");
+    const res = await call("/", { headers: { Cookie: user.cookie } }, { ...testEnv, ALLOWED_GITHUB_LOGINS: "" });
+    expect(await res.text()).toContain("Sign in with GitHub");
+    const open = await call("/", { headers: { Cookie: user.cookie } }, { ...testEnv, ALLOWED_GITHUB_LOGINS: "*" });
+    expect(await open.text()).toContain("Signed in as");
+  });
+
   it("ALLOWED_GITHUB_LOGINS blocks sessions of users that are not listed", async () => {
     const allowed = await newUser("Alice-Dev");
     const other = await newUser("mallory");

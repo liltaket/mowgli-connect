@@ -338,11 +338,13 @@ func run() error {
 						break
 					}
 					if err != nil {
-						log.Error("registering with relay", "err", err)
+						log.Error("registering with relay", "err", err, "retry", backoff)
 						pairing = nil
 						wait = backoff
+						backoff = min(backoff*2, 5*time.Minute)
 						break
 					}
+					backoff = 5 * time.Second
 					printPairing(pairing)
 					if b, err := json.Marshal(pairing); err == nil {
 						_ = os.WriteFile(pairingPath, b, 0o600)
@@ -355,6 +357,14 @@ func run() error {
 				backoff = min(backoff*2, 5*time.Minute)
 			}
 			nextPoll = time.Now().Add(wait)
+			if current == nil || current.Status != "claimed" {
+				// No tunnel runs now: a hostname a previous cloudflared announced is stale.
+				pendingHost = ""
+				select {
+				case <-hostCh:
+				default:
+				}
+			}
 			for _, d := range syncWaiters {
 				close(d)
 			}

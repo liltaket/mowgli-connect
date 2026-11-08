@@ -354,3 +354,15 @@ func TestReplayStateFailsClosed(t *testing.T) {
 		t.Fatal("grant issued after startup rejected")
 	}
 }
+
+// The app must not be able to set the gateway cookie, however it spaces the name (review G-05).
+func TestUpstreamCannotPlantSessionCookie(t *testing.T) {
+	h := http.Header{}
+	for _, v := range []string{CookieName + "=a", " " + CookieName + " =b; Path=/", CookieName + "\t=c", "other=1"} {
+		h.Add("Set-Cookie", v)
+	}
+	hardenResponse(h)
+	if got := h.Values("Set-Cookie"); len(got) != 1 || got[0] != "other=1" {
+		t.Fatalf("Set-Cookie after hardening: %q", got)
+	}
+}

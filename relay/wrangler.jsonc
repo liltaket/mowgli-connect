@@ -32,6 +32,6 @@
     "ROBOT_ZONE": "robots.example.com", // PLACEHOLDER: robot hostnames are <robotId>.<ROBOT_ZONE>
     "AGENT_ORIGIN": "http://127.0.0.1:4007",
     "MAX_NEW_ROBOTS_PER_HOUR": "30", // global cap on new unclaimed robot registrations
-    "ALLOWED_GITHUB_LOGINS": "" // comma list of GitHub logins (or gh:<id>); empty = open to any GitHub user
+    "ALLOWED_GITHUB_LOGINS": "" // comma list of gh:<id> (or logins); empty = nobody can sign in, "*" = any GitHub user
   }
 }

@@ -12,14 +12,15 @@ export interface SessionUser {
 
 /**
  * ALLOWED_GITHUB_LOGINS: comma list of GitHub logins (case-insensitive) or `gh:<id>` entries.
- * Empty/unset = no restriction. Prefer `gh:<id>`: GitHub logins can be renamed and later re-registered.
+ * Empty/unset = nobody (fail closed); `*` = any GitHub account (open sign-up). Prefer
+ * `gh:<id>`: GitHub logins can be renamed and later re-registered.
  */
 export function isUserAllowed(env: Env, userId: string, login: string): boolean {
   const list = (env.ALLOWED_GITHUB_LOGINS ?? "")
     .split(",")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
-  if (list.length === 0) return true;
+  if (list.includes("*")) return true;
   return list.includes(login.toLowerCase()) || list.includes(userId.toLowerCase());
 }
 

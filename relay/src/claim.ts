@@ -1,6 +1,6 @@
 import type { Env } from "./env";
 import { hashPairingCode, normalizePairingCode } from "./pairing";
-import { robotHostname, robotSubdomain, type TunnelProvisioner } from "./provisioner";
+import { HostnameInUseError, robotHostname, robotSubdomain, type TunnelProvisioner } from "./provisioner";
 import { nowSeconds } from "./util";
 
 export const CLAIM_FAILURES_PER_HOUR = 10;
@@ -110,7 +110,14 @@ export async function claimRobot(
 
   let tunnel;
   try {
-    tunnel = await provisioner.provision(robotId, hostLabel);
+    try {
+      tunnel = await provisioner.provision(robotId, hostLabel);
+    } catch (e) {
+      if (!(e instanceof HostnameInUseError) || hostLabel === undefined) throw e;
+      // The readable name is used by something else in the zone: fall back to the robot id.
+      await env.DB.prepare("UPDATE robots SET hostname = NULL WHERE robot_id = ? AND status = 'unclaimed'").bind(robotId).run();
+      tunnel = await provisioner.provision(robotId);
+    }
   } catch (e) {
     console.error("tunnel provisioning failed", robotId, e instanceof Error ? e.message : "unknown");
     await restoreCode(); // let the user retry with the same code
