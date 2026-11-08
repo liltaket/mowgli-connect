@@ -63,3 +63,28 @@ describe("readable hostname used elsewhere in the zone", () => {
     expect(((await (await self(robot)).json()) as SelfBody).hostname).toBe(`${robot.robotId}.robots.test`);
   });
 });
+
+describe("agent info header", () => {
+  it("parses only the exact format", async () => {
+    const { parseAgentHeader } = await import("../src/robotApi");
+    expect(parseAgentHeader("version=a7030e0; teleop=off")).toEqual({ version: "a7030e0", teleop: 0 });
+    expect(parseAgentHeader("version=1.2.3+x; teleop=on")).toEqual({ version: "1.2.3+x", teleop: 1 });
+    for (const bad of [null, "", "version=<b>; teleop=on", "version=1; teleop=yes", "teleop=on", "version=1; teleop=on; x=1"]) {
+      expect(parseAgentHeader(bad)).toBeNull();
+    }
+  });
+
+  it("is shown on the owner's dashboard", async () => {
+    const robot = await newRobot();
+    const { pairingCode } = (await (await register(robot, "joy test")).json()) as { pairingCode: string };
+    const user = await newUser();
+    expect((await post("/claim", user, { code: pairingCode })).status).toBe(303);
+    const { assertion, call } = await import("./helpers");
+    const res = await call("/v1/robots/self", {
+      headers: { Authorization: await assertion(robot, "GET", "/v1/robots/self"), "MC-Agent": "version=t1; teleop=on" },
+    });
+    expect(res.status).toBe(200);
+    const dash = await (await call("/", { headers: { Cookie: user.cookie } })).text();
+    expect(dash).toContain("Remote joystick on");
+  });
+});

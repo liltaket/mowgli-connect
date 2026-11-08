@@ -284,7 +284,15 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	client := &relay.Client{Origin: cfg.relayURL, Key: key, RobotID: robotID}
+	teleop := "off"
+	if cfg.allowTeleop {
+		teleop = "on"
+	}
+	client := &relay.Client{Origin: cfg.relayURL, Key: key, RobotID: robotID,
+		Agent: fmt.Sprintf("version=%s; teleop=%s", agentVersionToken(version), teleop)}
+	if !quick && cfg.listen != "127.0.0.1:4007" {
+		log.Warn("named tunnels deliver to 127.0.0.1:4007 (the relay's AGENT_ORIGIN); with another MC_LISTEN they answer 502", "listen", cfg.listen)
+	}
 	var pairing *relay.Registration
 	backoff := 5 * time.Second
 	pendingHost, healthFails := "", 0
@@ -397,6 +405,20 @@ func run() error {
 		case <-time.After(time.Until(wake(nextPoll, nextReport, pendingHost != "" && current != nil && current.Status == "claimed"))):
 		}
 	}
+}
+
+// agentVersionToken keeps the version safe for a header token.
+func agentVersionToken(v string) string {
+	out := []rune{}
+	for _, r := range v {
+		if r < 128 && (r == '.' || r == '-' || r == '+' || r == '_' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z') && len(out) < 40 {
+			out = append(out, r)
+		}
+	}
+	if len(out) == 0 {
+		return "unknown"
+	}
+	return string(out)
 }
 
 // wake returns the earliest due deadline: the relay poll, or the hostname report while one is

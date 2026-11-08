@@ -23,6 +23,8 @@ interface RobotRow {
   tunnel_id: string | null;
   tunnel_token: string | null;
   last_seen_at: number;
+  agent_version: string | null;
+  allow_teleop: number | null;
 }
 
 function verifyAssertion(
@@ -202,15 +204,25 @@ export async function robotSelf(env: Env, request: Request, url: URL): Promise<R
   if (!robot) return json({ error: "unknown_robot" }, 404);
 
   const now = nowSeconds();
-  if (now - robot.last_seen_at > 30) {
-    await env.DB.prepare("UPDATE robots SET last_seen_at = ? WHERE robot_id = ?").bind(now, a.robotId).run();
+  const info = parseAgentHeader(request.headers.get("MC-Agent"));
+  const infoChanged = info && (info.version !== robot.agent_version || info.teleop !== robot.allow_teleop);
+  if (now - robot.last_seen_at > 30 || infoChanged) {
+    await env.DB.prepare("UPDATE robots SET last_seen_at = ?, agent_version = ?, allow_teleop = ? WHERE robot_id = ?")
+      .bind(now, info?.version ?? robot.agent_version, info ? info.teleop : robot.allow_teleop, a.robotId)
+      .run();
   }
   return selfResponse(env, a.robotId, robot);
 }
 
+/** `MC-Agent: version=1.2.3; teleop=on|off` (informational; set by the robot's own agent). */
+export function parseAgentHeader(h: string | null): { version: string; teleop: number } | null {
+  const m = /^version=([A-Za-z0-9._+-]{1,40}); teleop=(on|off)$/.exec(h ?? "");
+  return m ? { version: m[1]!, teleop: m[2] === "on" ? 1 : 0 } : null;
+}
+
 function loadRobot(env: Env, robotId: string): Promise<RobotRow | null> {
   return env.DB.prepare(
-    "SELECT robot_id, status, session_epoch, hostname, tunnel_token, last_seen_at FROM robots WHERE robot_id = ?",
+    "SELECT robot_id, status, session_epoch, hostname, tunnel_token, last_seen_at, agent_version, allow_teleop FROM robots WHERE robot_id = ?",
   )
     .bind(robotId)
     .first<RobotRow>();

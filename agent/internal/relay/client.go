@@ -30,6 +30,9 @@ type Client struct {
 	RobotID string
 	HTTP    *http.Client
 	Now     func() time.Time
+	// Agent, if set, is sent as the MC-Agent header so the relay can show the robot's agent
+	// version and local settings, e.g. "version=1.2.3; teleop=off". Informational only.
+	Agent string
 }
 
 type Registration struct {
@@ -109,6 +112,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	}
 	req.Header.Set("Authorization", "MC-Robot "+tok)
 	req.Header.Set("Accept", "application/json")
+	if c.Agent != "" {
+		req.Header.Set("MC-Agent", c.Agent)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

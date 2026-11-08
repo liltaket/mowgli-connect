@@ -5,3 +5,4 @@ node_modules/
 /agent/connect-agent
 /relay/wrangler.prod.jsonc
 *.log
+/.claude/

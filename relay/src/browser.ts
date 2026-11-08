@@ -42,11 +42,12 @@ interface RobotListRow {
   hostname: string | null;
   role: string;
   label: string | null;
+  allow_teleop: number | null;
 }
 
 async function dashboard(env: Env, user: SessionUser, url: URL): Promise<Response> {
   const rows = await env.DB.prepare(
-    `SELECT r.robot_id, r.name, r.hostname, m.role, m.label
+    `SELECT r.robot_id, r.name, r.hostname, m.role, m.label, r.allow_teleop
      FROM members m JOIN robots r ON r.robot_id = m.robot_id
      WHERE m.user_id = ? AND r.status = 'claimed' ORDER BY m.created_at`,
   )
@@ -70,12 +71,15 @@ ${rows.results.map(
 <a class="btn primary open" href="/open/${r.robot_id}">Open</a>
 <span class="meta">${
     r.hostname ? html`<span class="state">Tunnel ready</span>` : html`<span class="state wait">waiting for tunnel</span>`
-  } · ${r.role === "owner" ? "Owner" : "Viewer"}</span>
+  } · ${r.role === "owner" ? "Owner" : "Viewer"}${
+    r.allow_teleop === null ? "" : html` · Remote joystick ${r.allow_teleop ? "on" : "off"}`
+  }</span>
 ${
   r.role === "owner"
     ? html`<details><summary>Manage</summary><div class="manage">
 <div><code>${r.robot_id}</code>${r.hostname ? html`<br><code>${r.hostname}</code>` : ""}</div>
 <form method="post" action="/robots/${r.robot_id}/sessions/revoke"><button>Sign everyone out</button><p>Ends every open session on this robot, including yours.</p></form>
+<p>Remote joystick is ${r.allow_teleop ? "allowed" : "off"} on this robot. Only the robot can change it: rerun the installer there.</p>
 <form method="post" action="/robots/${r.robot_id}/unlink"><button class="danger">Unlink robot</button><p>Removes the robot from your account and deletes its tunnel. You will need a new pairing code to add it again.</p></form>
 </div></details>`
     : ""
