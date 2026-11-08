@@ -2,24 +2,85 @@
 
 # Mowgli Connect
 
-Secure remote access to a robot's existing web GUI (first target: the MowgliNext GUI on port 4006)
-through Cloudflare Tunnel, without VPN, Tailscale or port forwarding. Inspired by T3 Connect.
-App traffic goes browser ↔ Cloudflare ↔ robot directly; the small relay only handles login,
-pairing and short-lived grants.
+Secure remote access to your MowgliNext robot mower's
+existing web GUI from anywhere, on a phone or a computer. No VPN, no Tailscale, no port
+forwarding. Free.
 
-**Status: prototype. Not deployed, not tested on a robot.** Tested end to end through real
-Cloudflare with the real MowgliNext GUI and simulated robot data: [docs/test-report.md](docs/test-report.md).
+Project site: <https://liltaket.github.io/mowgli-connect/>
 
-| Path | What |
-|---|---|
-| [`agent/`](agent) | Go agent + cloudflared, one container on the robot. Authenticating reverse proxy in front of the GUI. |
-| [`relay/`](relay) | Cloudflare Worker + D1: GitHub login, pairing, grants, tunnel provisioning. See [relay/README.md](relay/README.md). |
-| [`docs/architecture.md`](docs/architecture.md) | Design decisions, costs, open questions. |
-| [`docs/protocol.md`](docs/protocol.md) | Agent ↔ relay contract. |
-| [`sim/`](sim/README.md) | Test tools: fake Foxglove/ROS robot feeding the real GUI, WebSocket traffic meter. Not for production. **`sim/foxglove-sim` contains code and schemas copied from MowgliNext and stays under MowgliNext's license** (GPLv3 + its commercial clause, see `sim/foxglove-sim/LICENSE`); it is never shipped with the agent or relay. Move it to its own repo before any commercial use. |
-| [`docs/research/`](docs/research) | T3 Connect analysis, GUI traffic, Cloudflare pricing, licensing, security review. |
+> **Status: prototype.** Tested end to end through real Cloudflare with the real MowgliNext GUI and
+> a simulated robot, from a phone on 5G. Not yet run on a real mower. Sign-in is invite-only for now.
+> Details: [docs/test-report.md](docs/test-report.md).
 
-## How it works
+- [For robot owners](#for-robot-owners)
+- [For developers and self-hosters](#for-developers-and-self-hosters)
+
+---
+
+## For robot owners
+
+### What it is
+
+A small agent container runs on the robot next to MowgliNext, as its own Docker Compose project in
+`~/mowgli-connect`. It does not modify MowgliNext and is not touched by MowgliNext updates. You sign
+in at <https://connect.bronc.app> with GitHub, enter the pairing code the agent prints, and the
+robot gets its own address such as `https://kuffe.bronc.app`. Pressing Open logs you in to the
+robot's own GUI.
+
+Your data goes browser, Cloudflare Tunnel, agent on the robot, MowgliNext GUI. The relay (a
+Cloudflare Worker) only handles sign-in, pairing and 60-second grants. Live data never passes
+through it. Cloudflare ends TLS for the tunnel, so Cloudflare can technically see the traffic.
+
+### Quick start
+
+Requirements: a MowgliNext robot with Docker and Docker Compose v2, internet access, amd64 or arm64.
+
+1. **Install.** On the robot, run:
+
+   ```sh
+   curl -fsSL https://liltaket.github.io/mowgli-connect/install.sh -o install.sh && less install.sh && sh install.sh
+   ```
+
+   The installer asks for the robot name and whether to allow the remote joystick (default no,
+   recommended), starts the container and prints a pairing code.
+2. **Pair.** Go to <https://connect.bronc.app>, sign in with GitHub and enter the code.
+3. **Open.** Press Open next to your robot.
+
+See the pairing code again: `docker logs mowgli-connect`.
+
+**Update:**
+
+```sh
+cd ~/mowgli-connect && docker compose pull && docker compose up -d
+```
+
+**Uninstall:**
+
+```sh
+cd ~/mowgli-connect && docker compose down -v
+```
+
+Then unlink the robot on connect.bronc.app.
+
+Full guide with troubleshooting: [docs/install.md](docs/install.md).
+
+### Remote joystick
+
+Remote joystick driving is **off by default**. It can only be enabled on the robot itself, at install
+time (`MC_ALLOW_TELEOP`); the relay cannot turn it on. Emergency stop, collision handling and the
+firmware watchdog stay on the robot and do not depend on the connection. Latency over the internet
+has not been tested on a real mower, so leave it off unless you have validated it.
+
+### Privacy
+
+The relay stores your GitHub user id, username and display name, which robots you paired, and
+short-lived sign-in records (hashed). It stores no mower data, maps, GPS or telemetry.
+
+---
+
+## For developers and self-hosters
+
+### Architecture
 
 1. The agent starts on the robot, creates an Ed25519 identity and prints a pairing code.
 2. The owner signs in to the relay and enters the code. The relay creates a tunnel and a hostname
@@ -28,7 +89,23 @@ Cloudflare with the real MowgliNext GUI and simulated robot data: [docs/test-rep
    its own session cookie. Every request, including WebSockets, is checked by the agent before it
    reaches the GUI on `127.0.0.1:4006`.
 
-## Two tunnel modes
+App traffic goes browser to Cloudflare to robot directly; the relay only handles login, pairing and
+short-lived grants. Design decisions, costs and open questions: [docs/architecture.md](docs/architecture.md).
+Agent and relay contract: [docs/protocol.md](docs/protocol.md). Inspired by T3 Connect.
+
+### Components
+
+| Path | What |
+|---|---|
+| [`agent/`](agent) | Go agent + cloudflared, one container on the robot. Authenticating reverse proxy in front of the GUI. |
+| [`relay/`](relay) | Cloudflare Worker + D1: GitHub login, pairing, grants, tunnel provisioning. See [relay/README.md](relay/README.md) to self-host. |
+| [`docs/`](docs) | [Install guide](docs/install.md), [architecture](docs/architecture.md), [protocol](docs/protocol.md), [test report](docs/test-report.md), and [research](docs/research) (T3 Connect analysis, GUI traffic, Cloudflare pricing, licensing, security reviews). |
+| [`sim/`](sim/README.md) | Test tools: fake Foxglove/ROS robot feeding the real GUI, WebSocket traffic meter. Not for production. **`sim/foxglove-sim` contains code and schemas copied from MowgliNext and stays under MowgliNext's license** (GPLv3 + its commercial clause, see `sim/foxglove-sim/LICENSE`); it is never shipped with the agent or relay. Move it to its own repo before any commercial use. |
+| [`site/`](site) | The project site, published to GitHub Pages by `.github/workflows/pages.yml`. Also hosts `install.sh`. |
+
+The agent image is published as `ghcr.io/liltaket/mowgli-connect-agent` (linux/amd64 + linux/arm64).
+
+### Two tunnel modes
 
 | | Quick (free, no domain) | Named (own domain) |
 |---|---|---|
@@ -42,13 +119,14 @@ Start with quick mode; switch to named when you have a domain (a free eu.org or 
 may work, see [free-hostnames research](docs/research/free-hostnames.md)). Do not switch a relay
 deployment between modes while robots are claimed.
 
-## Prototype setup (one robot)
+### Self-hosting the relay, manual agent setup
 
 1. Deploy the relay: follow [relay/README.md](relay/README.md) (D1, signing key, GitHub OAuth,
    Cloudflare API token, `ALLOWED_GITHUB_LOGINS` = your login).
 2. On the robot, add the service from
    [`agent/docker-compose.example.yaml`](agent/docker-compose.example.yaml) to MowgliNext's
    `docker/stack-overrides.yaml` (gitignored, kept across updates), set `MC_RELAY_URL`, and start it.
+   The agent must run through Docker Compose: it refuses to start without Docker's embedded DNS.
 3. `docker logs mowgli-connect` shows the pairing code; open the claim link and sign in.
 4. Open the robot from the relay dashboard, from anywhere.
 
@@ -72,16 +150,29 @@ deployment between modes while robots are claimed.
 
 `connect-agent status` prints the robot id, pairing code or URL.
 
-## Validation so far
+### Validation and security
 
-See [docs/test-report.md](docs/test-report.md). In short: agent and relay test suites pass (incl.
-fuzzing and load/robustness tests), and the full chain pairing → Cloudflare Quick Tunnel →
-grant login → real MowgliNext GUI with live simulated data works in a real browser, including
-idle WebSockets beyond Cloudflare's timeout, ~2 MB/s stress traffic and cloudflared crash recovery.
+Test results: [docs/test-report.md](docs/test-report.md). In short: agent and relay test suites pass
+(including fuzzing and load/robustness tests), and the full chain pairing, Cloudflare Quick Tunnel,
+grant login, real MowgliNext GUI with live simulated data works in a real browser, including idle
+WebSockets beyond Cloudflare's timeout, ~2 MB/s stress traffic and cloudflared crash recovery.
 Remote traffic reduction (WebSocket compression + topic throttling) cut the simulated map page
 from ~368 to ~40 KB/s through Cloudflare.
-Two independent security reviews: [1](docs/research/security-review.md),
-[2](docs/research/security-review-2.md).
 
-**Not yet:** a real robot and its uplink, a named tunnel with a domain, the deployed Worker with
-real GitHub OAuth, the Docker image build, mobile browsers, teleop latency.
+Security: every request is checked by the agent, each robot has its own key and tunnel, and the
+container's network lock limits what a compromised Cloudflare account could reach. Independent
+reviews by several AI models, with findings verified and fixed or documented:
+[1](docs/research/security-review.md), [2](docs/research/security-review-2.md),
+[3](docs/research/security-review-3.md), [4](docs/research/security-review-4.md),
+[5](docs/research/security-review-5.md), [6](docs/research/security-review-6.md),
+[7](docs/research/security-review-7.md), [Gemini](docs/research/security-review-gemini.md),
+[Mistral](docs/research/security-review-mistral.md). To report a vulnerability, see
+[SECURITY.md](SECURITY.md).
+
+**Not yet:** a real robot and its uplink, and remote
+joystick latency.
+
+### License
+
+No license has been chosen yet; all rights reserved for now. `sim/foxglove-sim` is derived from
+MowgliNext and stays under its license.

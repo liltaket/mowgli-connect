@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mowgli Connect</title>
-<meta name="description" content="Secure remote access to your MowgliNext robot mower's own web interface, without VPN or port forwarding.">
+<meta name="description" content="Open your MowgliNext robot mower's own web interface from anywhere, on your phone or computer. No VPN, no Tailscale, no port forwarding. Free.">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -19,23 +19,32 @@
     --signal: #f2c230;
     --rule: #cbd8c6;
     --card: #ffffff;
+    --focus: #7a5d00;
+    --code-bg: #14201a;
+    --code-ink: #e7efe4;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --ink: #e7efe4; --paper: #101a12; --muted: #a6b8a8; --rule: #2a3a2d; --card: #162319;
+      --focus: var(--signal); --code-bg: #0b120d;
     }
   }
   :root[data-theme="dark"] {
     --ink: #e7efe4; --paper: #101a12; --muted: #a6b8a8; --rule: #2a3a2d; --card: #162319;
+    --focus: var(--signal); --code-bg: #0b120d;
   }
   * { box-sizing: border-box; }
-  html { -webkit-text-size-adjust: 100%; }
+  html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  img, svg { max-width: 100%; }
   body {
     margin: 0; background: var(--paper); color: var(--ink);
     font: 400 1.0625rem/1.6 "Familjen Grotesk", system-ui, sans-serif;
   }
   a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: 3px; }
-  a:focus-visible { outline: 3px solid var(--signal); outline-offset: 3px; border-radius: 2px; }
+  a:focus-visible, button:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; border-radius: 2px; }
+  .lawn a:focus-visible { outline-color: var(--signal); }
+  .lawn .btn.primary:focus-visible { outline-color: #fff; }
   .wrap { max-width: 68rem; margin: 0 auto; padding: 0 1rem; }
   @media (min-width: 48rem) { .wrap { padding: 0 2rem; } }
 
@@ -58,15 +67,22 @@
   }
   .lede { max-width: 38rem; margin: 1.5rem 0 0; font-size: 1.2rem; line-height: 1.5; color: #eaf3e6; }
   .actions { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: 2rem; }
-  .btn { display: inline-block; padding: .7rem 1.1rem; border-radius: .5rem; font-weight: 500; text-decoration: none; }
+  .btn { display: inline-block; padding: .8rem 1.25rem; border-radius: .5rem; font-weight: 500; font-size: 1.05rem; text-decoration: none; }
   .btn.primary { background: var(--signal); color: #1c1a08; }
   .btn.ghost { border: 1.5px solid rgba(255,255,255,.7); color: #fff; }
+  .hero-note { margin: 1.25rem 0 0; max-width: 38rem; font-size: .95rem; color: #eaf3e6; }
+  .hero-note a { color: #fff; }
 
   section { padding: 3.5rem 0; border-top: 1px solid var(--rule); }
   section:first-of-type { border-top: 0; }
+  section[id], h2[id] { scroll-margin-top: 1rem; }
   h2 { font-size: 1.75rem; line-height: 1.2; margin: 0 0 1.25rem; letter-spacing: -0.01em; }
   p { margin: 0 0 1rem; max-width: 42rem; }
   .muted { color: var(--muted); }
+  code.inline {
+    font: 500 .88em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: var(--card); border: 1px solid var(--rule); border-radius: .3rem; padding: .05em .35em; overflow-wrap: anywhere;
+  }
 
   ol.steps { list-style: none; padding: 0; margin: 0; display: grid; gap: 1.5rem; counter-reset: s; }
   @media (min-width: 48rem) { ol.steps { grid-template-columns: repeat(3, 1fr); } }
@@ -74,6 +90,24 @@
   ol.steps li::before { content: counter(s); display: block; font-weight: 700; font-size: 2rem; line-height: 1; color: var(--grass-light); margin-bottom: .5rem; }
   ol.steps h3 { margin: 0 0 .35rem; font-size: 1.15rem; }
   ol.steps p { margin: 0; }
+
+  /* Install: for a robot owner this is the main part of the page. */
+  .install-steps { list-style: none; padding: 0; margin: 0 0 1.5rem; display: grid; gap: 1.5rem; counter-reset: i; }
+  .install-steps li { counter-increment: i; position: relative; padding-left: 2.6rem; max-width: 46rem; }
+  .install-steps li::before {
+    content: counter(i); position: absolute; left: 0; top: .05rem; width: 1.8rem; height: 1.8rem; border-radius: 50%;
+    background: var(--signal); color: #1c1a08; font-weight: 700; display: grid; place-items: center; line-height: 1;
+  }
+  .install-steps h3 { margin: 0 0 .25rem; font-size: 1.15rem; }
+  .install-steps p { margin: 0 0 .75rem; }
+  .cmd { background: var(--code-bg); color: var(--code-ink); border-radius: .6rem; padding: .9rem 1rem; max-width: 46rem; }
+  .cmd pre { margin: 0 0 .75rem; white-space: pre-wrap; overflow-wrap: anywhere; font: 500 .9rem/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .cmd-bar { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
+  .copy { appearance: none; font: inherit; font-size: .95rem; font-weight: 500; cursor: pointer; background: var(--signal); color: #1c1a08; border: 0; border-radius: .4rem; padding: .5rem .9rem; }
+  .cmd button:focus-visible { outline-color: #fff; }
+  .copy-status { font-size: .9rem; opacity: .9; }
+  .install-more { display: grid; gap: .6rem; margin-top: 1.5rem; max-width: 46rem; }
+  .install-more p { margin: 0; }
 
   /* Data path: shows that robot traffic never passes through the login service. */
   .flow { display: grid; gap: .75rem; margin: 1.5rem 0 1rem; }
@@ -91,7 +125,9 @@
   ul.points li::before { content: ""; position: absolute; left: 0; top: .6em; width: .55rem; height: .55rem; background: var(--grass-light); border-radius: 50%; }
 
   .status { background: var(--card); border: 1px solid var(--rule); border-radius: .75rem; padding: 1.25rem 1.4rem; max-width: 46rem; }
+  .status p:last-child { margin-bottom: 0; }
   footer { padding: 2rem 0 3rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: .95rem; }
+  footer a { display: inline-block; margin-right: 1.25rem; }
 </style>
 </head>
 <body>
@@ -102,11 +138,12 @@
   <div class="wrap hero">
     <div class="brand"><img src="icon.svg" alt="">Mowgli Connect</div>
     <h1>Your mower's own app, from anywhere.</h1>
-    <p class="lede">Mowgli Connect lets you open your MowgliNext robot's web interface when you are away from home. You don't need a VPN, port forwarding or a new app, and nothing on the mower is exposed unprotected.</p>
+    <p class="lede">Mowgli Connect lets you open your MowgliNext robot's own web interface from your phone or computer when you are away from home. No VPN, no Tailscale, no port forwarding and no new app. It is free.</p>
     <div class="actions">
-      <a class="btn primary" href="https://github.com/liltaket/mowgli-connect">Read the code on GitHub</a>
-      <a class="btn ghost" href="https://github.com/liltaket/mowgli-connect/blob/main/docs/architecture.md">How it is built</a>
+      <a class="btn primary" href="https://connect.bronc.app">Open your robot</a>
+      <a class="btn ghost" href="#install">Install on your robot</a>
     </div>
+    <p class="hero-note">Prototype, invite-only for now. Read the <a href="#status">status</a> before you install it.</p>
   </div>
 </header>
 
@@ -114,10 +151,41 @@
   <section aria-labelledby="how">
     <h2 id="how">How it works</h2>
     <ol class="steps">
-      <li><h3>Add the agent</h3><p>One small container runs next to MowgliNext on the robot and prints a pairing code.</p></li>
-      <li><h3>Pair with your account</h3><p>Sign in with GitHub and enter the code. The robot is now linked to you and nobody else.</p></li>
-      <li><h3>Open your robot</h3><p>Pick the robot from the list. You get the same dashboard, map and settings you use at home.</p></li>
+      <li><h3>Install the agent</h3><p>One small container runs next to MowgliNext on the robot and prints a pairing code. It does not change MowgliNext.</p></li>
+      <li><h3>Pair it with your account</h3><p>Sign in with GitHub and enter the code. The robot gets its own address and is linked to you.</p></li>
+      <li><h3>Open your robot</h3><p>Press Open. You are logged in to the robot's own interface: the same dashboard, map and settings you use at home.</p></li>
     </ol>
+  </section>
+
+  <section aria-labelledby="install">
+    <h2 id="install">Install</h2>
+    <p>You need a MowgliNext robot with Docker and Docker Compose v2, internet access, and an amd64 or arm64 CPU. The agent runs as its own Compose project in <code class="inline">~/mowgli-connect</code>, so MowgliNext updates do not touch it.</p>
+    <ol class="install-steps">
+      <li>
+        <h3>Run the installer on the robot</h3>
+        <p>Open a shell on the robot (for example over SSH) and run the command below. It downloads the script and lets you read it with <code class="inline">less</code> (press <code class="inline">q</code> to continue) before it runs. The installer asks for a robot name and whether to allow the remote joystick (default: no, recommended), starts the container and prints a pairing code.</p>
+        <div class="cmd">
+          <pre><code id="cmd">curl -fsSL https://liltaket.github.io/mowgli-connect/install.sh -o install.sh && less install.sh && sh install.sh</code></pre>
+          <div class="cmd-bar">
+            <button type="button" class="copy" id="copy">Copy command</button>
+            <span class="copy-status" id="copy-status" role="status" aria-live="polite"></span>
+          </div>
+        </div>
+      </li>
+      <li>
+        <h3>Pair the robot</h3>
+        <p>Go to <a href="https://connect.bronc.app">connect.bronc.app</a>, sign in with GitHub (invite-only for now) and enter the pairing code. The robot gets its own address, such as <code class="inline">https://kuffe.bronc.app</code>.</p>
+      </li>
+      <li>
+        <h3>Open it</h3>
+        <p>Press Open next to your robot. You are logged in to its own interface, from anywhere.</p>
+      </li>
+    </ol>
+    <div class="install-more">
+      <p><strong>Update:</strong> <code class="inline">cd ~/mowgli-connect &amp;&amp; docker compose pull &amp;&amp; docker compose up -d</code></p>
+      <p><strong>Uninstall:</strong> <code class="inline">cd ~/mowgli-connect &amp;&amp; docker compose down -v</code>, then unlink the robot on connect.bronc.app.</p>
+      <p class="muted">Details, the joystick choice and troubleshooting are in the <a href="https://github.com/liltaket/mowgli-connect/blob/main/docs/install.md">install guide</a>. To run your own relay instead, see <a href="https://github.com/liltaket/mowgli-connect/blob/main/relay/README.md">relay/README.md</a>.</p>
+    </div>
   </section>
 
   <section aria-labelledby="path">
@@ -129,38 +197,67 @@
       <div class="arrow" aria-hidden="true">⟶</div>
       <div class="node"><strong>Agent on the robot</strong><span>checks every request, then forwards it to the MowgliNext GUI</span></div>
     </div>
-    <p class="aside">The login service only handles sign-in, pairing and a 60-second pass to open a robot. Live data, maps and commands go straight between you and your mower, never through it.</p>
+    <p class="aside">The login service (a Cloudflare Worker) only handles sign-in, pairing and a 60-second pass to open a robot. Live data, maps and commands travel between your browser and your mower through the tunnel and never pass through it.</p>
   </section>
 
   <section aria-labelledby="safety">
     <h2 id="safety">Built to be safe</h2>
     <ul class="points">
-      <li>Every request, including live data, is checked by the agent on the robot before it reaches the mower's software.</li>
-      <li>Each robot has its own key and its own tunnel. One robot can never reach another.</li>
-      <li>Remote joystick driving is off by default. Emergency stop, collision handling and safety stay on the robot and work without internet.</li>
+      <li>Every request, including live WebSocket data, is checked by the agent on the robot before it reaches the mower's software.</li>
+      <li>Each robot has its own Ed25519 key and its own tunnel. Access to one robot does not give access to another.</li>
+      <li>Remote joystick driving is off by default. It can only be turned on on the robot itself, when you install. The login service cannot enable it.</li>
+      <li>Emergency stop, collision handling and the firmware watchdog stay on the robot and work without internet.</li>
+      <li>The agent container locks its own network. Even someone who took over the Cloudflare account could not use the tunnel to reach your home network, the robot's other services or the robot's operating system. They could still use the mower's interface as the owner.</li>
       <li>Sign-out and access removal reach the robot within minutes. If the robot loses contact with the login service, remote access stops instead of staying open.</li>
-      <li>Live data is compressed and heavy map layers are sent less often, so it also works on weak Wi-Fi or mobile data.</li>
-      <li>Open source, so anyone can check the code.</li>
+      <li>Live data is compressed and heavy map layers are sent less often. In simulation the map page dropped from about 368 to about 40 KB/s, so it works on weak mobile data.</li>
+      <li>Open source. Several independent reviews by AI models are in the repository, and their findings were verified and fixed or documented. See <a href="https://github.com/liltaket/mowgli-connect/tree/main/docs/research">docs/research</a>.</li>
     </ul>
   </section>
 
   <section aria-labelledby="privacy">
     <h2 id="privacy">Privacy</h2>
-    <p>Signing in with GitHub gives the login service your GitHub user id, username and display name. It stores those, which robots you have paired, and short-lived sign-in records. It does not see or store your mower's data, maps, location or camera. The service runs on Cloudflare.</p>
+    <p>Signing in with GitHub gives the login service your GitHub user id, username and display name. It stores those, which robots you have paired, and short-lived sign-in records (hashed). It does not store your mower's data, maps, GPS position or telemetry, and that data does not pass through it.</p>
+    <p>Your traffic does go through Cloudflare. Cloudflare ends the encrypted connection (TLS) at its edge and forwards it through the tunnel, so Cloudflare can technically see it. The login service also runs on Cloudflare.</p>
     <p class="muted">Questions or removal requests: open an issue on GitHub.</p>
   </section>
 
   <section aria-labelledby="status">
     <h2 id="status">Status</h2>
     <div class="status">
-      <p>Prototype. It has been tested end to end through Cloudflare with the real MowgliNext interface and a simulated robot, but not yet on a real mower. Access is invite-only while it is being tested.</p>
-      <p class="muted" style="margin:0">Mowgli Connect is an independent project and is not affiliated with Cloudflare or GitHub.</p>
+      <p>Prototype. It has been tested end to end through real Cloudflare with the real MowgliNext interface and a simulated robot, from a phone on 5G. It has not been run on a real mower yet. Sign-in is invite-only while it is being tested.</p>
+      <p>The agent image is <code class="inline">ghcr.io/liltaket/mowgli-connect-agent</code> for linux/amd64 and linux/arm64. See the <a href="https://github.com/liltaket/mowgli-connect/blob/main/docs/test-report.md">test report</a>.</p>
+      <p class="muted">Mowgli Connect is an independent project and is not affiliated with Cloudflare or GitHub.</p>
     </div>
   </section>
 </main>
 
 <footer>
-  <div class="wrap">Source code: <a href="https://github.com/liltaket/mowgli-connect">github.com/liltaket/mowgli-connect</a></div>
+  <div class="wrap">
+    <a href="https://github.com/liltaket/mowgli-connect">Source code</a>
+    <a href="https://github.com/liltaket/mowgli-connect/blob/main/docs/architecture.md">How it is built</a>
+    <a href="https://github.com/liltaket/mowgli-connect/blob/main/SECURITY.md">Security</a>
+    <a href="https://github.com/liltaket/mowgli-connect/blob/main/docs/install.md">Install guide</a>
+  </div>
 </footer>
+<script>
+(function () {
+  var btn = document.getElementById('copy'), code = document.getElementById('cmd'), out = document.getElementById('copy-status');
+  if (!btn || !code || !out) return;
+  function say(t) { out.textContent = t; setTimeout(function () { out.textContent = ''; }, 2500); }
+  function fallback() {
+    var r = document.createRange(); r.selectNodeContents(code);
+    var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) {}
+    say(ok ? 'Copied.' : 'Selected. Press Ctrl+C to copy.');
+  }
+  btn.addEventListener('click', function () {
+    var text = code.textContent.trim();
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(function () { say('Copied.'); }, fallback);
+    } else { fallback(); }
+  });
+})();
+</script>
 </body>
 </html>
