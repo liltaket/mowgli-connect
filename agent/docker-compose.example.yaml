@@ -2,7 +2,7 @@
 # kept across updates). No MowgliNext file is edited. Do not add garden.mowgli.update.* labels.
 services:
   mowgli-connect:
-    image: ghcr.io/OWNER/mowgli-connect-agent:latest # or build: ../mowgli-connect/agent
+    image: ghcr.io/liltaket/mowgli-connect-agent:latest # amd64 + arm64; or build: ../mowgli-connect/agent
     container_name: mowgli-connect
     restart: unless-stopped
     # Own network namespace (not host): entrypoint.sh locks egress so cloudflared can reach only
