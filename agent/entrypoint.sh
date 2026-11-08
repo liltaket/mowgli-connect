@@ -71,8 +71,10 @@ if [ "${MC_EGRESS_LOCK:-true}" != "false" ]; then
 	agent_dns4="" agent_dns6=""
 	[ -n "$dns4" ] && agent_dns4="meta skuid $AGENT_UID ip daddr { $dns4 } meta l4proto { tcp, udp } th dport 53 accept"
 	[ -n "$dns6" ] && agent_dns6="meta skuid $AGENT_UID ip6 daddr { $dns6 } meta l4proto { tcp, udp } th dport 53 accept"
+	# cloudflared's only resolver is Docker's embedded DNS, which exists on user-defined
+	# networks (every Compose project has one), not on the default bridge.
 	grep -q '^nameserver 127\.0\.0\.11' /etc/resolv.conf ||
-		echo "entrypoint: warning: no Docker embedded DNS; cloudflared will rely on DNS-over-TLS (use a Compose network)" >&2
+		die "no Docker embedded DNS (127.0.0.11): run the container on a user-defined network, e.g. with docker compose"
 	quick_https=""
 	[ "${MC_TUNNEL_MODE:-named}" = quick ] &&
 		quick_https="tcp dport 443 ip daddr { $CF_V4 } accept

@@ -406,7 +406,7 @@ func selfCheck(ctx context.Context, hostname string) bool {
 	if err != nil {
 		return false
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := relay.NoRedirectClient(20 * time.Second).Do(req)
 	if err != nil {
 		return false
 	}

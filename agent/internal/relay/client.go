@@ -114,7 +114,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	}
 	hc := c.HTTP
 	if hc == nil {
-		hc = &http.Client{Timeout: 20 * time.Second}
+		hc = NoRedirectClient(20 * time.Second)
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
@@ -180,4 +180,12 @@ func (c *Client) Self(ctx context.Context) (*Self, error) {
 		return nil, fmt.Errorf("relay: robot id mismatch (got %q)", s.RobotID)
 	}
 	return &s, nil
+}
+
+// NoRedirectClient never follows redirects: the relay's answer is used as is, so a relay (or
+// anything in front of it) cannot make the agent send requests to other addresses.
+func NoRedirectClient(timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
 }
