@@ -18,9 +18,11 @@ services:
       - mowgli-connect-data:/data # robot.key + state.json (tunnel token). Back it up, keep it private.
     read_only: true
     cap_drop: [ALL]
-    # NET_ADMIN: the entrypoint installs the egress rules (this container's namespace only),
-    # then drops it. SETUID/SETGID: the agent starts cloudflared as a separate, capability-free user.
-    cap_add: [NET_ADMIN, SETUID, SETGID]
+    # NET_ADMIN: the entrypoint installs the egress rules (this container's namespace only), then
+    # drops it. SETUID/SETGID/KILL: the agent starts and stops cloudflared as a separate,
+    # capability-free user. Keep the default Compose network: it provides Docker's embedded DNS,
+    # the only resolver cloudflared may use besides public ones.
+    cap_add: [NET_ADMIN, SETUID, SETGID, KILL]
     security_opt: [no-new-privileges:true]
 
 volumes:

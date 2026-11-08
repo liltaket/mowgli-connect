@@ -136,8 +136,14 @@ The real attack was repeated against that container. A remotely managed tunnel
 - the agent: served, and the agent answered `robot_not_paired`, because an unauthenticated
   request gets nothing.
 
+(Superseded by security review 5, which tightened the connector to default-deny: see its
+status section.)
+
 Residual risks:
-- The Cloudflare account can still point a robot's hostname at the agent of *another*
-  robot, or at an attacker's server. Users would then talk to the wrong origin. The relay stays
-  the root of trust for grants.
+- The Cloudflare account can still point a robot's DNS name at the agent of *another* robot,
+  which rejects grants not addressed to it.
+- It can also point the name at an attacker's server, which then serves content and receives
+  same-origin requests, cookies and sign-in grants under the robot's origin. Phishing is
+  therefore possible for whoever controls the account. The relay and the account stay the root
+  of trust.
 - Running the agent outside this container (e.g. the native binary) has no lock.

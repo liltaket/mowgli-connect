@@ -130,7 +130,7 @@ func loadConfig() (config, error) {
 			return c, errors.New("MC_CLOUDFLARED_USER must be uid:gid")
 		}
 		c.cloudflaredWrap = []string{"setpriv", "--reuid=" + uid, "--regid=" + gid, "--clear-groups",
-			"--inh-caps=-all", "--ambient-caps=-all", "--bounding-set=-all", "--no-new-privs", "--"}
+			"--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs", "--"}
 	}
 	if c.tunnelMode != "named" && c.tunnelMode != "quick" {
 		return c, fmt.Errorf("MC_TUNNEL_MODE must be named or quick, got %q", c.tunnelMode)
