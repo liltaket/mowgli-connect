@@ -1,6 +1,6 @@
 import type { Env } from "./env";
 import { claimRobot, previewClaim, unlinkRobot } from "./claim";
-import { html, page } from "./html";
+import { HOMEPAGE, html, page } from "./html";
 import { mintGrant } from "./grant";
 import { finishLogin, startLogin } from "./oauth";
 import { formatPairingCode, normalizePairingCode } from "./pairing";
@@ -42,11 +42,11 @@ function loginRedirect(url: URL): Response {
 }
 
 function forbiddenOrigin(): Response {
-  return page("Forbidden", html`<p class="error">Cross-origin request rejected.</p>`, 403);
+  return page("Forbidden", html`<h1>Request rejected</h1><p class="error">This request came from another site, so it was not carried out.</p><p><a href="/">Back to my robots</a></p>`, 403);
 }
 
 function notFound(): Response {
-  return page("Not found", html`<p>Not found.</p><p><a href="/">Home</a></p>`, 404);
+  return page("Not found", html`<h1>Page not found</h1><p class="muted">There is nothing at this address, or it belongs to a robot you do not have access to.</p><p><a href="/">Back to my robots</a></p>`, 404);
 }
 
 interface RobotListRow {
@@ -89,7 +89,7 @@ ${notice ? html`<p class="notice" role="status">${notice}</p>` : ""}
 <form class="inline" method="post" action="/logout"><span class="muted">Signed in as <strong>${user.login}</strong></span> <button>Sign out</button></form></div>
 ${
   rows.results.length === 0
-    ? html`<p class="muted">No robots yet. Start the Mowgli Connect agent on your robot and enter the pairing code it shows.</p>`
+    ? html`<p class="empty">No robots yet. Install the Mowgli Connect agent on your robot and enter the pairing code it shows below.</p>`
     : html`<ul class="robots">
 ${rows.results.map(
   (r) => html`<li class="robot">
@@ -105,13 +105,13 @@ ${rows.results.map(
         : online.get(r.robot_id) === true
           ? html`<span class="state">Online</span>`
           : html`<span class="state">Tunnel ready</span>`
-  } · ${r.role === "owner" ? "Owner" : "Viewer"}${
-    r.allow_teleop === null ? "" : html` · Remote joystick ${r.allow_teleop ? "on" : "off"}`
+  }<span>${r.role === "owner" ? "Owner" : "Viewer"}</span>${
+    r.allow_teleop === null ? "" : html`<span>Remote joystick ${r.allow_teleop ? "on" : "off"}</span>`
   }</span>
 ${
   r.role === "owner"
     ? html`<details><summary>Manage</summary><div class="manage">
-<div><code>${r.robot_id}</code>${r.hostname ? html`<br><code>${r.hostname}</code>` : ""}</div>
+<div><code>${r.robot_id}</code>${r.hostname ? html`<code>${r.hostname}</code>` : ""}</div>
 <form method="post" action="/robots/${r.robot_id}/sessions/revoke"><button>Sign everyone out</button><p>Ends every open session on this robot, including yours.</p></form>
 <p>Remote joystick is ${r.allow_teleop ? "allowed" : "off"} on this robot. Only the robot can change it: rerun the installer there.</p>
 <form method="post" action="/robots/${r.robot_id}/unlink"><button class="danger">Unlink robot</button><p>Removes the robot from your account and deletes its tunnel. You will need a new pairing code to add it again.</p></form>
@@ -129,7 +129,7 @@ ${
 <div><label for="label">Name <span class="muted">(optional)</span></label><input type="text" id="label" name="label" placeholder="Front lawn" maxlength="64"></div>
 <button class="primary">Add robot</button>
 </div>
-<p class="muted hint" id="code-hint">Three words, shown by the installer on your robot (or <code>docker logs mowgli-connect</code>). Spaces, dashes and capitals don't matter. Valid for 15 minutes.</p>
+<p class="muted hint" id="code-hint">Three words, shown by the installer on your robot (or <code>docker logs mowgli-connect</code>). Spaces, dashes and capitals do not matter. The code is valid for 15 minutes.</p>
 </form>
 <script src="/pair.js"></script>`,
   );
@@ -138,20 +138,20 @@ ${
 function loggedOutPage(): Response {
   return page(
     "Sign in",
-    html`<div class="hero"><h1>Open your mower from anywhere</h1>
-<p>Sign in to see your robots and open their own web interface securely, without VPN or port forwarding.</p>
-<p><a class="btn primary" href="/login">Sign in with GitHub</a></p>
-<p class="muted">Access is invite-only while Mowgli Connect is a prototype.</p></div>`,
+    html`<div class="hero"><h1>Your mower's own app, from anywhere</h1>
+<p class="lead">Sign in to see your robots and open their own web interface, without VPN or port forwarding.</p>
+<p class="actions"><a class="btn primary" href="/login">Sign in with GitHub</a></p>
+<p class="muted">Access is invite-only while Mowgli Connect is a prototype. <a href="${HOMEPAGE}">How it works</a>.</p></div>`,
   );
 }
 
 function claimConfirm(code: string, robotId: string, name: string | null, error?: string, status = 200): Response {
   return page(
-    "Claim robot",
+    "Add a robot",
     html`
 ${error ? html`<p class="error">${error}</p>` : ""}
 <h1>Add this robot?</h1>
-<p>${name ? html`The robot calls itself <strong>${name}</strong>.` : "The robot did not report a name."} <code>${robotId}</code></p>
+<p>${name ? html`The robot calls itself <strong>${name}</strong>.` : "The robot did not report a name."} Its id is <code>${robotId}</code>.</p>
 <p class="muted">Only add a robot you control. You will become its owner.</p>
 <form class="panel" method="post" action="/claim">
 <input type="hidden" name="code" value="${code}">
@@ -225,19 +225,19 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
       if (!user) return loginRedirect(url);
       const raw = url.searchParams.get("code") ?? "";
       const prev = await previewClaim(env, user.id, raw);
-      if (!prev.ok) return page("Claim robot", html`<p class="error">${prev.message}</p><p><a href="/">Back</a></p>`, prev.status);
+      if (!prev.ok) return page("Add a robot", html`<h1>Could not add the robot</h1><p class="error">${prev.message}</p><p><a href="/">Back to my robots</a></p>`, prev.status);
       return claimConfirm(normalizePairingCode(raw) ?? "", prev.robotId, prev.name);
     }
     if (method === "POST") {
       if (!user) return redirect("/login", 303);
       const form = await readForm(request);
-      if (!form) return page("Claim robot", html`<p class="error">Bad request.</p>`, 400);
+      if (!form) return page("Add a robot", html`<h1>Could not add the robot</h1><p class="error">The form was not filled in correctly.</p><p><a href="/">Back to my robots</a></p>`, 400);
       const res = await claimRobot(env, createProvisioner(env), user.id, form.code, form.label);
       if (!res.ok) {
         const norm = normalizePairingCode(form.code);
         return page(
-          "Claim robot",
-          html`<p class="error">${res.message}</p><p><a href="/${norm ? `?code=${formatPairingCode(norm)}` : ""}">Back</a></p>`,
+          "Add a robot",
+          html`<h1>Could not add the robot</h1><p class="error">${res.message}</p><p><a href="/${norm ? `?code=${formatPairingCode(norm)}` : ""}">Back to my robots</a></p>`,
           res.status,
         );
       }
@@ -276,21 +276,21 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
     if (up === false) {
       const firstTime = row.first_online_at === null;
       const setup = settingUp(row);
-      const retry = html`<p><a class="btn primary" href="/open/${robotId}">Try now</a> <a class="btn" href="/">Back</a></p>`;
+      const retry = html`<p class="actions"><a class="btn primary" href="/open/${robotId}">Try now</a> <a class="btn" href="/">Back to my robots</a></p>`;
       const help = html`<p class="muted">Check that the robot is switched on and has internet. On the robot, <code>docker logs mowgli-connect</code> shows what the agent is doing.</p>`;
       return page(
         setup ? "Setting up" : "Robot offline",
         setup
-          ? html`<h1>Setting up your robot's connection…</h1>
+          ? html`<div class="standby"><div class="pulse" aria-hidden="true"></div><h1>Setting up your robot's connection…</h1>
 <p>This is normal right after adding a robot: it is creating its secure connection to Cloudflare, which usually takes under a minute. This page opens the robot by itself as soon as it is ready.</p>
-${retry}`
+${retry}</div>`
           : firstTime
-            ? html`<h1>Still waiting for your robot</h1>
+            ? html`<div class="standby"><div class="pulse" aria-hidden="true"></div><h1>Still waiting for your robot</h1>
 <p>The robot has not connected since it was added. This page keeps trying.</p>
-${help}${retry}`
-            : html`<h1>Your robot is offline</h1>
+${help}${retry}</div>`
+            : html`<div class="standby"><div class="pulse off" aria-hidden="true"></div><h1>Your robot is offline</h1>
 <p>It is not connected right now, for example because it is switched off or out of Wi-Fi range. This page opens it by itself when it is back.</p>
-${help}${retry}`,
+${help}${retry}</div>`,
         503,
         { "Retry-After": "5", Refresh: "5" },
       );
@@ -299,7 +299,7 @@ ${help}${retry}`,
       // Quick-tunnel mode: claimed, but the robot has not reported its tunnel hostname yet.
       return page(
         "Robot starting",
-        html`<h1>Robot starting</h1><p>The robot is starting its tunnel. This usually takes a few seconds.</p><p><a class="btn primary" href="/open/${robotId}">Try again</a> <a class="btn" href="/">Back</a></p>`,
+        html`<div class="standby"><div class="pulse" aria-hidden="true"></div><h1>Robot starting</h1><p>The robot is starting its tunnel. This usually takes a few seconds.</p><p class="actions"><a class="btn primary" href="/open/${robotId}">Try again</a> <a class="btn" href="/">Back to my robots</a></p></div>`,
         503,
         { "Retry-After": "10" },
       );

@@ -65,7 +65,7 @@ export async function startLogin(env: Env, returnTo: string | null): Promise<Res
 }
 
 function fail(message: string, status = 400): Response {
-  return page("Login failed", html`<p class="error">${message}</p><p><a href="/">Back</a></p>`, status, {
+  return page("Sign-in failed", html`<h1>Sign-in failed</h1><p class="error">${message}</p><p><a href="/">Back to the start</a></p>`, status, {
     "Set-Cookie": oauthCookie("", 0),
   });
 }

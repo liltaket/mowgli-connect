@@ -23,11 +23,11 @@ const callbackHTML = `<!doctype html>
 <link rel="stylesheet" href="/_connect/connect.css">
 </head>
 <body>
-<header class="lawn"><span class="mark" aria-hidden="true"></span>Mowgli Connect</header>
+<header class="top"><svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><rect class="mark-tile" width="32" height="32" rx="8"/><path class="mark-path" d="M8.5 9.5h15v6.5h-15v6.5h10"/><circle class="mark-robot" cx="22.7" cy="22.5" r="2.3"/></svg>Mowgli Connect</header>
 <main>
 <div class="spinner" id="spinner" aria-hidden="true"></div>
 <h1 id="title">Opening your robot…</h1>
-<p id="msg" role="status">Signing you in securely.</p>
+<p id="msg" role="status">Signing you in to the mower's own app.</p>
 <p id="back" hidden><a class="btn" href="{{RELAY}}">Back to Mowgli Connect</a></p>
 </main>
 <script src="/_connect/callback.js"></script>
@@ -35,21 +35,27 @@ const callbackHTML = `<!doctype html>
 </html>
 `
 
-const connectCSS = `:root{color-scheme:light dark;--bg:#f1f5ee;--fg:#142017;--muted:#4b5c4e;--line:#cbd8c6;--grass-d:#2f6b33;--grass-l:#3f8340;--signal:#f2c230}
-@media (prefers-color-scheme:dark){:root{--bg:#101a12;--fg:#e7efe4;--muted:#a6b8a8;--line:#2a3a2d}}
+// Same visual system as the relay and the project site: tinted paper, one grass-green accent,
+// the mowing-path mark. Kept tiny; system fonts only.
+const connectCSS = `:root{color-scheme:light dark;--paper:#fbfcfa;--ink:#18211b;--muted:#5b675f;--line:#d9e0da;--line-strong:#b9c4bb;--grass:#2f7d4a;--grass-deep:#266640;--on-grass:#fff;--amber:#b7791b;--focus:#1f5a35}
+@media (prefers-color-scheme:dark){:root{--paper:#111613;--ink:#e8ede8;--muted:#a3ada5;--line:#2b342d;--line-strong:#3f4b42;--grass:#6cc98a;--grass-deep:#5bb97a;--on-grass:#0f1a13;--amber:#e0a54a;--focus:#b2e3c0}}
 *{box-sizing:border-box}
-html,body{margin:0;min-height:100%;background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
-.lawn{display:flex;align-items:center;gap:.55rem;padding:1rem 16px;font-weight:700;color:#fff;background:repeating-linear-gradient(90deg,var(--grass-d) 0 3rem,var(--grass-l) 3rem 6rem)}
-.mark{width:1.5rem;height:1.5rem;border-radius:.4rem;background:var(--signal);box-shadow:inset 0 0 0 .3rem rgba(0,0,0,.12)}
-main{max-width:30rem;margin:0 auto;padding:4rem 16px;text-align:center}
-h1{font-size:1.5rem;margin:1.5rem 0 .5rem}
-p{color:var(--muted);margin:0 0 1rem}
-.spinner{width:3rem;height:3rem;margin:0 auto;border-radius:50%;border:.35rem solid var(--line);border-top-color:var(--grass-l);animation:spin .9s linear infinite}
-.spinner.failed{animation:none;border-color:var(--signal)}
+html,body{margin:0;min-height:100%;background:var(--paper);color:var(--ink);font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.top{display:flex;align-items:center;gap:.6rem;padding:14px 16px;font-weight:700;font-size:1.05rem;letter-spacing:-.01em;border-bottom:1px solid var(--line)}
+.mark{width:24px;height:24px;flex:none}
+.mark-tile{fill:var(--grass)}
+.mark-path{fill:none;stroke:var(--on-grass);stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}
+.mark-robot{fill:var(--on-grass)}
+main{max-width:30rem;margin:0 auto;padding:5rem 16px 4rem;text-align:center}
+h1{font-size:1.6rem;line-height:1.2;letter-spacing:-.02em;margin:1.5rem 0 .5rem}
+p{color:var(--muted);margin:0 0 1.25rem}
+.spinner{width:2.75rem;height:2.75rem;margin:0 auto;border-radius:50%;border:3px solid var(--line);border-top-color:var(--grass);animation:spin .9s linear infinite}
+.spinner.failed{animation:none;border-color:var(--amber)}
 @keyframes spin{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.spinner{animation-duration:3s}}
-.btn{display:inline-block;padding:.6rem 1rem;border-radius:.5rem;background:var(--signal);color:#1c1a08;font-weight:500;text-decoration:none}
-.btn:focus-visible{outline:3px solid var(--grass-l);outline-offset:2px}
+.btn{display:inline-block;min-height:44px;padding:.6rem 1.1rem;border-radius:8px;background:var(--grass);color:var(--on-grass);font-weight:600;text-decoration:none}
+.btn:hover{background:var(--grass-deep)}
+.btn:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
 [hidden]{display:none}
 `
 
