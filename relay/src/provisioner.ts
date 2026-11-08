@@ -27,6 +27,8 @@ export interface TunnelProvisioner {
   provision(robotId: string, label?: string): Promise<ProvisionedTunnel>;
   /** Idempotent: missing resources count as success. */
   deprovision(ref: TunnelRef): Promise<void>;
+  /** Whether the robot's tunnel has a live connector right now; null = cannot tell. */
+  connected?(tunnelId: string): Promise<boolean | null>;
 }
 
 export function robotHostname(label: string, zone: string): string {
@@ -85,6 +87,11 @@ export class FakeProvisioner implements TunnelProvisioner {
   async deprovision(ref: TunnelRef): Promise<void> {
     this.deprovisioned.push(ref.robotId);
   }
+
+  readonly offline = new Set<string>();
+  async connected(tunnelId: string): Promise<boolean | null> {
+    return !this.offline.has(tunnelId);
+  }
 }
 
 /**
@@ -134,6 +141,7 @@ interface CfTunnel {
   id: string;
   name: string;
   deleted_at?: string | null;
+  status?: string; // inactive | degraded | healthy | down
 }
 
 interface CfDnsRecord {
@@ -244,6 +252,16 @@ export class CloudflareTunnelProvisioner implements TunnelProvisioner {
     const token = await this.call<string>("GET", `/accounts/${acct}/cfd_tunnel/${tunnel.id}/token`);
     if (typeof token !== "string" || !token) throw new CloudflareApiError(502, "Cloudflare did not return a tunnel token");
     return { hostname, tunnelId: tunnel.id, dnsRecordId, token };
+  }
+
+  async connected(tunnelId: string): Promise<boolean | null> {
+    try {
+      const t = await this.call<CfTunnel>("GET", `/accounts/${this.cfg.accountId}/cfd_tunnel/${encodeURIComponent(tunnelId)}`);
+      if (t?.status === "healthy" || t?.status === "degraded") return true;
+      return t?.status ? false : null;
+    } catch {
+      return null; // the Cloudflare API is not a reason to block opening the robot
+    }
   }
 
   async deprovision(ref: TunnelRef): Promise<void> {

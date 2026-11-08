@@ -108,6 +108,7 @@ code{font:.85em ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);w
 .state{display:inline-flex;align-items:center;gap:.35rem}
 .state::before{content:"";width:.5rem;height:.5rem;border-radius:50%;background:var(--ok)}
 .state.wait::before{background:var(--signal)}
+.state.off::before{background:var(--muted)}
 .robot details{grid-column:1/-1;margin-top:.5rem;border-top:1px solid var(--line);padding-top:.5rem}
 .robot summary{cursor:pointer;color:var(--muted);font-size:.9rem;width:max-content}
 .manage{display:grid;gap:.75rem;margin-top:.75rem}

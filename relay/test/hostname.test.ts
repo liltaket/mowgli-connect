@@ -88,3 +88,31 @@ describe("agent info header", () => {
     expect(dash).toContain("Remote joystick on");
   });
 });
+
+describe("robot connection status", () => {
+  it("does not send the browser to a robot whose tunnel is down, and shows it offline", async () => {
+    const { claimRobot } = await import("../src/claim");
+    const { FakeProvisioner } = await import("../src/provisioner");
+    const robot = await newRobot();
+    const { pairingCode } = (await (await register(robot, "offline bot")).json()) as { pairingCode: string };
+    const user = await newUser();
+    const fake = new FakeProvisioner("robots.test");
+    expect((await claimRobot(testEnv, fake, user.id, pairingCode, null)).ok).toBe(true);
+    // The relay builds its own FakeProvisioner per request; mark tunnels offline through it.
+    const proto = FakeProvisioner.prototype as unknown as { connected: (id: string) => Promise<boolean> };
+    const original = proto.connected;
+    proto.connected = async () => false;
+    try {
+      const { get, call } = await import("./helpers");
+      const res = await get(`/open/${robot.robotId}`, user);
+      expect(res.status).toBe(503);
+      expect(res.headers.get("Refresh")).toBe("5");
+      expect(await res.text()).toContain("Connecting to your robot");
+      expect(await (await call("/", { headers: { Cookie: user.cookie } })).text()).toContain("Offline");
+    } finally {
+      proto.connected = original;
+    }
+    const { get } = await import("./helpers");
+    expect((await get(`/open/${robot.robotId}`, user)).status).toBe(302);
+  });
+});

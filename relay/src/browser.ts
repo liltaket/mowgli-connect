@@ -43,16 +43,24 @@ interface RobotListRow {
   role: string;
   label: string | null;
   allow_teleop: number | null;
+  tunnel_id: string | null;
 }
 
 async function dashboard(env: Env, user: SessionUser, url: URL): Promise<Response> {
   const rows = await env.DB.prepare(
-    `SELECT r.robot_id, r.name, r.hostname, m.role, m.label, r.allow_teleop
+    `SELECT r.robot_id, r.name, r.hostname, m.role, m.label, r.allow_teleop, r.tunnel_id
      FROM members m JOIN robots r ON r.robot_id = m.robot_id
      WHERE m.user_id = ? AND r.status = 'claimed' ORDER BY m.created_at`,
   )
     .bind(user.id)
     .all<RobotListRow>();
+  const prov = createProvisioner(env);
+  const online = new Map<string, boolean | null>();
+  await Promise.all(
+    rows.results.slice(0, 20).map(async (r) => {
+      if (r.tunnel_id && prov.connected) online.set(r.robot_id, await prov.connected(r.tunnel_id));
+    }),
+  );
   const notice = NOTICES[url.searchParams.get("notice") ?? ""];
   const code = url.searchParams.get("code") ?? "";
   return page(
@@ -70,7 +78,13 @@ ${rows.results.map(
 <span class="name">${r.label ?? r.name ?? r.robot_id}</span>
 <a class="btn primary open" href="/open/${r.robot_id}">Open</a>
 <span class="meta">${
-    r.hostname ? html`<span class="state">Tunnel ready</span>` : html`<span class="state wait">waiting for tunnel</span>`
+    !r.hostname
+      ? html`<span class="state wait">waiting for tunnel</span>`
+      : online.get(r.robot_id) === false
+        ? html`<span class="state off">Offline</span>`
+        : online.get(r.robot_id) === true
+          ? html`<span class="state">Online</span>`
+          : html`<span class="state">Tunnel ready</span>`
   } · ${r.role === "owner" ? "Owner" : "Viewer"}${
     r.allow_teleop === null ? "" : html` · Remote joystick ${r.allow_teleop ? "on" : "off"}`
   }</span>
@@ -219,12 +233,27 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
     if (!isRobotId(robotId)) return notFound();
     // Non-members and unknown robots get the same 404.
     const row = await env.DB.prepare(
-      `SELECT r.hostname, r.session_epoch, m.role FROM members m JOIN robots r ON r.robot_id = m.robot_id
+      `SELECT r.hostname, r.session_epoch, r.tunnel_id, m.role FROM members m JOIN robots r ON r.robot_id = m.robot_id
        WHERE m.robot_id = ? AND m.user_id = ? AND r.status = 'claimed'`,
     )
       .bind(robotId, user.id)
-      .first<{ hostname: string | null; session_epoch: number; role: "owner" | "viewer" }>();
+      .first<{ hostname: string | null; session_epoch: number; tunnel_id: string | null; role: "owner" | "viewer" }>();
     if (!row) return notFound();
+    // Only send the browser to the robot once its tunnel is up: otherwise it would get a
+    // Cloudflare error page, or (for a robot added seconds ago) look up a name that is still
+    // propagating and cache "not found" for up to 30 minutes.
+    const prov = createProvisioner(env);
+    if (row.tunnel_id && prov.connected && (await prov.connected(row.tunnel_id)) === false) {
+      return page(
+        "Robot not connected",
+        html`<h1>Connecting to your robot…</h1>
+<p>The robot is not connected right now. If you just added it or switched it on, this takes about half a minute; this page tries again by itself.</p>
+<p class="muted">Still waiting after a few minutes? Check that the robot is on and has internet, and see <code>docker logs mowgli-connect</code> on it.</p>
+<p><a class="btn primary" href="/open/${robotId}">Try now</a> <a class="btn" href="/">Back</a></p>`,
+        503,
+        { "Retry-After": "5", Refresh: "5" },
+      );
+    }
     if (!row.hostname) {
       // Quick-tunnel mode: claimed, but the robot has not reported its tunnel hostname yet.
       return page(
