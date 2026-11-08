@@ -21,6 +21,7 @@ export interface RelayEnv {
   AGENT_IMAGE_REPO?: string; // owner/repo whose agent-image builds define the latest agent (default liltaket/mowgli-connect)
   ALERT_NTFY_URL?: string; // operator alerts, e.g. https://ntfy.sh/<topic>
   APP_IOS_APP_IDS?: string; // <TeamID>.<bundle id>, comma list: enables the native app API (docs/app-api.md)
+  APP_REDIRECT_URIS?: string; // optional private-use scheme callbacks, <bundle id>:/<path> (free Apple teams)
   TUNNEL_TOKEN_KEY?: string; // 32 bytes base64url: encrypts tunnel tokens at rest
 }
 

@@ -44,6 +44,28 @@ function callbackUrl(env: Env): string {
   return `${env.RELAY_ORIGIN}/app/callback`;
 }
 
+/**
+ * Private-use URI scheme callbacks (RFC 8252 7.1), for apps that cannot use associated domains
+ * (a free Apple Personal Team). Only `<bundle id>:/<path>` for a bundle id in APP_IOS_APP_IDS is
+ * accepted, so the scheme is always the reverse-DNS name of the configured app. Weaker than the
+ * HTTPS callback: the relay cannot know that this app, and not another one claiming the same
+ * scheme in its own authentication session, receives the code (docs/app-api.md).
+ */
+export function schemeRedirects(env: Env): string[] {
+  const bundles = new Set(appIds(env).map((id) => id.slice(id.indexOf(".") + 1).toLowerCase()));
+  return (env.APP_REDIRECT_URIS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((u) => {
+      const m = /^([a-z][a-z0-9-]*(?:\.[a-z0-9-]+)+):\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.exec(u);
+      return m !== null && bundles.has(m[1]!);
+    });
+}
+
+function allowedRedirect(env: Env, uri: string | null): uri is string {
+  return uri !== null && (uri === callbackUrl(env) || schemeRedirects(env).includes(uri));
+}
+
 /** apple-app-site-association: only the configured apps, only the callback path. */
 export function appleAppSiteAssociation(env: Env): Response {
   const apps = appIds(env);
@@ -79,10 +101,20 @@ function readAuthorizeParams(env: Env, get: (k: string) => string | null): Autho
   const state = get("state");
   const thumbprint = get("key_thumbprint");
   const deviceName = cleanLabel(get("device_name"), 40);
-  if (redirectUri !== callbackUrl(env) || method !== "S256") return null;
+  if (!allowedRedirect(env, redirectUri) || method !== "S256") return null;
   if (!challenge || !CHALLENGE.test(challenge) || !state || !STATE.test(state)) return null;
   if (!thumbprint || !DEVICE_ID.test(thumbprint) || !deviceName) return null;
   return { redirectUri, challenge, state, thumbprint, deviceName };
+}
+
+/** The consent form redirects to the app's scheme after the POST: CSP form-action must allow it. */
+function withFormTarget(p: AuthorizeParams, res: Response): Response {
+  const scheme = new URL(p.redirectUri).protocol; // "garden.mowgli.prototypes:" or "https:"
+  if (scheme !== "https:") {
+    const csp = res.headers.get("Content-Security-Policy") ?? "";
+    res.headers.set("Content-Security-Policy", csp.replace("form-action 'self'", `form-action 'self' ${scheme}`));
+  }
+  return res;
 }
 
 function back(p: AuthorizeParams, q: Record<string, string>): Response {
@@ -143,7 +175,7 @@ export async function handleAppBrowser(
       );
     }
     const hidden = (k: string, v: string) => html`<input type="hidden" name="${k}" value="${v}">`;
-    return appPage(
+    return withFormTarget(p, appPage(
       "Sign in to the app",
       html`<h1>Sign in to the Mowgli app?</h1>
 <div class="panel invitee"><span class="avatar big" aria-hidden="true">${(user.name ?? user.login).charAt(0).toUpperCase()}</span>
@@ -156,7 +188,7 @@ ${hidden("redirect_uri", p.redirectUri)}${hidden("code_challenge", p.challenge)}
 </form>`,
       200,
       pageUser(user),
-    );
+    ));
   }
 
   if (request.method === "POST") {
@@ -172,11 +204,11 @@ ${hidden("redirect_uri", p.redirectUri)}${hidden("code_challenge", p.challenge)}
     const now = nowSeconds();
     // At most MAX_OPEN_CODES unexpired codes per person, in the same statement as the insert.
     const ins = await env.DB.prepare(
-      `INSERT INTO app_codes (code_hash, user_id, code_challenge, key_thumbprint, device_name, expires_at)
-       SELECT ?1, ?2, ?3, ?4, ?5, ?6
+      `INSERT INTO app_codes (code_hash, user_id, code_challenge, key_thumbprint, device_name, expires_at, redirect_uri)
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?9
        WHERE (SELECT COUNT(*) FROM app_codes WHERE user_id = ?2 AND expires_at > ?7) < ?8`,
     )
-      .bind(await sha256Hex(`mc-app-code:${code}`), user.id, p.challenge, p.thumbprint, p.deviceName, now + CODE_TTL_SECONDS, now, MAX_OPEN_CODES)
+      .bind(await sha256Hex(`mc-app-code:${code}`), user.id, p.challenge, p.thumbprint, p.deviceName, now + CODE_TTL_SECONDS, now, MAX_OPEN_CODES, p.redirectUri)
       .run();
     if (ins.meta.changes !== 1) return back(p, { error: "slow_down" });
     return back(p, { code });
@@ -214,7 +246,7 @@ async function token(request: Request, env: Env, url: URL): Promise<Response> {
   const jwk = parseDeviceJwk(body.device_key);
   const code = body.code;
   const verifier = body.code_verifier;
-  if (!jwk || typeof code !== "string" || !CODE.test(code) || typeof verifier !== "string" || !VERIFIER.test(verifier) || body.redirect_uri !== callbackUrl(env)) {
+  if (!jwk || typeof code !== "string" || !CODE.test(code) || typeof verifier !== "string" || !VERIFIER.test(verifier) || typeof body.redirect_uri !== "string" || !allowedRedirect(env, body.redirect_uri)) {
     return json({ error: "bad_request" }, 400);
   }
   const thumbprint = await jwkThumbprint(jwk);
@@ -237,10 +269,10 @@ async function token(request: Request, env: Env, url: URL): Promise<Response> {
   // The code is used up only together with its verifier and its key, in one statement: a wrong or
   // made-up code writes nothing, and someone who saw a code cannot spoil the real sign-in with it.
   const row = await env.DB.prepare(
-    `DELETE FROM app_codes WHERE code_hash = ? AND expires_at > ? AND code_challenge = ? AND key_thumbprint = ?
+    `DELETE FROM app_codes WHERE code_hash = ? AND expires_at > ? AND code_challenge = ? AND key_thumbprint = ? AND redirect_uri = ?
      RETURNING user_id, device_name`,
   )
-    .bind(await sha256Hex(`mc-app-code:${code}`), now, await b64urlSha256(verifier), thumbprint)
+    .bind(await sha256Hex(`mc-app-code:${code}`), now, await b64urlSha256(verifier), thumbprint, body.redirect_uri)
     .first<{ user_id: string; device_name: string }>();
   if (!row) return json({ error: "invalid_grant" }, 400);
   if (!(await consumeJti(env, thumbprint, a.jti, a.exp))) return authFailure(new DeviceAuthError("replayed_jti"));

@@ -136,7 +136,7 @@ signature (method and URL are); TLS protects them, and a signed request works on
 
 | Threat | What stops it |
 |---|---|
-| Another app on the phone pretends to be the Mowgli app | The callback is an HTTPS URL delivered only to apps listed in the relay's `apple-app-site-association` (associated domains, verified by Apple). |
+| Another app on the phone pretends to be the Mowgli app | The callback is an HTTPS URL delivered only to apps listed in the relay's `apple-app-site-association` (associated domains, verified by Apple). With the free-team scheme callback this protection is gone and only the consent page and the Devices list remain (see that section). |
 | The authorization code leaks (logs, a browser history, a shoulder) | It works once, for 60 seconds, only with the PKCE verifier and only with the device key whose thumbprint was bound at authorize time. |
 | The phone's storage is copied (backup, malware reading files) | There is no token: the Secure Enclave key cannot be exported; signed requests live 60 s and work once. |
 | A link tricks someone into approving a sign-in | The result goes to the genuine app on that person's own phone; the attacker gets nothing. The consent page names the device, and the device appears under Devices. |
@@ -152,11 +152,32 @@ What this adds to the attack surface: `/app/authorize` (behind the browser sessi
 `/v1/app/token` (behind a one-time code, PKCE and a key signature) and the signed app API. The
 agent, the tunnel and the egress lock are unchanged.
 
+## Free Apple team: private-use scheme callback
+
+A free Apple Personal Team cannot use associated domains, so the HTTPS callback is not possible.
+For that case the relay also accepts exactly the callbacks listed in `APP_REDIRECT_URIS`, each of
+the form `<bundle id>:/<path>` (RFC 8252 section 7.1) for a bundle id in `APP_IOS_APP_IDS`. The
+hosted relay uses `garden.mowgli.prototypes:/connect/callback`. The app passes it as
+`redirect_uri` both to `/app/authorize` and to `/v1/app/token` (a code works only with the
+redirect URI it was issued for), and starts the session with
+`ASWebAuthenticationSession(url:callback: .customScheme("garden.mowgli.prototypes"))`. The consent
+page's CSP allows exactly that scheme as a form target, since the approval redirects to it.
+
+What this variant gives up: iOS hands the callback to the authentication session that started the
+sign-in, so another app cannot intercept the Mowgli app's own sign-in. But any app can start its
+own session for the same scheme, and the relay cannot tell it apart. A malicious app on the phone
+could therefore ask for a sign-in that the person approves on the consent page, thinking it is the
+Mowgli app. Everything else stays: PKCE, the device key binding, the consent page, the Devices
+list with Sign out. Switch to the HTTPS callback, and remove the scheme from
+`APP_REDIRECT_URIS`, as soon as the app is signed by a paid team (the mowgli-ios roadmap records
+this follow-up).
+
 ## Configuration
 
 | Variable | Meaning |
 |---|---|
 | `APP_IOS_APP_IDS` | comma list of `<TeamID>.<bundle id>` allowed to receive sign-ins. Empty or unset: the app API and `apple-app-site-association` answer 404. |
+| `APP_REDIRECT_URIS` | optional comma list of private-use scheme callbacks, `<bundle id>:/<path>` for a bundle id above (see the free-team section). Anything else in it is ignored. |
 
 The relay serves `/.well-known/apple-app-site-association` for these ids (`webcredentials`,
 which an HTTPS `ASWebAuthenticationSession` callback requires, and `applinks` for `/app/callback`

@@ -368,3 +368,45 @@ describe("review 11 (Opus) fixes", () => {
     expect(await (await api(dev, "GET", "/v1/app/me")).json()).toMatchObject({ detail: "unknown_device" });
   });
 });
+
+describe("private-use scheme callback (free Apple team)", () => {
+  const SCHEME_URI = "garden.mowgli.app:/connect/callback";
+  const e2: Env = { ...env, APP_REDIRECT_URIS: `${SCHEME_URI}, com.evil.app:/connect/callback, garden.mowgli.app:/../x, Garden.Mowgli.App:/connect/callback` };
+
+  it("accepts exactly the configured scheme of the configured app, binds it to the code, and allows it in form-action", async () => {
+    const user = await newUser();
+    const dev = await newDevice();
+    const ch = await pkce();
+    const q = authorizeQuery({ challenge: ch.challenge, thumbprint: dev.thumbprint, redirect: SCHEME_URI });
+    const page = await call(`/app/authorize?${q}`, { headers: { Cookie: user.cookie } }, e2);
+    expect(page.status).toBe(200);
+    expect(page.headers.get("Content-Security-Policy")).toContain("form-action 'self' garden.mowgli.app:");
+    q.set("decision", "allow");
+    const res = await postForm("/app/authorize", user, q, ORIGIN, e2);
+    const loc = res.headers.get("Location")!;
+    expect(loc.startsWith(`${SCHEME_URI}?`)).toBe(true);
+    const code = new URL(loc).searchParams.get("code")!;
+
+    const tokenWith = async (redirect: string) =>
+      call("/v1/app/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: await sign(dev, "POST", "/v1/app/token") },
+        body: JSON.stringify({ code, code_verifier: ch.verifier, redirect_uri: redirect, device_key: dev.jwk }),
+      }, e2);
+    expect((await tokenWith(CALLBACK)).status).toBe(400); // issued for the scheme, not the https callback
+    expect((await tokenWith(SCHEME_URI)).status).toBe(200);
+  });
+
+  it("ignores schemes that are not the configured app's, and malformed ones", async () => {
+    const user = await newUser();
+    const dev = await newDevice();
+    const ch = await pkce();
+    for (const redirect of ["com.evil.app:/connect/callback", "garden.mowgli.app:/../x", "Garden.Mowgli.App:/connect/callback", "garden.mowgli.app:/connect/other", "garden.mowgli.app://connect/callback"]) {
+      const q = authorizeQuery({ challenge: ch.challenge, thumbprint: dev.thumbprint, redirect });
+      expect((await call(`/app/authorize?${q}`, { headers: { Cookie: user.cookie }, redirect: "manual" }, e2)).status).toBe(400);
+    }
+    // Without APP_REDIRECT_URIS the scheme is not accepted at all.
+    const q = authorizeQuery({ challenge: ch.challenge, thumbprint: dev.thumbprint, redirect: SCHEME_URI });
+    expect((await call(`/app/authorize?${q}`, { headers: { Cookie: user.cookie }, redirect: "manual" }, env)).status).toBe(400);
+  });
+});
