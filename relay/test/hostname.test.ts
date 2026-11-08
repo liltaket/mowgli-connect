@@ -124,3 +124,27 @@ describe("robot connection status", () => {
     }
   });
 });
+
+describe("robots added long ago", () => {
+  it("show Offline, not Setting up, when they have never been recorded online", async () => {
+    const { claimRobot } = await import("../src/claim");
+    const { FakeProvisioner } = await import("../src/provisioner");
+    const robot = await newRobot();
+    const { pairingCode } = (await (await register(robot, "old bot")).json()) as { pairingCode: string };
+    const user = await newUser();
+    expect((await claimRobot(testEnv, new FakeProvisioner("robots.test"), user.id, pairingCode, null)).ok).toBe(true);
+    await testEnv.DB.prepare("UPDATE robots SET claimed_at = claimed_at - 3600, first_online_at = NULL WHERE robot_id = ?").bind(robot.robotId).run();
+    const proto = FakeProvisioner.prototype as unknown as { connected: (id: string) => Promise<boolean> };
+    const original = proto.connected;
+    proto.connected = async () => false;
+    try {
+      const { get, call } = await import("./helpers");
+      const dash = await (await call("/", { headers: { Cookie: user.cookie } })).text();
+      expect(dash).toContain("Offline");
+      expect(dash).not.toContain("Setting up connection");
+      expect(await (await get(`/open/${robot.robotId}`, user)).text()).toContain("Still waiting for your robot");
+    } finally {
+      proto.connected = original;
+    }
+  });
+});

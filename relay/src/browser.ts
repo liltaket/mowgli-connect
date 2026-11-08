@@ -20,6 +20,13 @@ const NOTICES: Record<string, string> = {
   revoked: "All sessions on that robot were signed out.",
 };
 
+/** A robot added in the last 10 minutes that has never been seen online is still setting up. */
+function settingUp(r: { first_online_at: number | null; claimed_at: number | null }): boolean {
+  return r.first_online_at === null && nowSeconds() - (r.claimed_at ?? 0) < SETUP_WINDOW_SECONDS;
+}
+
+const SETUP_WINDOW_SECONDS = 10 * 60;
+
 async function markFirstOnline(env: Env, robotId: string): Promise<void> {
   await env.DB.prepare("UPDATE robots SET first_online_at = ? WHERE robot_id = ? AND first_online_at IS NULL")
     .bind(nowSeconds(), robotId)
@@ -51,11 +58,12 @@ interface RobotListRow {
   allow_teleop: number | null;
   tunnel_id: string | null;
   first_online_at: number | null;
+  claimed_at: number | null;
 }
 
 async function dashboard(env: Env, user: SessionUser, url: URL): Promise<Response> {
   const rows = await env.DB.prepare(
-    `SELECT r.robot_id, r.name, r.hostname, m.role, m.label, r.allow_teleop, r.tunnel_id, r.first_online_at
+    `SELECT r.robot_id, r.name, r.hostname, m.role, m.label, r.allow_teleop, r.tunnel_id, r.first_online_at, r.claimed_at
      FROM members m JOIN robots r ON r.robot_id = m.robot_id
      WHERE m.user_id = ? AND r.status = 'claimed' ORDER BY m.created_at`,
   )
@@ -91,7 +99,7 @@ ${rows.results.map(
     !r.hostname
       ? html`<span class="state wait">waiting for tunnel</span>`
       : online.get(r.robot_id) === false
-        ? r.first_online_at === null
+        ? settingUp(r)
           ? html`<span class="state wait">Setting up connection</span>`
           : html`<span class="state off">Offline</span>`
         : online.get(r.robot_id) === true
@@ -267,12 +275,12 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
     if (up && row.first_online_at === null) await markFirstOnline(env, robotId);
     if (up === false) {
       const firstTime = row.first_online_at === null;
-      const settingUp = firstTime && nowSeconds() - (row.claimed_at ?? 0) < 10 * 60;
+      const setup = settingUp(row);
       const retry = html`<p><a class="btn primary" href="/open/${robotId}">Try now</a> <a class="btn" href="/">Back</a></p>`;
       const help = html`<p class="muted">Check that the robot is switched on and has internet. On the robot, <code>docker logs mowgli-connect</code> shows what the agent is doing.</p>`;
       return page(
-        settingUp ? "Setting up" : "Robot offline",
-        settingUp
+        setup ? "Setting up" : "Robot offline",
+        setup
           ? html`<h1>Setting up your robot's connection…</h1>
 <p>This is normal right after adding a robot: it is creating its secure connection to Cloudflare, which usually takes under a minute. This page opens the robot by itself as soon as it is ready.</p>
 ${retry}`
