@@ -76,7 +76,9 @@ func (s *Supervisor) loop(ctx context.Context, spec Spec, done chan struct{}) {
 	backoff := time.Second
 	for {
 		start := time.Now()
-		args := []string{"tunnel", "--no-autoupdate", "--metrics", "127.0.0.1:0"}
+		// --no-prechecks: the startup connectivity check reports false failures inside the egress
+		// lock (it probes endpoints the lock does not allow) and delays the tunnel by ~13 s.
+		args := []string{"tunnel", "--no-autoupdate", "--no-prechecks", "--metrics", "127.0.0.1:0"}
 		env := os.Environ()
 		if spec.Token != "" {
 			// The connector token is passed via the environment, never argv (visible in ps).
