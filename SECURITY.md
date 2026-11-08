@@ -65,6 +65,9 @@ Out of scope: vulnerabilities in MowgliNext itself, in Cloudflare or GitHub, and
   robot's GUI and home network. Builds come only from this repository's `main` branch, with
   provenance and an SBOM, but the robot does not verify them. If that trust is too much, install
   with `--auto-update no` and update by hand after reading the changes.
+- **The native app** (off until configured) signs in through a consent page and holds no bearer
+  token: its identity is a Secure Enclave key, every call is signed, and each device is listed with
+  Sign out. Design and threat model: [docs/app-api.md](docs/app-api.md).
 - If the robot cannot reach the relay for longer than `MC_MAX_STALE` (10 minutes by default), remote
   sessions stop working, so a revocation cannot be outwaited.
 

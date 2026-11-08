@@ -97,7 +97,7 @@ short-lived sign-in records (hashed). It stores no mower data, maps, GPS or tele
 
 App traffic goes browser to Cloudflare to robot directly; the relay only handles login, pairing and
 short-lived grants. Design decisions, costs and open questions: [docs/architecture.md](docs/architecture.md).
-Agent and relay contract: [docs/protocol.md](docs/protocol.md). Inspired by T3 Connect.
+Agent and relay contract: [docs/protocol.md](docs/protocol.md); native app API: [docs/app-api.md](docs/app-api.md). Inspired by T3 Connect.
 
 ### Components
 

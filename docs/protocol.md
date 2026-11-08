@@ -1,5 +1,7 @@
 # Mowgli Connect protocol (v0, prototype)
 
+The native app's API (sign-in, signed calls, grants for apps) is in [app-api.md](app-api.md).
+
 Status: prototype contract between the robot **agent** (`agent/`, Go) and the **relay**
 (`relay/`, Cloudflare Worker + D1). Both sides MUST implement exactly this; change this file first.
 

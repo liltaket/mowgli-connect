@@ -259,7 +259,10 @@ export async function handleAdmin(request: Request, env: Env, url: URL, user: Se
   // remove
   const del = await env.DB.prepare("DELETE FROM invites WHERE user_id = ?").bind(target).run();
   if (del.meta.changes !== 1) return notFound(); // only invited people, never an admin
-  await env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(target).run();
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(target),
+    env.DB.prepare("DELETE FROM devices WHERE user_id = ?").bind(target), // their app sign-ins too
+  ]);
   console.log("admin: removed", target, "by", user.id);
   // Say so when the configuration still lets them in, instead of promising what did not happen.
   const login = await env.DB.prepare("SELECT login FROM users WHERE id = ?").bind(target).first<{ login: string }>();

@@ -4,6 +4,7 @@ import { NAME_QUARANTINE_SECONDS, retryPendingCleanups } from "./claim";
 import { page, html, PAIR_JS, SECURITY_HEADERS, STYLE_CSS } from "./html";
 import { APPLE_TOUCH_PNG_B64, FAVICON_ICO_B64, ICON_SVG } from "./icons";
 import { alert, checkHealth } from "./alerts";
+import { appleAppSiteAssociation, handleAppApi } from "./appApi";
 import { createProvisioner } from "./provisioner";
 import { sealStoredTokens } from "./tokenSeal";
 import { refreshLatestAgent } from "./updates";
@@ -33,6 +34,8 @@ async function route(request: Request, env: Env): Promise<Response> {
     return new Response(PAIR_JS, { headers: { ...SECURITY_HEADERS, "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "public, max-age=300" } });
   }
 
+  if (url.pathname === "/.well-known/apple-app-site-association" && request.method === "GET") return appleAppSiteAssociation(env);
+
   const icon = ICONS[url.pathname];
   if (icon && request.method === "GET") {
     return new Response(icon.body, { headers: { ...SECURITY_HEADERS, "Content-Type": icon.type, "Cache-Control": "public, max-age=86400" } });
@@ -48,6 +51,8 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (url.pathname === "/v1/robots/hostname") {
     return request.method === "POST" ? reportHostname(env, request, url) : json({ error: "method_not_allowed" }, 405, { Allow: "POST" });
   }
+  const app = await handleAppApi(request, env, url);
+  if (app) return app;
   if (url.pathname.startsWith("/v1/")) return json({ error: "not_found" }, 404);
 
   const res = await handleBrowser(request, env, url);
@@ -64,6 +69,7 @@ export async function runCleanup(env: Env): Promise<void> {
     env.DB.prepare("DELETE FROM pairing_codes WHERE expires_at < ?").bind(now),
     env.DB.prepare("DELETE FROM claim_failures WHERE at < ?").bind(now - 3600),
     env.DB.prepare("DELETE FROM released_hostnames WHERE released_at < ?").bind(now - NAME_QUARANTINE_SECONDS),
+    env.DB.prepare("DELETE FROM app_codes WHERE expires_at < ?").bind(now),
     // Registration spam: forget robots that never got claimed and stopped calling.
     env.DB.prepare("DELETE FROM robots WHERE status = 'unclaimed' AND last_seen_at < ?").bind(now - 7 * 86400),
   ]);

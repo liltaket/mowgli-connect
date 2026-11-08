@@ -1,8 +1,9 @@
 import type { Env } from "./env";
 import { isAdmin, ownedRobots, robotLimit } from "./access";
 import { handleAdmin, isAdminPath } from "./admin";
+import { appEnabled, handleAppBrowser } from "./appApi";
 import { claimRobot, limitMessage, planAddress, previewClaim, reachedLimit, unlinkRobot, type AddressPlan } from "./claim";
-import { HOMEPAGE, html, lawn, markSvg, page, type PageUser } from "./html";
+import { HOMEPAGE, html, lawn, markSvg, page, type PageUser, type SafeHtml } from "./html";
 import { mintGrant } from "./grant";
 import { finishLogin, startLogin } from "./oauth";
 import { formatPairingCode, normalizePairingCode } from "./pairing";
@@ -21,6 +22,7 @@ const NOTICES: Record<string, string> = {
   claimed: "Robot added. It is setting up its secure connection, which usually takes under a minute the first time. You can press Open now: it waits for the robot.",
   unlinked: "Robot unlinked.",
   revoked: "All sessions on that robot were signed out.",
+  device_signed_out: "The app on that device is signed out. It can no longer list or open your robots.",
 };
 
 const GITHUB_ICON = html`<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>`;
@@ -96,6 +98,7 @@ async function dashboard(env: Env, user: SessionUser, url: URL): Promise<Respons
   const limit = await robotLimit(env, user.id);
   const owned = await ownedRobots(env, user.id);
   const full = limit !== null && owned >= limit;
+  const devicesSection = await devicesHtml(env, user);
   return page(
     "Robots",
     html`
@@ -158,11 +161,38 @@ ${
 <p class="muted hint" id="code-hint">Three words, shown by the installer on your robot (or <code>docker logs mowgli-connect</code>). Spaces, dashes and capitals do not matter. The code is valid for 15 minutes. You see the robot and its address before it is added.</p>
 </form>
 <script src="/pair.js"></script>`
-}`,
+}
+${devicesSection}`,
     200,
     {},
     pageUser(env, user),
   );
+}
+
+interface DeviceListRow {
+  device_id: string;
+  name: string;
+  created_at: number;
+  last_used_at: number;
+}
+
+/** The person's signed-in app devices, each with Sign out. Nothing when the app API is off. */
+async function devicesHtml(env: Env, user: SessionUser): Promise<SafeHtml | string> {
+  if (!appEnabled(env)) return "";
+  const rows = await env.DB.prepare("SELECT device_id, name, created_at, last_used_at FROM devices WHERE user_id = ? ORDER BY created_at")
+    .bind(user.id)
+    .all<DeviceListRow>();
+  const day = (t: number) => new Date(t * 1000).toISOString().slice(0, 10);
+  return html`<h2>Devices</h2>
+${
+  rows.results.length === 0
+    ? html`<p class="muted">The Mowgli app is not signed in on any device.</p>`
+    : html`<ul class="people">${rows.results.map(
+        (d) => html`<li class="person"><span class="avatar" aria-hidden="true">${d.name.charAt(0).toUpperCase()}</span>
+<div class="person-main"><span class="person-name">${d.name}</span><span class="meta"><span>Signed in ${day(d.created_at)}</span><span>Last used ${day(d.last_used_at)}</span></span></div>
+<form class="orphan-unlink" method="post" action="/devices/${d.device_id}/revoke"><button class="danger">Sign out this device</button></form></li>`,
+      )}</ul>`
+}`;
 }
 
 function claimError(env: Env, user: SessionUser, message: string, status: number, code?: string): Response {
@@ -292,7 +322,10 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
     pathname === "/claim" ||
     /^\/open\/[^/]+$/.test(pathname) ||
     /^\/robots\/[^/]+\/(unlink|sessions\/revoke)$/.test(pathname) ||
-    isAdminPath(pathname);
+    isAdminPath(pathname) ||
+    pathname === "/app/authorize" ||
+    pathname === "/app/callback" ||
+    /^\/devices\/[^/]+\/revoke$/.test(pathname);
   if (!known) return null;
 
   // CSRF: every state-changing browser request must carry our own Origin.
@@ -310,6 +343,17 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
   if (pathname === "/" && method === "GET") return user ? dashboard(env, user, url) : loggedOutPage(url);
 
   if (isAdminPath(pathname)) return handleAdmin(request, env, url, user, notFound);
+
+  if (pathname === "/app/authorize" || pathname === "/app/callback") {
+    return (await handleAppBrowser(request, env, url, user, (u) => pageUser(env, u), loginRedirect)) ?? notFound();
+  }
+
+  const dev = /^\/devices\/([^/]+)\/revoke$/.exec(pathname);
+  if (dev && method === "POST") {
+    if (!user) return redirect("/login", 303);
+    const res = await env.DB.prepare("DELETE FROM devices WHERE device_id = ? AND user_id = ?").bind(dev[1]!, user.id).run();
+    return res.meta.changes === 1 ? redirect("/?notice=device_signed_out", 303) : notFound();
+  }
 
   if (pathname === "/logout" && method === "POST") {
     await destroySession(env, request);
