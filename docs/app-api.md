@@ -10,7 +10,8 @@ grant and the same session on the robot as a browser does.
 1. **No long-lived relay secret on the phone.** The app's identity is a P-256 key the app creates
    in the Secure Enclave, which cannot be copied out. Every relay call is signed with it and works
    once, within a minute. What the phone does hold is the robot's own session cookie (up to 12
-   hours per robot, as in a browser); signing the device out ends those too (see below).
+   hours per robot, as in a browser); signing the device out, from the app or under Devices,
+   ends those on the robots its owner owns at the robots' next sync (see below).
 2. **Only the genuine app receives the sign-in.** The result comes back on an HTTPS URL of the
    relay that iOS hands only to apps the relay names in its `apple-app-site-association` file
    (Team ID + bundle ID), when the app uses the system's `ASWebAuthenticationSession`. This
@@ -103,7 +104,7 @@ owner still has access.
 | `GET /v1/app/robots` | `{robots: [{robotId, name, hostname, role, online, joystick, updateAvailable}]}` |
 | `POST /v1/app/robots/{robotId}/grant` | `{grant, hostname, expiresAt}`; `503 {"error":"robot_offline"}` if its tunnel is down |
 | `POST /v1/app/claim` | body `{code, label?, step: "preview"\|"confirm"}`: preview `{robotId, name, hostname}`, confirm `{robotId, hostname}`; same limits and guess budget as the web |
-| `POST /v1/app/sign-out` | deletes this device |
+| `POST /v1/app/sign-out` | deletes this device and, in the same transaction, signs everyone out of the robots its owner owns (their session epoch goes up, so robot sessions and unused grants from before stop working once the robot syncs, within `MC_POLL_INTERVAL`); robots the person only views are not touched. A second call answers 401 `unknown_device` |
 
 Errors are JSON `{"error": "<code>"}` with 400, 401 (`invalid_assertion` + `detail`), 403, 404,
 409, 429 or 503.
@@ -142,7 +143,7 @@ signature (method and URL are); TLS protects them, and a signed request works on
 | A link tricks someone into approving a sign-in | With the HTTPS callback, the result goes to the genuine app on that person's own phone; the attacker gets nothing. With the free-team scheme callback this holds only if no malicious app is involved (see that section). Either way the consent page names the device, and the device appears under Devices. |
 | Cross-site request to the consent form | Origin check on the POST; the page cannot be framed (`frame-ancestors 'none'`). |
 | Open redirect through `redirect_uri` | Exact match against the relay's own callback URL. |
-| A lost or sold phone | Sign it out under Devices. That also signs everyone out of the robots its owner owns, which ends the robot sessions the app still had (they would otherwise last up to 12 hours); on robots the person only views, the owner can sign everyone out. Keys can also require Face ID or the passcode (app side). An admin removing the person deletes all their devices, and their robots drop them at the next sync. |
+| A lost or sold phone | Sign it out under Devices (or from the app). That also signs everyone out of the robots its owner owns, which ends the robot sessions the app still had at each robot's next sync, within a few minutes (they would otherwise last up to 12 hours); on robots the person only views, the owner can sign everyone out. Keys can also require Face ID or the passcode (app side). An admin removing the person deletes all their devices, and their robots drop them at the next sync. |
 | Replay of a signed request | Single-use `jti`, 60-second lifetime, method and URL bound. |
 | A copy of the relay database | Devices hold only public keys and names; codes are stored as hashes and expire in 60 s. |
 | Abuse of the endpoints | Sign-in needs an invited account; at most 10 devices and 5 open codes per person, both enforced in single statements; a wrong or made-up code writes nothing and does not use up the real one; the existing per-IP WAF rule covers the relay. |

@@ -421,3 +421,26 @@ func TestSessionsSurviveRestartButNotRevocation(t *testing.T) {
 		t.Fatalf("revoked session resurrected: %d", r.StatusCode)
 	}
 }
+
+// A device signed out on the relay bumps the robot's session epoch: sessions and grants issued
+// before it stop working (the relay's app sign-out and device revocation rely on this).
+func TestEpochBumpEndsEarlierSessionsAndGrants(t *testing.T) {
+	f := newFixture(t, MowgliPolicy{})
+	tok, _ := f.login(f.grant(nil))
+	unused := f.grant(nil) // issued before the bump, not yet redeemed
+	cookie := map[string]string{"Cookie": CookieName + "=" + tok}
+	if r := f.req("GET", "/api/system/info", cookie, ""); r.StatusCode != 200 {
+		t.Fatalf("session before the bump: %d", r.StatusCode)
+	}
+	f.state.Epoch++
+	f.gw.UpdateState(f.state)
+	if r := f.req("GET", "/api/system/info", cookie, ""); r.StatusCode == 200 {
+		t.Fatal("session issued before the epoch bump still works")
+	}
+	if t2, status := f.login(unused); t2 != "" || status != 401 {
+		t.Fatalf("grant issued before the epoch bump accepted (status %d)", status)
+	}
+	if t3, _ := f.login(f.grant(func(c map[string]any) { c["epoch"] = f.state.Epoch })); t3 == "" {
+		t.Fatal("a fresh grant at the new epoch was refused")
+	}
+}

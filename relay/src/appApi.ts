@@ -336,6 +336,25 @@ async function authenticate(request: Request, env: Env, url: URL): Promise<{ dev
   return { device: d, user };
 }
 
+/**
+ * Signs a device out: deletes it and, in the same transaction and only if it was deleted, signs
+ * everyone out of the robots its owner owns (session epoch + 1). The app may hold robot sessions
+ * of up to 12 hours; this ends them. Robots the person only views are not touched (that would
+ * sign their owner and everyone else out); their owner can sign everyone out. Returns whether
+ * this call deleted the device.
+ */
+export async function signOutDevice(env: Env, deviceId: string, userId: string): Promise<boolean> {
+  const [del] = await env.DB.batch([
+    env.DB.prepare("DELETE FROM devices WHERE device_id = ? AND user_id = ?").bind(deviceId, userId),
+    env.DB.prepare(
+      `UPDATE robots SET session_epoch = session_epoch + 1, updated_at = ?2
+       WHERE changes() > 0 AND status = 'claimed'
+         AND robot_id IN (SELECT robot_id FROM members WHERE user_id = ?1 AND role = 'owner')`,
+    ).bind(userId, nowSeconds()),
+  ]);
+  return del?.meta.changes === 1;
+}
+
 async function markFirstOnline(env: Env, robotId: string): Promise<void> {
   await env.DB.prepare("UPDATE robots SET first_online_at = ? WHERE robot_id = ? AND first_online_at IS NULL").bind(nowSeconds(), robotId).run();
 }
@@ -364,7 +383,8 @@ export async function handleAppApi(request: Request, env: Env, url: URL): Promis
   }
 
   if (path === "/v1/app/sign-out") {
-    await env.DB.prepare("DELETE FROM devices WHERE device_id = ?").bind(device.device_id).run();
+    // A concurrent sign-out may have won; either way this device is gone and its sessions ended.
+    await signOutDevice(env, device.device_id, user.id);
     return json({ ok: true });
   }
 

@@ -410,3 +410,71 @@ describe("private-use scheme callback (free Apple team)", () => {
     expect((await call(`/app/authorize?${q}`, { headers: { Cookie: user.cookie }, redirect: "manual" }, env)).status).toBe(400);
   });
 });
+
+describe("app sign-out ends robot sessions (coordinator task)", () => {
+  const epoch = async (id: string) => (await testEnv.DB.prepare("SELECT session_epoch AS e FROM robots WHERE robot_id = ?").bind(id).first<{ e: number }>())!.e;
+  async function ownedRobot(dev: Device, name: string) {
+    const robot = await newRobot();
+    const { pairingCode } = (await (await register(robot, name)).json()) as { pairingCode: string };
+    expect((await api(dev, "POST", "/v1/app/claim", { code: pairingCode, step: "confirm" })).status).toBe(200);
+    return robot;
+  }
+
+  it("bumps the epoch of the owner's robots only, and a grant from before is stale afterwards", async () => {
+    const { user, dev } = await signedIn();
+    const mine = await ownedRobot(dev, "signout-mine");
+
+    // Someone else's robot, on which this person is only a viewer.
+    const other = await signedIn();
+    const theirs = await ownedRobot(other.dev, "signout-theirs");
+    await testEnv.DB.prepare("INSERT INTO members (robot_id, user_id, role, label, created_at) VALUES (?, ?, 'viewer', NULL, 0)").bind(theirs.robotId, user.id).run();
+    const unrelated = await ownedRobot((await signedIn()).dev, "signout-unrelated");
+
+    const grantBefore = (await (await api(dev, "POST", `/v1/app/robots/${mine.robotId}/grant`)).json()) as { grant: string };
+    const before = { mine: await epoch(mine.robotId), theirs: await epoch(theirs.robotId), unrelated: await epoch(unrelated.robotId) };
+    expect(decodeJws(grantBefore.grant).payload.epoch).toBe(before.mine);
+
+    expect((await api(dev, "POST", "/v1/app/sign-out")).status).toBe(200);
+    expect(await epoch(mine.robotId)).toBe(before.mine + 1);
+    expect(await epoch(theirs.robotId)).toBe(before.theirs); // viewer-only: untouched
+    expect(await epoch(unrelated.robotId)).toBe(before.unrelated);
+
+    // The robot learns the new epoch at its next sync, and then refuses sessions and grants
+    // from before (agent: TestEpochBumpEndsEarlierSessionsAndGrants).
+    const self = (await (await call("/v1/robots/self", { headers: { Authorization: await robotAssertion(mine) } }, env)).json()) as { sessionEpoch: number };
+    expect(self.sessionEpoch).toBe(before.mine + 1);
+    expect(decodeJws(grantBefore.grant).payload.epoch).toBeLessThan(self.sessionEpoch);
+
+    // Signing out again is a clean 401 and bumps nothing.
+    const again = await api(dev, "POST", "/v1/app/sign-out");
+    expect(again.status).toBe(401);
+    expect(await again.json()).toMatchObject({ detail: "unknown_device" });
+    expect(await epoch(mine.robotId)).toBe(before.mine + 1);
+  });
+
+  it("concurrent sign-outs of one device bump the epoch once", async () => {
+    const { dev } = await signedIn();
+    const mine = await ownedRobot(dev, "signout-race");
+    const before = await epoch(mine.robotId);
+    const codes = (await Promise.all([api(dev, "POST", "/v1/app/sign-out"), api(dev, "POST", "/v1/app/sign-out"), api(dev, "POST", "/v1/app/sign-out")])).map((r) => r.status);
+    expect(codes.filter((c) => c === 200).length).toBeGreaterThanOrEqual(1);
+    expect(codes.every((c) => c === 200 || c === 401)).toBe(true);
+    expect(await epoch(mine.robotId)).toBe(before + 1);
+  });
+
+  it("a failed revocation (someone else's device) bumps nothing", async () => {
+    const { dev } = await signedIn();
+    const mine = await ownedRobot(dev, "signout-foreign");
+    const before = await epoch(mine.robotId);
+    const stranger = await newUser();
+    const res = await call(`/devices/${dev.thumbprint}/revoke`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: ORIGIN, Cookie: stranger.cookie }, body: "", redirect: "manual" }, env);
+    expect(res.status).toBe(404);
+    expect(await epoch(mine.robotId)).toBe(before);
+    expect((await api(dev, "GET", "/v1/app/me")).status).toBe(200);
+  });
+});
+
+async function robotAssertion(robot: Awaited<ReturnType<typeof newRobot>>): Promise<string> {
+  const { assertion } = await import("./helpers");
+  return assertion(robot, "GET", "/v1/robots/self");
+}

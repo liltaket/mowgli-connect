@@ -1,7 +1,7 @@
 import type { Env } from "./env";
 import { isAdmin, ownedRobots, robotLimit } from "./access";
 import { handleAdmin, isAdminPath } from "./admin";
-import { appEnabled, handleAppBrowser } from "./appApi";
+import { appEnabled, handleAppBrowser, signOutDevice } from "./appApi";
 import { claimRobot, limitMessage, planAddress, previewClaim, reachedLimit, unlinkRobot, type AddressPlan } from "./claim";
 import { HOMEPAGE, html, lawn, markSvg, page, type PageUser, type SafeHtml } from "./html";
 import { mintGrant } from "./grant";
@@ -352,17 +352,8 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
   const dev = /^\/devices\/([^/]+)\/revoke$/.exec(pathname);
   if (dev && method === "POST") {
     if (!user) return redirect("/login", 303);
-    // The app may hold robot sessions (up to 12 hours) from before: signing everyone out of the
-    // robots this person owns ends them now, which is what a lost phone needs.
-    const [res] = await env.DB.batch([
-      env.DB.prepare("DELETE FROM devices WHERE device_id = ? AND user_id = ?").bind(dev[1]!, user.id),
-      env.DB.prepare(
-        `UPDATE robots SET session_epoch = session_epoch + 1, updated_at = ?2
-         WHERE changes() > 0 AND status = 'claimed'
-           AND robot_id IN (SELECT robot_id FROM members WHERE user_id = ?1 AND role = 'owner')`,
-      ).bind(user.id, nowSeconds()),
-    ]);
-    return res?.meta.changes === 1 ? redirect("/?notice=device_signed_out", 303) : notFound();
+    // Also ends the robot sessions the app still had, on the robots this person owns.
+    return (await signOutDevice(env, dev[1]!, user.id)) ? redirect("/?notice=device_signed_out", 303) : notFound();
   }
 
   if (pathname === "/logout" && method === "POST") {
