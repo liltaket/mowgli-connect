@@ -35,5 +35,6 @@ record what was done.
 7. [security-review-9.md](security-review-9.md): encrypted tunnel tokens, alerts, updates and admin unlink (GPT-6.1 Sol).
 8. [security-review-10.md](security-review-10.md): the whole system, by component (GPT-6.1 Sol) and by attacker position (Claude Opus 5.5).
 9. [security-review-11.md](security-review-11.md): the native app API (GPT-6.1 Sol and Claude Opus 5.5).
+10. [security-review-13.md](security-review-13.md): app sign-out ends robot sessions, and its races (GPT-6.1 Sol and Claude Opus 5.5). Review 12 is an addendum to 11.
 
 To report a vulnerability, see [SECURITY.md](../../SECURITY.md).
