@@ -478,3 +478,67 @@ async function robotAssertion(robot: Awaited<ReturnType<typeof newRobot>>): Prom
   const { assertion } = await import("./helpers");
   return assertion(robot, "GET", "/v1/robots/self");
 }
+
+describe("sign-out races (review 13)", () => {
+  const epoch = async (id: string) => (await testEnv.DB.prepare("SELECT session_epoch AS e FROM robots WHERE robot_id = ?").bind(id).first<{ e: number }>())!.e;
+
+  it("a grant whose epoch is read after a sign-out commits is refused, never minted at the new epoch", async () => {
+    const { user, dev } = await signedIn();
+    const robot = await newRobot();
+    const { pairingCode } = (await (await register(robot, "race-grant")).json()) as { pairingCode: string };
+    await api(dev, "POST", "/v1/app/claim", { code: pairingCode, step: "confirm" });
+    const before = await epoch(robot.robotId);
+    const { signOutDevice } = await import("../src/appApi");
+    // Run the sign-out right before the grant reads the epoch.
+    let fired = false;
+    const db = testEnv.DB;
+    const wrapped = new Proxy(db, {
+      get(target, prop) {
+        if (prop === "prepare") {
+          return (sql: string) => {
+            const st = target.prepare(sql);
+            if (fired || !sql.includes("EXISTS (SELECT 1 FROM devices WHERE device_id = ?3")) return st;
+            fired = true;
+            return {
+              bind: (...args: unknown[]) => ({
+                first: async () => {
+                  await signOutDevice(testEnv, dev.thumbprint, user.id);
+                  return st.bind(...args).first();
+                },
+              }),
+            };
+          };
+        }
+        const v = Reflect.get(target, prop);
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    });
+    const res = await api(dev, "POST", `/v1/app/robots/${robot.robotId}/grant`, undefined, { ...env, DB: wrapped as unknown as D1Database });
+    expect(fired).toBe(true);
+    expect(res.status).toBe(404);
+    expect(await epoch(robot.robotId)).toBe(before + 1);
+  });
+
+  it("a sign-in the same key started before the sign-out cannot bring the device back", async () => {
+    const { user, dev } = await signedIn();
+    const ch = await pkce();
+    const code = await authorize(user, dev, ch); // pending when the sign-out happens
+    expect((await api(dev, "POST", "/v1/app/sign-out")).status).toBe(200);
+    expect((await exchange(dev, code, ch.verifier)).status).toBe(400);
+    expect(await testEnv.DB.prepare("SELECT 1 AS ok FROM devices WHERE device_id = ?").bind(dev.thumbprint).first()).toBeNull();
+  });
+
+  it("revoking a device from the robots page ends pending app sign-ins and the person's other relay sessions", async () => {
+    const { user, dev } = await signedIn();
+    const { createSession } = await import("../src/session");
+    const phoneBrowser = `__Host-mcr_session=${await createSession(testEnv, user.id)}`; // the lost phone's Safari
+    const otherKey = await newDevice();
+    const ch = await pkce();
+    const code = await authorize(user, otherKey, ch); // the phone started a fresh sign-in with a new key
+    const res = await call(`/devices/${dev.thumbprint}/revoke`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: ORIGIN, Cookie: user.cookie }, body: "", redirect: "manual" }, env);
+    expect(res.status).toBe(303);
+    expect(await (await call("/", { headers: { Cookie: user.cookie } }, env)).text()).toContain("My robots"); // this browser stays
+    expect(await (await call("/", { headers: { Cookie: phoneBrowser } }, env)).text()).toContain("Sign in with GitHub");
+    expect((await exchange(otherKey, code, ch.verifier)).status).toBe(400);
+  });
+});

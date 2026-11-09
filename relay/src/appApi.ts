@@ -266,28 +266,31 @@ async function token(request: Request, env: Env, url: URL): Promise<Response> {
     throw e;
   }
   const now = nowSeconds();
-  // The code is used up only together with its verifier and its key, in one statement: a wrong or
-  // made-up code writes nothing, and someone who saw a code cannot spoil the real sign-in with it.
-  const row = await env.DB.prepare(
-    `DELETE FROM app_codes WHERE code_hash = ? AND expires_at > ? AND code_challenge = ? AND key_thumbprint = ? AND redirect_uri = ?
-     RETURNING user_id, device_name`,
-  )
-    .bind(await sha256Hex(`mc-app-code:${code}`), now, await b64urlSha256(verifier), thumbprint, body.redirect_uri)
-    .first<{ user_id: string; device_name: string }>();
-  if (!row) return json({ error: "invalid_grant" }, 400);
-  if (!(await consumeJti(env, thumbprint, a.jti, a.exp))) return authFailure(new DeviceAuthError("replayed_jti"));
-  const user = await env.DB.prepare("SELECT id, login, name FROM users WHERE id = ?").bind(row.user_id).first<SessionUser>();
+  const codeHash = await sha256Hex(`mc-app-code:${code}`);
+  const match = [codeHash, now, await b64urlSha256(verifier), thumbprint, body.redirect_uri] as const;
+  const MATCH = "code_hash = ?1 AND expires_at > ?2 AND code_challenge = ?3 AND key_thumbprint = ?4 AND redirect_uri = ?5";
+  // Read first (writes nothing): a wrong or made-up code, or one someone saw but cannot complete
+  // (no verifier or key), changes nothing and does not spoil the real sign-in.
+  const pending = await env.DB.prepare(`SELECT user_id FROM app_codes WHERE ${MATCH}`).bind(...match).first<{ user_id: string }>();
+  if (!pending) return json({ error: "invalid_grant" }, 400);
+  const user = await env.DB.prepare("SELECT id, login, name FROM users WHERE id = ?").bind(pending.user_id).first<SessionUser>();
   if (!user || !(await isUserAllowed(env, user.id, user.login))) return json({ error: "no_access" }, 403);
-  // One statement: the device limit and "a key belongs to one person" hold under concurrency.
-  const saved = await env.DB.prepare(
-    `INSERT INTO devices (device_id, user_id, name, public_jwk, created_at, last_used_at)
-     SELECT ?1, ?2, ?3, ?4, ?5, ?5
-     WHERE (SELECT COUNT(*) FROM devices WHERE user_id = ?2 AND device_id != ?1) < ?6
-     ON CONFLICT(device_id) DO UPDATE SET name = excluded.name, last_used_at = excluded.last_used_at WHERE devices.user_id = ?2`,
-  )
-    .bind(thumbprint, user.id, row.device_name, JSON.stringify(jwk), now, MAX_DEVICES_PER_USER)
-    .run();
-  if (saved.meta.changes !== 1) {
+  if (!(await consumeJti(env, thumbprint, a.jti, a.exp))) return authFailure(new DeviceAuthError("replayed_jti"));
+  // One transaction: the device is created from the code and the code used up together, so a
+  // sign-out (which deletes pending codes and the device) is either before both or after both.
+  // The device limit and "a key belongs to one person" hold under concurrency.
+  const [saved, used] = await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO devices (device_id, user_id, name, public_jwk, created_at, last_used_at)
+       SELECT ?4, c.user_id, c.device_name, ?6, ?2, ?2 FROM app_codes c
+       WHERE ${MATCH.replace(/(code_hash|expires_at|code_challenge|key_thumbprint|redirect_uri)/g, "c.$1")}
+         AND (SELECT COUNT(*) FROM devices WHERE user_id = c.user_id AND device_id != ?4) < ?7
+       ON CONFLICT(device_id) DO UPDATE SET name = excluded.name, last_used_at = excluded.last_used_at WHERE devices.user_id = excluded.user_id`,
+    ).bind(...match, JSON.stringify(jwk), MAX_DEVICES_PER_USER),
+    env.DB.prepare(`DELETE FROM app_codes WHERE ${MATCH}`).bind(...match),
+  ]);
+  if (used?.meta.changes !== 1) return json({ error: "invalid_grant" }, 400); // used up meanwhile
+  if (saved?.meta.changes !== 1) {
     const owner = await env.DB.prepare("SELECT user_id FROM devices WHERE device_id = ?").bind(thumbprint).first<{ user_id: string }>();
     return owner && owner.user_id !== user.id
       ? json({ error: "device_belongs_to_another_account" }, 409)
@@ -343,15 +346,32 @@ async function authenticate(request: Request, env: Env, url: URL): Promise<{ dev
  * sign their owner and everyone else out); their owner can sign everyone out. Returns whether
  * this call deleted the device.
  */
-export async function signOutDevice(env: Env, deviceId: string, userId: string): Promise<boolean> {
-  const [del] = await env.DB.batch([
+export async function signOutDevice(
+  env: Env,
+  deviceId: string,
+  userId: string,
+  opts: { lostDevice?: { keepSessionHash: string | null } } = {},
+): Promise<boolean> {
+  const steps = [
     env.DB.prepare("DELETE FROM devices WHERE device_id = ? AND user_id = ?").bind(deviceId, userId),
     env.DB.prepare(
       `UPDATE robots SET session_epoch = session_epoch + 1, updated_at = ?2
        WHERE changes() > 0 AND status = 'claimed'
          AND robot_id IN (SELECT robot_id FROM members WHERE user_id = ?1 AND role = 'owner')`,
     ).bind(userId, nowSeconds()),
-  ]);
+    // A sign-in that key started just before cannot bring the device back.
+    env.DB.prepare("DELETE FROM app_codes WHERE user_id = ? AND key_thumbprint = ?").bind(userId, deviceId),
+  ];
+  if (opts.lostDevice) {
+    // Revoked from somewhere else (a lost phone): its browser may still be signed in to the relay
+    // and could sign the app in again with a new key. End every relay session but this one, and
+    // every pending app sign-in.
+    steps.push(
+      env.DB.prepare("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?").bind(userId, opts.lostDevice.keepSessionHash ?? ""),
+      env.DB.prepare("DELETE FROM app_codes WHERE user_id = ?").bind(userId),
+    );
+  }
+  const [del] = await env.DB.batch(steps);
   return del?.meta.changes === 1;
 }
 
@@ -422,11 +442,14 @@ export async function handleAppApi(request: Request, env: Env, url: URL): Promis
     const row = await env.DB.prepare(
       `SELECT r.hostname, r.session_epoch, r.tunnel_id, r.first_online_at, m.role
        FROM members m JOIN robots r ON r.robot_id = m.robot_id
-       WHERE m.robot_id = ? AND m.user_id = ? AND r.status = 'claimed'`,
+       WHERE m.robot_id = ?1 AND m.user_id = ?2 AND r.status = 'claimed'
+         AND EXISTS (SELECT 1 FROM devices WHERE device_id = ?3 AND user_id = ?2)`,
     )
-      .bind(robotId, user.id)
+      // The epoch is read together with proof that the device still exists: a grant minted while a
+      // sign-out commits carries the old epoch (ended at the robot's next sync), never the new one.
+      .bind(robotId, user.id, device.device_id)
       .first<{ hostname: string | null; session_epoch: number; tunnel_id: string | null; first_online_at: number | null; role: "owner" | "viewer" }>();
-    if (!row) return json({ error: "not_found" }, 404); // non-members and unknown robots alike
+    if (!row) return json({ error: "not_found" }, 404); // non-members, unknown robots, signed-out devices
     if (!row.hostname) return json({ error: "robot_starting" }, 503, { "Retry-After": "10" });
     const prov = createProvisioner(env);
     const up = row.tunnel_id && prov.connected ? await prov.connected(row.tunnel_id) : null;

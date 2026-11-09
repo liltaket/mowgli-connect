@@ -13,17 +13,18 @@ import {
   destroySession,
   getSessionUser,
   originOk,
+  SESSION_COOKIE,
   type SessionUser,
 } from "./session";
 import { latestAgentSha, updateAvailable } from "./updates";
-import { cleanLabel, isRobotId, nowSeconds, readBodyText, safeReturnPath } from "./util";
+import { cleanLabel, isRobotId, nowSeconds, parseCookies, readBodyText, safeReturnPath, sha256Hex } from "./util";
 
 const NOTICES: Record<string, string> = {
   claimed: "Robot added. It is setting up its secure connection, which usually takes under a minute the first time. You can press Open now: it waits for the robot.",
   unlinked: "Robot unlinked.",
   revoked: "All sessions on that robot were signed out.",
   device_signed_out:
-    "The app on that device is signed out, and everyone was signed out of the robots you own, which ends any robot sessions it still had. Open your robots again from here.",
+    "The app on that device is signed out. Everyone was signed out of the robots you own (its robot sessions end within a few minutes), and you were signed out of Mowgli Connect in every other browser. Open your robots again from here.",
 };
 
 const GITHUB_ICON = html`<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>`;
@@ -352,8 +353,11 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
   const dev = /^\/devices\/([^/]+)\/revoke$/.exec(pathname);
   if (dev && method === "POST") {
     if (!user) return redirect("/login", 303);
-    // Also ends the robot sessions the app still had, on the robots this person owns.
-    return (await signOutDevice(env, dev[1]!, user.id)) ? redirect("/?notice=device_signed_out", 303) : notFound();
+    // Also ends the robot sessions the app still had (robots this person owns), pending app
+    // sign-ins, and the person's relay sessions in every other browser (a lost phone's included).
+    const token = parseCookies(request.headers.get("Cookie"))[SESSION_COOKIE];
+    const keep = token ? await sha256Hex(token) : null;
+    return (await signOutDevice(env, dev[1]!, user.id, { lostDevice: { keepSessionHash: keep } })) ? redirect("/?notice=device_signed_out", 303) : notFound();
   }
 
   if (pathname === "/logout" && method === "POST") {
