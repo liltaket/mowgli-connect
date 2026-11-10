@@ -17,6 +17,8 @@
 #          --allow-downgrade (take the release IMAGE's tag names even if it is older than one
 #          that ran here or failed here before; otherwise refused, as in automatic updates)
 set -eu
+# Docker Compose takes these from the environment before .env and compose.yaml.
+unset MC_IMAGE MC_RELAY_URL MC_ROBOT_NAME MC_ALLOW_TELEOP COMPOSE_FILE COMPOSE_ENV_FILES COMPOSE_PROJECT_NAME
 
 DIR="$HOME/mowgli-connect"
 RELAY="https://connect.bronc.app"
@@ -90,8 +92,30 @@ dk=$(command -v docker)
 case $dk in /*) ;; *) dk="" ;; esac
 case $dk in *[!A-Za-z0-9/._-]*) dk="" ;; esac
 [ -n "$dk" ] || die "docker is not at a plain absolute path, which the update job needs"
+canon_repo() { # canon_repo REPO: lower case, no empty or "." parts, host without trailing dots or :443
+	printf '%s\n' "$1" | tr 'A-Z' 'a-z' | awk -F/ '{
+		n = 0
+		for (i = 1; i <= NF; i++) if ($i != "" && $i != ".") c[++n] = $i
+		h = c[1]
+		sub(/\.+$/, "", h)
+		if (match(h, /:[0-9]+$/)) {
+			pt = substr(h, RSTART + 1) + 0
+			h = substr(h, 1, RSTART - 1)
+			sub(/\.+$/, "", h)
+			if (pt != 443) h = h ":" pt
+		}
+		s = h
+		for (i = 2; i <= n; i++) s = s "/" c[i]
+		print s
+	}'
+}
 if [ "$SKIP_VERIFY" = yes ]; then
-	[ "$IMAGE_REPO" != "$OFFICIAL_REPO" ] || die "--insecure-skip-verify is only for a custom --image: $OFFICIAL_REPO is always verified"
+	# However it is spelled, and on any registry (a mirror, Docker Hub): the official image path.
+	case $(canon_repo "$IMAGE_REPO") in
+	"$OFFICIAL_REPO" | "${OFFICIAL_REPO#*/}" | */"${OFFICIAL_REPO#*/}")
+		die "--insecure-skip-verify is only for a custom --image: $OFFICIAL_REPO is always verified, however it is spelled"
+		;;
+	esac
 	[ "$AUTOUPDATE" = yes ] && die "--insecure-skip-verify cannot be combined with --auto-update yes: an unverified image is never updated automatically"
 	AUTOUPDATE=no
 	echo "WARNING: --insecure-skip-verify: $IMAGE will run WITHOUT any signature check."
@@ -222,7 +246,8 @@ put "$DIR/update.sh" 0555 <<'UPDATER'
 # OIDC identity, Fulcio certificate, Rekor transparency log). Then the robot runs the verified
 # digest, never a tag. The new agent must start and connect (tunnel up, quick tunnel reported,
 # pairing code from the relay, or paired) within MC_UPDATE_HEALTH_TIMEOUT seconds and keep
-# running; otherwise the last good version is started again and the release is not retried.
+# running; otherwise the last good version is started again and the release is not retried
+# (unless the way back was the unverified agent of an install from before signed updates).
 # Each release carries a signed release number (the "seq" annotation: the release workflow's run
 # number). Following a tag, a release is refused if its number is lower than the highest that
 # ran well here, if it has none once one was seen, if it was replaced here before (releases
@@ -231,12 +256,16 @@ put "$DIR/update.sh" 0555 <<'UPDATER'
 # Whatever fails, the agent that runs keeps running, and the reason goes to update-state/status,
 # update-state/update.log, syslog (logger) and, from cron, to stderr (cron mails it if set up).
 set -eu
+# Docker Compose takes these from the environment before .env and compose.yaml: only those files
+# decide what runs.
+unset MC_IMAGE MC_RELAY_URL MC_ROBOT_NAME MC_ALLOW_TELEOP COMPOSE_FILE COMPOSE_ENV_FILES COMPOSE_PROJECT_NAME
 
 DIR=$(cd "$(dirname "$0")" && pwd -P)
 POLICY=$DIR/update-policy
 STATE=$DIR/update-state
 ENVF=$DIR/.env
 NAME=mowgli-connect
+UNVERIFIED="RUNNING AN UNVERIFIED IMAGE: previous image, not signature-verified"
 # cosign v3.1.4, multi-arch index (amd64, arm64, ...), signed by Sigstore's release identity
 # keyless@projectsigstore.iam.gserviceaccount.com (issuer https://accounts.google.com).
 COSIGN_IMAGE=ghcr.io/sigstore/cosign/cosign:v3.1.4@sha256:0f06154836d2de34f887a5c273506d52ca43edaa1d9e53e6510fa78a48f69c2d
@@ -289,13 +318,17 @@ current() { sed -n "s/^MC_IMAGE='\(.*\)'\$/\1/p" "$ENVF" | tail -1; }
 running() { "$DOCKER" inspect -f '{{.Config.Image}}' "$NAME" 2>/dev/null || true; }
 good() { cat "$STATE/good" 2>/dev/null || true; }
 previous() { cat "$STATE/previous" 2>/dev/null || true; }
-top_seq() { # the highest release number that ran well here (empty: none yet)
-	sq=$(cat "$STATE/seq" 2>/dev/null || true)
-	case $sq in *[!0-9]*) fail "$STATE/seq is not a number: fix it or remove it" ;; esac
-	echo "$sq"
+read_seq() { # SEQ_TOP: the highest release number that ran well here (empty: none yet); 1: damaged
+	SEQ_TOP=""
+	[ -e "$STATE/seq" ] || [ -L "$STATE/seq" ] || return 0
+	SEQ_TOP=$(cat "$STATE/seq" 2>/dev/null) || return 1
+	case $SEQ_TOP in "" | *[!0-9]* | 0?*) return 1 ;; esac
+	[ ${#SEQ_TOP} -le 9 ]
 }
+top_seq() { read_seq || fail "$STATE/seq is not a release number (empty or damaged): fix it or remove it"; }
 record_seq() { # record_seq SEQ: keep the highest
-	sq=$(top_seq)
+	top_seq
+	sq=$SEQ_TOP
 	if [ -n "$1" ] && { [ -z "$sq" ] || [ "$1" -gt "$sq" ]; }; then
 		echo "$1" >"$STATE/seq.tmp"
 		mv -f "$STATE/seq.tmp" "$STATE/seq"
@@ -351,7 +384,9 @@ for v in "$HEALTH_TIMEOUT" "$HEALTH_SETTLE" "$HEALTH_INTERVAL"; do
 	case $v in '' | *[!0-9]*) bad "MC_UPDATE_HEALTH_TIMEOUT, _SETTLE and _INTERVAL are whole seconds" ;; esac
 done
 
+# Read only: it writes nothing, also not when the state is damaged (it says so and returns 1).
 show_status() {
+	ok=0
 	echo "Mowgli Connect agent updates ($DIR)"
 	echo "  follows:     $TARGET"
 	if [ "$VERIFY" = yes ]; then
@@ -362,11 +397,20 @@ show_status() {
 	fi
 	echo "  configured:  $(current)"
 	echo "  running:     $("$DOCKER" inspect -f '{{.Config.Image}} ({{.State.Status}})' "$NAME" 2>/dev/null || echo "no container")"
+	if [ -s "$STATE/previous" ] && { [ "$(current)" = "$(previous)" ] || [ "$(running)" = "$(previous)" ]; }; then
+		echo "  $UNVERIFIED (the agent from before signed updates; every update tries a verified release again)"
+	fi
 	echo "  last good:   $(good)"
-	[ ! -s "$STATE/previous" ] || echo "  way back:    $(previous) (ran here before signed updates, NOT verified: used only if the first verified release does not start)"
-	echo "  release no.: $(top_seq) (highest signed release number that ran here; lower ones are refused)"
+	[ ! -s "$STATE/previous" ] || echo "  way back:    $(previous) (ran here before signed updates, NOT verified: started again whenever a verified release does not start, until one has run well here)"
+	if read_seq; then
+		echo "  release no.: $SEQ_TOP (highest signed release number that ran here; lower ones are refused)"
+	else
+		echo "  release no.: seq record damaged ($STATE/seq is empty or not a release number): updates are refused until it is fixed or removed"
+		ok=1
+	fi
 	echo "  pending:     $(st pending)"
 	echo "  last check:  $(st checked) $(st result): $(st message)"
+	[ ! -s "$STATE/skipped" ] || echo "  skipped:     $(oneline "$(cat "$STATE/skipped")")"
 	if [ -s "$STATE/failed" ]; then
 		echo "  not retried (failed their start-up check):"
 		sed 's/^/    /' "$STATE/failed"
@@ -376,6 +420,7 @@ show_status() {
 	else
 		echo "  automatic:   off; update by hand: sh $DIR/update.sh"
 	fi
+	return $ok
 }
 
 # verify REF: cosign checks the signature, certificate identity and issuer and prints what it
@@ -444,9 +489,9 @@ healthy() {
 up() { "$DOCKER" compose --project-directory "$DIR" up -d --force-recreate >/dev/null 2>"$STATE/up.err"; }
 
 # An agent installed before signed updates (.env names a tag, and no verified release has run here
-# yet) is remembered by the digest it runs: the way back if the first verified release does not
-# start. That image is not verified; it is the one this robot already ran, by content digest, so
-# going back to it adds nothing new. It is forgotten once a verified release has run well.
+# yet) is remembered by the digest it runs: the way back while no verified release has run well
+# here. That image is NOT verified: it is whatever this robot ran before, by content digest, and
+# going back to it trusts it again. It is forgotten once a verified release has run well.
 remember_previous() {
 	[ -z "$(good)" ] && [ ! -s "$STATE/previous" ] || return 0
 	case $(current) in "" | *@sha256:*) return 0 ;; esac
@@ -460,13 +505,19 @@ remember_previous() {
 
 # rollback IMAGE WHY BLAME: IMAGE did not work; start the last good version again. IMAGE is not
 # tried again only if its own container ran (BLAME=yes) and the last good version works;
-# otherwise the robot or its network is the problem.
+# otherwise the robot or its network is the problem. Going back to the unverified agent from
+# before signed updates never blames IMAGE: that image shares /data and may be what breaks it,
+# and it must not be able to get verified releases refused here.
 rollback() {
 	last=$(good)
 	was=""
+	res=rolled-back
+	blame=$3
 	if [ -z "$last" ]; then
 		last=$(previous)
-		was=" (the agent from before signed updates, not verified)"
+		was=" ($UNVERIFIED, from before signed updates)"
+		res=unverified
+		blame=no
 	fi
 	if [ -z "$last" ] || [ "$last" = "$1" ]; then
 		fail "${1##*@} did not start properly ($2) and there is no earlier version to return to; see docker logs $NAME"
@@ -475,13 +526,14 @@ rollback() {
 	set_image "$last"
 	if ! up; then
 		HEALTH_ERR="docker compose up failed: $(tail -1 "$STATE/up.err")"
-	elif [ "$3" != yes ] && healthy "$last"; then
-		fail "${1##*@} did not start ($2); ${last##*@}$was runs again and ${1##*@} is tried again next time" rolled-back
 	elif healthy "$last"; then
-		echo "$1 $(now) $(oneline "$2")" >>"$STATE/failed"
-		fail "${1##*@} did not start properly ($2); ${last##*@}$was runs again and ${1##*@} will not be tried again" rolled-back
+		if [ "$blame" = yes ]; then
+			echo "$1 $(now) $(oneline "$2")" >>"$STATE/failed"
+			fail "${1##*@} did not start properly ($2); ${last##*@}$was runs again and ${1##*@} will not be tried again" rolled-back
+		fi
+		fail "${1##*@} did not start properly ($2); ${last##*@}$was runs again and ${1##*@} is tried again next time" $res
 	fi
-	fail "${1##*@} did not start properly ($2); went back to ${last##*@}$was, which does not work either ($HEALTH_ERR): probably a network or robot problem, so ${1##*@} is tried again next time" rolled-back
+	fail "${1##*@} did not start properly ($2); went back to ${last##*@}$was, which does not work either ($HEALTH_ERR): probably a network or robot problem, so ${1##*@} is tried again next time" $res
 }
 
 # activate IMAGE [SEQ]: download it, point .env at it, start it and check it.
@@ -504,22 +556,26 @@ activate() {
 	log "running ${1##*@} (verified, healthy)"
 }
 
-mkdir -p "$STATE"
-chmod 700 "$STATE"
-case $MODE:${2-} in
-status:) show_status; exit 0 ;;
-run: | cron: | install:) ;;
-install:--allow-downgrade) ALLOW_DOWNGRADE=yes ;;
+case $#:$MODE:${2-} in
+1:status:)
+	r=0
+	show_status || r=$?
+	exit $r
+	;;
+0:run: | 1:run: | 1:cron: | 1:install:) ;;
+2:install:--allow-downgrade) ALLOW_DOWNGRADE=yes ;;
 *) echo "usage: sh update.sh [status | install [--allow-downgrade]]" >&2; exit 2 ;;
 esac
+mkdir -p "$STATE"
+chmod 700 "$STATE"
 cd "$DIR"
 
 # One update at a time. With flock(1) (util-linux or busybox) the kernel holds the lock and drops
 # it when this run ends, however it ends: nothing stale survives a crash or a reboot. Without
-# it, the lock is a symlink (created atomically) on tmpfs whose target names its owner: boot id,
-# pid and that process's start time, so a lock of an earlier boot, a dead run or a reused pid
-# is not taken for a live one. A stale one is replaced under a second lock (mkdir), so two runs
-# never both take it over.
+# it, the lock is a symlink in update-state (created atomically) whose target names its owner:
+# boot id, pid and that process's start time, so a lock of an earlier boot, a dead run or a
+# reused pid is not taken for a live one. A stale one is replaced under a second lock (mkdir), so
+# two runs never both take it over. A run holds it only if the link then names it.
 LOCK=""
 TOKEN=""
 owner() { # owner PID: "BOOT_ID PID START_TIME"; START_TIME is "gone" without such a process
@@ -527,17 +583,26 @@ owner() { # owner PID: "BOOT_ID PID START_TIME"; START_TIME is "gone" without su
 	t=$(sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f20)
 	echo "$b $1 ${t:-gone}"
 }
-lock() {
-	exec 9>>"$STATE/update.lock"
+mine() { [ "$(readlink "$LOCK" 2>/dev/null)" = "$TOKEN" ]; }
+lock() { # 0: this run holds the lock, 1: another run does, 2: it cannot be used (LOCK_WHY)
+	LOCK_WHY="another update of $DIR is running"
+	f=$STATE/update.lock
+	if [ -d "$f" ] || { [ -e "$f" ] && [ ! -w "$f" ]; }; then
+		LOCK_WHY="$f is a directory or not writable: remove it"
+		return 2
+	fi
+	exec 9>>"$f"
 	flock -n 9 2>/dev/null && return 0 || r=$?
 	[ "$r" != 1 ] || return 1 # held by another run
 	exec 9>&-
-	for d in "${XDG_RUNTIME_DIR:-}" /dev/shm /run/lock "$STATE"; do
-		[ -n "$d" ] && [ -d "$d" ] && [ -w "$d" ] && break
-	done
-	LOCK=$d/mowgli-connect-update-$(id -u)-$(printf '%s' "$DIR" | cksum | cut -d' ' -f1)
+	LOCK=$f.link
 	TOKEN=$(owner $$)
-	ln -s "$TOKEN" "$LOCK" 2>/dev/null && return 0
+	# ln would put the link inside a directory standing there and still succeed.
+	if [ -d "$LOCK" ] || { [ -e "$LOCK" ] && [ ! -L "$LOCK" ]; }; then
+		LOCK_WHY="$LOCK is not a lock link (a directory or a file): remove it"
+		return 2
+	fi
+	ln -s "$TOKEN" "$LOCK" 2>/dev/null && mine && return 0
 	held=$(readlink "$LOCK" 2>/dev/null) || return 1
 	pid=$(echo "$held" | cut -d' ' -f2)
 	case $pid in "" | *[!0-9]*) ;; *) [ "${held##* }" = gone ] || [ "$held" != "$(owner "$pid")" ] || return 1 ;; esac
@@ -546,18 +611,22 @@ lock() {
 	mkdir "$LOCK.t" 2>/dev/null || return 1
 	[ "$(readlink "$LOCK" 2>/dev/null)" != "$held" ] || rm -f "$LOCK"
 	rmdir "$LOCK.t"
-	ln -s "$TOKEN" "$LOCK" 2>/dev/null
+	ln -s "$TOKEN" "$LOCK" 2>/dev/null && mine
 }
-unlock() { [ -z "$LOCK" ] || [ "$(readlink "$LOCK" 2>/dev/null)" != "$TOKEN" ] || rm -f "$LOCK"; }
-if ! lock; then
-	PENDING=$(st pending)
-	set_status skipped "locked: another update of $DIR is running"
-	log "skipped: another update is running"
-	[ "$MODE" != cron ] || echo "mowgli-connect update skipped: another update is running (sh $DIR/update.sh status)" >&2
+unlock() { [ -z "$LOCK" ] || ! mine || rm -f "$LOCK"; }
+locked=0
+lock || locked=$?
+if [ "$locked" != 0 ]; then
+	# Status and pending belong to the run that holds the lock: only note the skip beside them.
+	echo "$(now) $(oneline "$LOCK_WHY")" >"$STATE/skipped.tmp.$$"
+	mv -f "$STATE/skipped.tmp.$$" "$STATE/skipped"
+	log "skipped: $LOCK_WHY"
+	[ "$MODE" != cron ] || echo "mowgli-connect update skipped: $(oneline "$LOCK_WHY") (sh $DIR/update.sh status)" >&2
 	exit 1
 fi
 trap unlock EXIT
 trap 'exit 1' HUP INT TERM
+rm -f "$STATE/skipped"
 if [ -f "$STATE/update.log" ] && [ "$(wc -l <"$STATE/update.log")" -gt 2000 ]; then
 	tail -n 1000 "$STATE/update.log" >"$STATE/update.log.tmp"
 	mv -f "$STATE/update.log.tmp" "$STATE/update.log"
@@ -577,6 +646,7 @@ new=$REPO@$VERIFIED
 cur=$(current)
 log "signature verified: $new (release number ${SEQ:-none})"
 remember_previous
+[ ! -s "$STATE/previous" ] || [ "$cur" != "$(previous)" ] || [ "$new" = "$cur" ] || log "$UNVERIFIED: ${cur##*@}; trying the verified release"
 
 if [ "$MODE" != install ] && [ "$new" = "$cur" ]; then
 	# Up to date. If this version was never confirmed (first install without a working
@@ -602,7 +672,8 @@ fi
 # here.
 why=""
 if [ "$new" != "$cur" ] && ! is_digest "$REF" && [ "$ALLOW_DOWNGRADE" = no ]; then
-	top=$(top_seq)
+	top_seq
+	top=$SEQ_TOP
 	if listed "$new" "$STATE/failed"; then
 		why="it failed its start-up check here before"
 	elif [ -n "$top" ] && [ -z "$SEQ" ]; then

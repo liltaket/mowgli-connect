@@ -35,7 +35,7 @@ For day-to-day use see [install.md](install.md#update); for the overall threat m
 | --- | --- |
 | `update-policy` | Read-only. Image repository and tag to follow (`IMAGE_REPO`, `IMAGE_REF`), the signer (`SIGNER_REPO`), the certificate identity regexp and OIDC issuer, `VERIFY` and the docker binary. Parsed as data, never executed. |
 | `update.sh` | Read-only. The updater: `sh update.sh` updates, `sh update.sh status` shows the state, `sh update.sh install [--allow-downgrade]` is what the installer runs. |
-| `update-state/` | `status` (last check, result, message, pending digest), `good` (last good image), `seq` (highest release number that ran well), `failed` (releases that failed their start-up check, never retried), `history` (every image that ran well, in order), `previous` (only on an install from before signed updates, see below), `update.log`, `update.lock`. |
+| `update-state/` | `status` (last check, result, message, pending digest), `good` (last good image), `seq` (highest release number that ran well), `failed` (releases that failed their start-up check, never retried), `history` (every image that ran well, in order), `previous` (only on an install from before signed updates, see below), `update.log`, `update.lock` (and `update.lock.link` without `flock`), `skipped` (a run that found the lock held or unusable). |
 
 The nightly cron job is `/bin/sh ~/mowgli-connect/update.sh cron` at a random minute past 03:00.
 
@@ -62,6 +62,10 @@ What `update.sh` does:
    - its release number is lower than the one in `seq`, or it has none although `seq` is set,
    - (releases without numbers only) it first ran here before the last good one did.
 
+   A `seq` record that exists but is empty or not a plain number of at most nine digits refuses
+   every update (fail closed) until it is fixed or removed; `update.sh status` reports it ("seq
+   record damaged", exit status 1) without changing anything.
+
    This applies to automatic runs **and** to `sh update.sh install`, which the installer runs:
    rerunning `install.sh` to change a setting does not move the robot back. When the installer is
    refused it restarts the verified version that runs (so new settings apply) and stops with the
@@ -79,7 +83,7 @@ What `update.sh` does:
    release goes into `failed` and is not tried again. If the old one does not work either, the
    robot or its network is the problem: the new release is not blamed and is tried again the next
    night. If `docker compose up` itself failed (the new container never ran), the release is not
-   blamed either.
+   blamed either, nor when the way back is the unverified image of an old install (see below).
 
 An update that was cut short is finished on the next run. If the new container had started, it is
 checked and, if it does not work, rolled back. If `.env` had changed but the container still runs
@@ -87,20 +91,30 @@ the old image, the configured (verified) digest is started and checked: a releas
 for a container that ran it.
 
 One run at a time: `update.sh` holds `flock` on `update-state/update.lock`, which the kernel
-releases when the run ends, also after a crash or a reboot. Without `flock` it uses a symlink lock
-on tmpfs (`$XDG_RUNTIME_DIR`, `/dev/shm` or `/run/lock`) naming boot id, pid and the process's start
-time, so a lock from an earlier boot, a dead run or a reused pid is replaced (under a second lock,
-so only one run takes it over). A run that finds the lock held stops and records `skipped`.
+releases when the run ends, also after a crash or a reboot. Without `flock` it uses a symlink lock,
+`update-state/update.lock.link` (the same path for every user and environment), naming boot id, pid
+and the process's start time, so a lock from an earlier boot, a dead run or a reused pid is
+replaced (under a second lock, so only one run takes it over); a run holds it only if the link then
+names it. A run that finds the lock held, or a directory or file where the lock belongs, stops
+without touching `status` (that belongs to the run holding the lock): it writes the reason to
+`update-state/skipped` and the log, and `update.sh status` shows it.
 
 **Installs from before signed updates.** No verified version has run there, so there is no last
 good version to return to. Before the first verified release replaces the old agent, `update.sh`
 records the digest the old container runs (its RepoDigest in the agent repository) in
-`update-state/previous`. If that first release does not start, the robot returns to exactly that
-image. This is the one exception to "only verified images run": the image is not verified, but it
-is the one the robot already ran, by content digest. `update.sh status` shows it as "way back …
-NOT verified", and it is forgotten once a verified release has run well. If the old container's
-image has no such digest (for example it was built locally), there is no way back and a broken
-first release leaves the robot without a working agent until someone fixes it on site.
+`update-state/previous`. While no verified release has run well, a release that does not start
+sends the robot back to exactly that image. This is the one exception to "only verified images
+run": the image is **not verified**. It is whatever the robot ran before, by content digest, and
+going back to it trusts it again; if it was malicious it keeps running, and it can damage what it
+shares with the new release (`/data`, for example `robot.key`) so that verified releases fail
+their start-up check. That is why a release is never put into `failed` when this image is the way
+back: it is tried again on every update, so the unverified image cannot get every verified release
+refused. The robot is then in its own state: the result is `unverified`, the log says "RUNNING AN
+UNVERIFIED IMAGE: previous image, not signature-verified", and `update.sh status` shows that line
+for as long as the robot runs it, besides "way back … NOT verified". Both go away once a verified
+release has run well; `previous` is then forgotten. If the old container's image has no such
+digest (for example it was built locally), there is no way back and a broken first release leaves
+the robot without a working agent until someone fixes it on site.
 
 The data volume (`/data`: robot key, pairing state, sessions) is never touched: updates and
 rollbacks recreate the container, never the volume, so identity, pairing and sessions survive both.
@@ -212,8 +226,9 @@ the same rule applies to the protocol: a new agent must not make the relay depen
   `install.sh` runs again (see [install.md](install.md#update)). Their first verified update may
   fall back to the unverified image they already ran (see above).
 - Installs with `--insecure-skip-verify` (custom images only; the installer refuses it for the
-  official image): nothing is verified there, which the installer and `update.sh status` say
-  plainly, and automatic updates are off.
+  official image however its reference is spelled: case, `:443`, trailing dots, repeated
+  slashes, or the same path on another registry): nothing is verified there, which the
+  installer and `update.sh status` say plainly, and automatic updates are off.
 - The MowgliNext `stack-overrides.yaml` integration ([docker-compose.example.yaml](../agent/docker-compose.example.yaml)):
   that file runs whatever image it names; verify and pin a digest by hand.
 
@@ -281,9 +296,11 @@ late-crashing releases with rollback, a failing `docker compose up`, the health 
 retry of a failed release, a robot whose network is down, updates cut short before and after the
 restart, downgrades by history and by release number (lower, missing, malformed, several
 signatures), installer reruns that would move back, `--allow-downgrade`, the lock (flock and the
-tmpfs fallback, stale and live owners), pinned digests, forks with `--signer`,
-`--insecure-skip-verify` and the migration of an old install, with and without a way back. The fake
-cosign models the identity checks, not the cryptography; its JSON has the shape cosign v3.1.4
+symlink fallback: stale and live owners, other users and environments, a directory in its place),
+a read-only `status` (also with a damaged release number record), ambient `MC_*` variables, pinned
+digests, forks with `--signer`, `--insecure-skip-verify` (refused for any spelling of the official
+repository) and the migration of an old install, with and without a way back, including verified
+releases that keep failing there. The fake cosign models the identity checks, not the cryptography; its JSON has the shape cosign v3.1.4
 prints (one entry per signature with annotations in `optional`, plus the provenance attestation),
 which was checked by hand against the real binary and a local registry.
 

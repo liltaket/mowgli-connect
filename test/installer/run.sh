@@ -95,6 +95,7 @@ no_unverified_pull() { # nothing was pulled by tag, and compose never pulled by 
 	lacks "$FAKE/calls" "docker pull -q $REPO:" && [ ! -s "$FAKE/compose-pulled" ]
 }
 no_data_loss() { lacks "$FAKE/calls" "compose.* down" && lacks "$FAKE/calls" "volume rm"; }
+snapshot() { (cd "$DIR" && find . -exec ls -ld --full-time {} + | sort && find . -type f -exec cksum {} + | sort); }
 
 # A robot installed with release D1 (signed, healthy).
 installed() {
@@ -155,6 +156,30 @@ refused_install() { # refused_install NAME DESCRIPTION [INSTALL OPTIONS]
 # The generated compose.yaml and .env as Docker Compose reads them (the fake docker does not parse
 # them): valid YAML, the values from .env, and the intended error while no image is verified.
 compose_config() { (cd "$1" && "$COMPOSE" compose config --format json); } # compose_config DIR
+# MC_* and COMPOSE_* in the caller's environment would win over .env in Compose: ignored.
+t_ambient_env() {
+	setup ambient-env
+	publish "$D1"
+	sign "$D1" "$SAN_MAIN"
+	export MC_IMAGE=ghcr.io/evil/agent@$D8 MC_RELAY_URL=https://evil.example MC_ROBOT_NAME=evil \
+		MC_ALLOW_TELEOP=true COMPOSE_FILE=/nonexistent/compose.yaml COMPOSE_PROJECT_NAME=evil
+	install_robot --auto-update yes
+	check "ambient env, install: the verified digest runs" eq "$(running)" "$REPO@$D1"
+	publish "$D2"
+	sign "$D2" "$SAN_MAIN"
+	upd cron
+	check "ambient env, update: the verified digest runs" eq "$(running)" "$REPO@$D2"
+	check "ambient env: compose never saw it" fails test -s "$FAKE/compose-env"
+	check "ambient env: .env keeps its values" contains "$DIR/.env" "^MC_ROBOT_NAME='test'$"
+	unset MC_IMAGE MC_RELAY_URL MC_ROBOT_NAME MC_ALLOW_TELEOP COMPOSE_FILE COMPOSE_PROJECT_NAME
+	setup ambient-env-skip-verify
+	export MC_IMAGE=ghcr.io/evil/agent:x
+	install_robot --image ghcr.io/me/custom-agent:dev --insecure-skip-verify
+	unset MC_IMAGE
+	check "ambient env, --insecure-skip-verify: the named image runs" eq "$(running)" ghcr.io/me/custom-agent:dev
+	check "ambient env, --insecure-skip-verify: compose never saw it" fails test -s "$FAKE/compose-env"
+}
+
 t_compose_file() {
 	for dns in system public; do
 		setup compose-$dns
@@ -427,17 +452,18 @@ t_settle() {
 	installed settle
 	publish "$D2"
 	sign "$D2" "$SAN_MAIN"
-	behave "$D2" late # connects, then restarts after two checks
+	behave "$D2" late # connects, then restarts after its first check
 	MC_UPDATE_HEALTH_SETTLE=0 upd cron
 	check "settle 0: a late crash is not seen" eq "$(running)" "$REPO@$D2"
 
+	# The second check (1 s later) sees the restart; settling would need 3 s of whole seconds.
 	installed settle-late
 	publish "$D2"
 	sign "$D2" "$SAN_MAIN"
 	behave "$D2" late
-	MC_UPDATE_HEALTH_SETTLE=2 MC_UPDATE_HEALTH_TIMEOUT=10 upd cron || true
-	check "settle 2: a restart after connecting is rolled back" eq "$(running)" "$REPO@$D1"
-	check "settle 2: and remembered" contains "$DIR/update-state/failed" "^$REPO@$D2 "
+	MC_UPDATE_HEALTH_SETTLE=3 MC_UPDATE_HEALTH_TIMEOUT=10 upd cron || true
+	check "settle 3: a restart after connecting is rolled back" eq "$(running)" "$REPO@$D1"
+	check "settle 3: and remembered" contains "$DIR/update-state/failed" "^$REPO@$D2 "
 
 	installed settle-ok
 	publish "$D2"
@@ -544,15 +570,54 @@ t_seq() {
 	check "after --allow-downgrade: forward again" eq "$(running)" "$REPO@$D6"
 	install_robot --image "$REPO@$D2" --auto-update no
 	check "pinned digest with a lower number: by hand" eq "$(running)" "$REPO@$D2"
-	# A damaged record fails closed instead of turning the check off.
+	# A damaged record (also an empty one, or a number too long to compare) fails closed instead
+	# of turning the check off: release 11 is never installed over 13.
 	install_robot --auto-update yes
-	chmod u+w "$DIR/update-state/seq" 2>/dev/null
-	echo "13x" >"$DIR/update-state/seq"
-	release "$D3" 11
-	upd cron && r=0 || r=$?
-	check "damaged seq record: refused" eq "$r" 1
-	check "damaged seq record: stays" eq "$(running)" "$REPO@$D6"
-	check "damaged seq record: says so" contains "$DIR/update-state/status" "seq is not a number"
+	rm -f "$FAKE/sig.$D4"
+	release "$D4" 11
+	for rec in 13x "" 1234567890 " 13" 013 "$(printf '1\n3')"; do
+		printf '%s' "$rec" >"$DIR/update-state/seq"
+		upd cron && r=0 || r=$?
+		check "damaged seq record '$rec': refused" eq "$r" 1
+		check "damaged seq record '$rec': stays" eq "$(running)" "$REPO@$D6"
+		check "damaged seq record '$rec': not pulled" lacks "$FAKE/calls" "docker pull -q $REPO@$D4"
+		check "damaged seq record '$rec': says so" contains "$DIR/update-state/status" "seq is not a release number"
+		install_robot --auto-update yes && r=0 || r=$?
+		check "damaged seq record '$rec', install rerun: refused" differs "$r" 0
+		check "damaged seq record '$rec', install rerun: stays" eq "$(running)" "$REPO@$D6"
+		# status only reports it: it writes nothing (no status, log or pending change).
+		snapshot >"$T/before"
+		upd status && r=0 || r=$?
+		snapshot >"$T/after"
+		check "damaged seq record '$rec', status: exits 1" eq "$r" 1
+		check "damaged seq record '$rec', status: says so" contains "$T/update.out" "release no.: seq record damaged"
+		check "damaged seq record '$rec', status: still shows the rest" contains "$T/update.out" "last good:   $REPO@$D6"
+		check "damaged seq record '$rec', status: writes nothing" cmp -s "$T/before" "$T/after"
+	done
+	echo 13 >"$DIR/update-state/seq"
+	upd status
+	check "repaired seq record: status exits 0" eq "$?" 0
+}
+
+# update.sh status only reads: no state directory, lock, log or status is created or changed.
+t_status_read_only() {
+	installed status-ro
+	upd cron
+	snapshot >"$T/before"
+	upd status
+	check "status: exits 0" eq "$?" 0
+	snapshot >"$T/after"
+	check "status: writes nothing" cmp -s "$T/before" "$T/after"
+	mv "$DIR/update-state" "$T/state"
+	upd status
+	check "status without state: creates none" fails test -e "$DIR/update-state"
+	mv "$T/state" "$DIR/update-state"
+	for args in "status x" "cron x" "install --allow-downgrade x" "install x" "x"; do
+		# shellcheck disable=SC2086 # $args is a word list
+		upd $args && r=0 || r=$?
+		check "update.sh $args: refused (usage)" eq "$r" 2
+	done
+	check "extra arguments: nothing started" eq "$(starts)" 1
 }
 
 t_lock() {
@@ -568,51 +633,106 @@ t_lock() {
 	) &
 	holder=$!
 	while [ ! -f "$T/locked" ]; do sleep 0.1; done
+	# What the holder is doing: a skipped run must not overwrite its status or pending digest.
+	printf 'checked=x\nresult=pending\nmessage=starting x\npending=%s\n' "$REPO@$D2" >"$DIR/update-state/status"
+	cp "$DIR/update-state/status" "$T/status"
 	upd cron && r=0 || r=$?
 	check "concurrent run refused" eq "$r" 1
-	check "concurrent run: status says skipped" eq "$(result)" skipped
-	check "concurrent run: status says why" contains "$DIR/update-state/status" "locked: another update"
+	check "concurrent run: status left to the holder" cmp -s "$DIR/update-state/status" "$T/status"
+	check "concurrent run: skip noted beside it" contains "$DIR/update-state/skipped" "another update"
+	check "concurrent run: and logged" contains "$DIR/update-state/update.log" "skipped: another update"
+	check "concurrent run: cron hears of it" contains "$T/update.out" "update skipped"
 	check "concurrent run: nothing started" eq "$(starts)" 1
+	upd status
+	check "concurrent run: status shows the skip" contains "$T/update.out" "skipped: .*another update"
+	check "concurrent run: and the holder's pending digest" contains "$T/update.out" "pending:     $REPO@$D2"
 	rm "$T/hold"
 	wait "$holder"
 	upd cron
 	check "lock released when its holder ends" eq "$(result)" up-to-date
+	check "a run that holds the lock clears the skip" fails test -e "$DIR/update-state/skipped"
 	# A lock directory of the earlier updater, even naming a live pid, no longer blocks.
 	mkdir "$DIR/update-state/lock"
 	echo $$ >"$DIR/update-state/lock/pid"
 	upd cron
 	check "old lock directory ignored" eq "$(result)" up-to-date
+	# A directory where the lock file belongs: refused and recorded, not a shell error.
+	mkdir "$lockf.d"
+	rm -f "$lockf"
+	mv "$lockf.d" "$lockf"
+	upd cron && r=0 || r=$?
+	check "lock file is a directory: refused" eq "$r" 1
+	check "lock file is a directory: recorded" contains "$DIR/update-state/skipped" "update.lock is a directory"
+	check "lock file is a directory: nothing started" eq "$(starts)" 1
+	rmdir "$lockf"
 
-	# Without a usable flock: the symlink lock on tmpfs.
-	installed lock-tmpfs
+	# Without a usable flock: the symlink lock, in update-state (0700) whatever the environment.
+	installed lock-link
 	printf '#!/bin/sh\nexit 127\n' >"$T/bin/flock"
 	chmod +x "$T/bin/flock"
-	mkdir -m 700 "$T/run"
+	mkdir -m 700 "$T/run" "$T/run2"
 	export XDG_RUNTIME_DIR=$T/run
-	l=$T/run/mowgli-connect-update-$(id -u)-$(printf '%s' "$(cd "$DIR" && pwd -P)" | cksum | cut -d' ' -f1)
+	l=$DIR/update-state/update.lock.link
 	boot=$(cat /proc/sys/kernel/random/boot_id)
 	start=$(sed 's/.*) //' /proc/$$/stat | cut -d' ' -f20)
 	upd cron
-	check "tmpfs lock: a run works" eq "$(result)" up-to-date
-	check "tmpfs lock: and removes its lock" fails test -L "$l"
+	check "link lock: a run works" eq "$(result)" up-to-date
+	check "link lock: and removes its lock" fails test -L "$l"
+	check "link lock: nothing in XDG_RUNTIME_DIR" eq "$(ls -A "$T/run")" ""
 	ln -s "$boot $$ $start" "$l" # this test process: alive
+	cp "$DIR/update-state/status" "$T/status"
 	upd cron && r=0 || r=$?
-	check "tmpfs lock: live owner refused" eq "$r" 1
-	check "tmpfs lock: status says skipped" eq "$(result)" skipped
-	check "tmpfs lock: live owner's lock kept" eq "$(readlink "$l")" "$boot $$ $start"
+	check "link lock: live owner refused" eq "$r" 1
+	check "link lock: status left to the owner" cmp -s "$DIR/update-state/status" "$T/status"
+	check "link lock: skip recorded" contains "$DIR/update-state/skipped" "another update"
+	check "link lock: live owner's lock kept" eq "$(readlink "$l")" "$boot $$ $start"
+	# The same lock for runs with another XDG_RUNTIME_DIR, none, or another user id (root).
+	XDG_RUNTIME_DIR=$T/run2 upd cron && r=0 || r=$?
+	check "link lock: other XDG_RUNTIME_DIR refused" eq "$r" 1
+	(unset XDG_RUNTIME_DIR && upd cron) && r=0 || r=$?
+	check "link lock: no XDG_RUNTIME_DIR refused" eq "$r" 1
+	printf '#!/bin/sh\n[ "${1:-}" = -u ] && { echo 0; exit 0; }\nexec /usr/bin/id "$@"\n' >"$T/bin/id"
+	chmod +x "$T/bin/id"
+	upd cron && r=0 || r=$?
+	check "link lock: another user id refused" eq "$r" 1
+	rm "$T/bin/id"
+	check "link lock: nothing started while held" eq "$(starts)" 1
 	for stale in "$boot $$ 1" "other-boot $$ $start" "$boot 999999999 $start" "garbage"; do
 		rm -f "$l"
 		ln -s "$stale" "$l"
 		upd cron
-		check "tmpfs lock: stale '$stale' taken over" eq "$(result)" up-to-date
-		check "tmpfs lock: stale '$stale' removed after the run" fails test -L "$l"
+		check "link lock: stale '$stale' taken over" eq "$(result)" up-to-date
+		check "link lock: stale '$stale' removed after the run" fails test -L "$l"
 	done
 	rm -f "$l"
 	ln -s "$boot 999999999 $start" "$l"
 	mkdir "$l.t" # another run is taking over right now
 	upd cron && r=0 || r=$?
-	check "tmpfs lock: concurrent takeover refused" eq "$r" 1
+	check "link lock: concurrent takeover refused" eq "$r" 1
 	rmdir "$l.t"
+	rm -f "$l"
+	# Something else at the lock path: ln would make the link inside a directory and succeed.
+	mkdir "$l"
+	upd cron && r=0 || r=$?
+	check "link lock: a directory at the lock path refused" eq "$r" 1
+	check "link lock: no link made inside it" eq "$(ls -A "$l")" ""
+	check "link lock: directory recorded" contains "$DIR/update-state/skipped" "update.lock.link is not a lock link"
+	upd status
+	check "link lock: status shows it" contains "$T/update.out" "skipped: .*not a lock link"
+	rmdir "$l"
+	mkdir "$T/target"
+	ln -s "$T/target" "$l"
+	upd cron && r=0 || r=$?
+	check "link lock: a link to a directory refused" eq "$r" 1
+	check "link lock: nothing made in that directory" eq "$(ls -A "$T/target")" ""
+	rm "$l"
+	touch "$l"
+	upd cron && r=0 || r=$?
+	check "link lock: a file at the lock path refused" eq "$r" 1
+	rm "$l"
+	check "link lock: nothing started by any refused run" eq "$(starts)" 1
+	upd cron
+	check "link lock: works again" eq "$(result)" up-to-date
 	unset XDG_RUNTIME_DIR
 }
 
@@ -629,15 +749,31 @@ t_options() {
 	upd status
 	check "skip-verify: status says unverified" contains "$T/update.out" "ANYTHING"
 
-	for img in "" "--image $REPO:dev" "--image $REPO@$D1"; do
-		setup skip-verify-official
+	# Every spelling of the official repository, on any registry.
+	i=0
+	for img in "" "$REPO:dev" "$REPO@$D1" ghcr.io:443/liltaket/mowgli-connect-agent:dev \
+		ghcr.io./liltaket/mowgli-connect-agent ghcr.io..:443/liltaket/mowgli-connect-agent \
+		ghcr.io:0443/liltaket/mowgli-connect-agent ghcr.io//liltaket//mowgli-connect-agent:dev \
+		ghcr.io/liltaket/./mowgli-connect-agent /ghcr.io/liltaket/mowgli-connect-agent \
+		docker.io/liltaket/mowgli-connect-agent liltaket/mowgli-connect-agent \
+		mirror.example:5000/liltaket/mowgli-connect-agent GHCR.IO/liltaket/mowgli-connect-agent; do
+		i=$((i + 1))
+		setup skip-verify-official-$i
 		publish "$D1"
-		# shellcheck disable=SC2086 # $img is zero or two words
-		install_robot --auto-update no --insecure-skip-verify $img && r=0 || r=$?
+		install_robot --auto-update no --insecure-skip-verify ${img:+--image "$img"} && r=0 || r=$?
 		check "skip-verify with the official image${img:+ ($img)}: refused" differs "$r" 0
-		check "skip-verify with the official image${img:+ ($img)}: reason" contains "$T/install.out" "only for a custom --image"
+		case $img in
+		GHCR*) check "skip-verify ($img): refused as a bad repository" contains "$T/install.out" "bad repository" ;;
+		*) check "skip-verify with the official image${img:+ ($img)}: reason" contains "$T/install.out" "only for a custom --image" ;;
+		esac
 		check "skip-verify with the official image${img:+ ($img)}: nothing started" eq "$(running)" none
 		check "skip-verify with the official image${img:+ ($img)}: nothing pulled" fails test -s "$FAKE/pulled"
+	done
+	for img in ghcr.io/liltaket/mowgli-connect-agent-dev ghcr.io:8443/me/mowgli-connect-agent; do
+		i=$((i + 1))
+		setup skip-verify-similar-$i
+		install_robot --image "$img:dev" --insecure-skip-verify
+		check "skip-verify with a similar custom image ($img): allowed" eq "$(running)" "$img:dev"
 	done
 
 	setup skip-verify-auto
@@ -710,18 +846,48 @@ t_legacy_migration() {
 	check "legacy, first release broken: install reports failure" differs "$r" 0
 	check "legacy, first release broken: back on the old agent, by digest" eq "$(running)" "$REPO@$legacy"
 	check "legacy, first release broken: .env names that digest" eq "$(configured)" "$REPO@$legacy"
-	check "legacy, first release broken: release remembered as failed" contains "$DIR/update-state/failed" "^$REPO@$D1 "
-	check "legacy, first release broken: says it is not verified" contains "$DIR/update-state/status" "before signed updates, not verified"
+	# The unverified image shares /data and may be what breaks the release: never blamed.
+	check "legacy, first release broken: release not blamed" fails test -s "$DIR/update-state/failed"
+	check "legacy, first release broken: status unverified" eq "$(result)" unverified
+	check "legacy, first release broken: says it is not verified" contains "$DIR/update-state/status" "RUNNING AN UNVERIFIED IMAGE: previous image, not signature-verified"
+	check "legacy, first release broken: logged" contains "$DIR/update-state/update.log" "RUNNING AN UNVERIFIED IMAGE"
 	check "legacy, first release broken: nothing pulled unverified" no_unverified_pull
 	check "legacy, first release broken: not recorded as good" fails test -s "$DIR/update-state/good"
 	upd status
+	check "legacy, first release broken: status warns" contains "$T/update.out" "^  RUNNING AN UNVERIFIED IMAGE: previous image, not signature-verified"
 	check "legacy, first release broken: status shows the way back" contains "$T/update.out" "way back:    $REPO@$legacy (ran here before signed updates, NOT verified"
-	upd cron
-	check "legacy, first release broken: held next night" eq "$(result)" held
+	n=$(starts)
+	upd cron && r=0 || r=$?
+	check "legacy, first release broken: retried next night" eq "$(starts)" $((n + 2))
+	check "legacy, first release broken: retry fails, back again" eq "$(running)" "$REPO@$legacy"
+	check "legacy, first release broken: still not blamed" fails test -s "$DIR/update-state/failed"
+	check "legacy, first release broken: still unverified" eq "$(result)" unverified
+	# A second verified release in a row that does not start (as when the old image damaged
+	# /data/robot.key): not blamed either, and the warning stays.
 	release "$D2" 5
+	behave "$D2" crash
+	upd cron && r=0 || r=$?
+	check "legacy, two broken releases: run fails" eq "$r" 1
+	check "legacy, two broken releases: back on the old agent" eq "$(running)" "$REPO@$legacy"
+	check "legacy, two broken releases: neither blamed" fails test -s "$DIR/update-state/failed"
+	check "legacy, two broken releases: status unverified" eq "$(result)" unverified
+	touch "$FAKE/registry-down"
+	upd cron || true
+	rm "$FAKE/registry-down"
+	upd status
+	check "legacy, two broken releases: warning sticks after another failure" contains "$T/update.out" "^  RUNNING AN UNVERIFIED IMAGE"
+	behave "$D2" healthy
 	upd cron
 	check "legacy, then a working release: taken" eq "$(running)" "$REPO@$D2"
 	check "legacy, then a working release: way back forgotten" fails test -e "$DIR/update-state/previous"
+	upd status
+	check "legacy, then a working release: no warning" lacks "$T/update.out" "UNVERIFIED IMAGE"
+	# Once a verified release ran, a broken one is blamed again (the way back is verified).
+	release "$D3" 6
+	behave "$D3" crash
+	upd cron || true
+	check "legacy, later broken release: blamed" contains "$DIR/update-state/failed" "^$REPO@$D3 "
+	check "legacy, later broken release: rolled back" eq "$(result)" rolled-back
 
 	# Without a digest of the old image there is no way back (documented).
 	setup legacy-no-digest
@@ -774,6 +940,7 @@ all)
 	t_syntax
 	t_fresh_install
 	t_compose_file
+	t_ambient_env
 	t_refused_installs
 	t_release_tag_accepted
 	t_update_ok
@@ -782,6 +949,7 @@ all)
 	t_settle
 	t_downgrade
 	t_seq
+	t_status_read_only
 	t_lock
 	t_options
 	t_legacy_migration
