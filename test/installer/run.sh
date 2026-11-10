@@ -35,6 +35,10 @@ SIGNER=liltaket/mowgli-connect
 D1=sha256:$(printf '%064d' 1)
 D2=sha256:$(printf '%064d' 2)
 D3=sha256:$(printf '%064d' 3)
+D4=sha256:$(printf '%064d' 4)
+D5=sha256:$(printf '%064d' 5)
+D6=sha256:$(printf '%064d' 6)
+D8=sha256:$(printf '%064d' 8)
 
 pass=0
 failed=0
@@ -56,7 +60,8 @@ setup() {
 	export MC_UPDATE_HEALTH_TIMEOUT=2 MC_UPDATE_HEALTH_SETTLE=0 MC_UPDATE_HEALTH_INTERVAL=1
 }
 publish() { echo "$1" >"$FAKE/tag.${2:-latest}"; } # publish DIGEST [TAG]
-sign() { echo "$2 ${3:-$ISS} ${4:-$SIGNER}" >>"$FAKE/sig.$1"; } # sign DIGEST SAN [ISSUER] [REPO]
+sign() { echo "$2 ${3:-$ISS} ${4:-$SIGNER} ${5:-}" >>"$FAKE/sig.$1"; } # sign DIGEST SAN [ISSUER] [REPO] [SEQ]
+release() { publish "$1"; sign "$1" "$SAN_MAIN" "$ISS" "$SIGNER" "$2"; } # release DIGEST SEQ: on :latest
 behave() { echo "$2" >"$FAKE/behavior.$1"; }                      # behave DIGEST healthy|silent|crash
 install_robot() {
 	$TEST_SH "$ROOT/site/install.sh" --dir "$DIR" --name test --teleop no --dns system --yes "$@" \
@@ -336,6 +341,10 @@ t_rollback() {
 	check "crash: next run does not retry (no loop)" eq "$(starts)" "$n"
 	check "crash: next run is held" eq "$(result)" held
 	check "crash: still on last good" eq "$(running)" "$REPO@$D1"
+	install_robot --auto-update yes && r=0 || r=$?
+	check "crash: rerunning install.sh does not retry it" differs "$r" 0
+	check "crash: rerun says why and how" contains "$T/install.out" "failed its start-up check here before.*--allow-downgrade"
+	check "crash: rerun keeps the last good" eq "$(running)" "$REPO@$D1"
 	publish "$D3"
 	sign "$D3" "$SAN_MAIN"
 	upd cron
@@ -451,12 +460,90 @@ t_downgrade() {
 	check "downgrade: refused" eq "$r" 1
 	check "downgrade: stays on newer" eq "$(running)" "$REPO@$D2"
 	check "downgrade: reason" contains "$DIR/update-state/status" "older release"
+	# Rerunning install.sh (to change a setting) while the tag points back: refused as well,
+	# the newer release keeps running with the new settings.
+	n=$(starts)
+	install_robot --auto-update yes --teleop yes && r=0 || r=$?
+	check "downgrade by install rerun: refused" differs "$r" 0
+	check "downgrade by install rerun: stays on newer" eq "$(running)" "$REPO@$D2"
+	check "downgrade by install rerun: .env stays on newer" eq "$(configured)" "$REPO@$D2"
+	check "downgrade by install rerun: restarted for the new settings" eq "$(starts)" $((n + 1))
+	check "downgrade by install rerun: new setting written" contains "$DIR/.env" "^MC_ALLOW_TELEOP=true$"
+	check "downgrade by install rerun: says how to do it anyway" contains "$T/install.out" "older release.*--allow-downgrade"
+	check "downgrade by install rerun: status refused" eq "$(result)" refused
+	install_robot --auto-update yes --allow-downgrade
+	check "downgrade by install --allow-downgrade" eq "$(running)" "$REPO@$D1"
+	publish "$D2"
+	upd cron
+	check "after --allow-downgrade: forward to the newer release again" eq "$(running)" "$REPO@$D2"
+	publish "$D1"
 	# By hand: pin the older release, then follow the tag again.
 	install_robot --image "$REPO@$D1" --auto-update no
 	check "pin an older release by hand" eq "$(running)" "$REPO@$D1"
 	publish "$D2"
 	install_robot --auto-update yes
 	check "follow the tag again after a pin" eq "$(running)" "$REPO@$D2"
+}
+
+# Signed release numbers (the seq annotation, the release workflow's run number).
+t_seq() {
+	setup seq
+	release "$D1" 10
+	install_robot --auto-update yes
+	check "first install records the release number" eq "$(cat "$DIR/update-state/seq")" 10
+	release "$D2" 12
+	upd cron
+	check "newer number: updated" eq "$(running)" "$REPO@$D2"
+	check "newer number: recorded" eq "$(cat "$DIR/update-state/seq")" 12
+	# An older signed release that this robot never ran (a lower number, a new digest).
+	release "$D3" 11
+	upd cron && r=0 || r=$?
+	check "lower number never run here: refused" eq "$r" 1
+	check "lower number never run here: stays" eq "$(running)" "$REPO@$D2"
+	check "lower number never run here: reason" contains "$DIR/update-state/status" "release number 11 is lower than 12"
+	check "lower number never run here: not pulled" lacks "$FAKE/calls" "docker pull -q $REPO@$D3"
+	install_robot --auto-update yes && r=0 || r=$?
+	check "lower number, install rerun: refused" differs "$r" 0
+	check "lower number, install rerun: stays" eq "$(running)" "$REPO@$D2"
+	# Fail closed: no number once numbers were seen (an image signed by an older workflow).
+	release "$D4" ""
+	upd cron && r=0 || r=$?
+	check "no number after numbers: refused" eq "$r" 1
+	check "no number after numbers: reason" contains "$DIR/update-state/status" "no signed release number"
+	check "no number after numbers: stays" eq "$(running)" "$REPO@$D2"
+	# The same number on a new digest: a re-run of the newest run (same commit, the workflow
+	# publishes only the tip of its ref).
+	release "$D5" 12
+	upd cron
+	check "same number, new digest: accepted" eq "$(running)" "$REPO@$D5"
+	# Several signatures on one digest: the highest number counts.
+	release "$D6" 9
+	sign "$D6" "$SAN_MAIN" "$ISS" "$SIGNER" 13
+	upd cron
+	check "several signatures: taken" eq "$(running)" "$REPO@$D6"
+	check "several signatures: the highest number recorded" eq "$(cat "$DIR/update-state/seq")" 13
+	upd status
+	check "status shows the release number" contains "$T/update.out" "release no.: 13"
+	for bad in 14a 014 1234567890 -1 1.5 '1\"'; do
+		rm -f "$FAKE/sig.$D8"
+		release "$D8" "$bad"
+		upd cron && r=0 || r=$?
+		check "malformed number '$bad': refused" eq "$r" 1
+		check "malformed number '$bad': reason" contains "$DIR/update-state/status" "not a plain number"
+		check "malformed number '$bad': stays" eq "$(running)" "$REPO@$D6"
+	done
+	# By hand: --allow-downgrade, or a pinned digest, may go back; the highest number stays.
+	release "$D3" 11
+	install_robot --auto-update yes --allow-downgrade
+	check "--allow-downgrade: lower number installed" eq "$(running)" "$REPO@$D3"
+	check "--allow-downgrade: highest number kept" eq "$(cat "$DIR/update-state/seq")" 13
+	upd cron && r=0 || r=$?
+	check "after --allow-downgrade: automatic run stays put" eq "$(running)" "$REPO@$D3"
+	release "$D6" 13
+	upd cron
+	check "after --allow-downgrade: forward again" eq "$(running)" "$REPO@$D6"
+	install_robot --image "$REPO@$D2" --auto-update no
+	check "pinned digest with a lower number: by hand" eq "$(running)" "$REPO@$D2"
 }
 
 t_lock() {
@@ -646,6 +733,7 @@ all)
 	t_rollback
 	t_settle
 	t_downgrade
+	t_seq
 	t_lock
 	t_options
 	t_legacy_migration

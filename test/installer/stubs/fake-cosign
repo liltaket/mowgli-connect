@@ -2,13 +2,16 @@
 # Fake "cosign verify" for test/installer/run.sh: it models what the updater relies on, not the
 # cryptography (that is cosign's job). State in $FAKE:
 #   tag.<tag>          digest the tag resolves to
-#   sig.<digest>       one signature per line: "SAN ISSUER WORKFLOW_REPOSITORY"
+#   sig.<digest>       one signature per line: "SAN ISSUER WORKFLOW_REPOSITORY [SEQ]", SEQ the
+#                      signed annotation seq (written as given; no SEQ: no annotation)
 #   tampered.<digest>  signatures exist but do not verify
 #   registry-down      the registry or Sigstore is unreachable
 #   two-digests        output claims two different digests
 #   move-tag-to        after verifying, the tag is moved to the digest in this file
 # Like cosign, a certificate is accepted when its SAN matches the identity regexp and issuer and
-# workflow repository are equal to the expected ones.
+# workflow repository are equal to the expected ones. The JSON has the shape cosign v3.1.4 prints
+# (checked against the real binary): one entry per verified signature, annotations in "optional",
+# and the SLSA provenance attestation as one more entry, with empty "optional".
 set -eu
 echo "cosign $*" >>"$FAKE/calls"
 [ "${1:-}" = verify ] || { echo "Error: fake cosign supports only verify" >&2; exit 2; }
@@ -41,21 +44,26 @@ if [ -f "$FAKE/tampered.$d" ]; then
 	echo "Error: no matching signatures: crypto/ecdsa: verification error" >&2
 	exit 1
 fi
-ok=no
-while read -r san siss srepo; do
+entry() { # entry DIGEST TYPE OPTIONAL
+	printf '{"critical":{"identity":{"docker-reference":"%s"},"image":{"docker-manifest-digest":"%s"},"type":"%s"},"optional":{%s}}' "$ref" "$1" "$2" "$3"
+}
+out=""
+while read -r san siss srepo seq; do
 	if printf '%s\n' "$san" | grep -Eq -- "$re" && [ "$siss" = "$iss" ] && { [ -z "$repo" ] || [ "$srepo" = "$repo" ]; }; then
-		ok=yes
+		opt=""
+		[ -z "$seq" ] || opt="\"seq\":\"$seq\""
+		out="$out$(entry "$d" https://sigstore.dev/cosign/sign/v1 "$opt"),"
 	fi
 done <"$FAKE/sig.$d"
-if [ $ok != yes ]; then
+if [ -z "$out" ]; then
 	echo "Error: no matching signatures: none of the expected identities matched what was in the certificate" >&2
 	exit 1
 fi
 echo "Verification for $ref --" >&2
-out="{\"critical\":{\"identity\":{\"docker-reference\":\"${ref%%[:@]*}\"},\"image\":{\"docker-manifest-digest\":\"$d\"},\"type\":\"https://sigstore.dev/cosign/sign/v1\"},\"optional\":{}}"
+out="$out$(entry "$d" https://slsa.dev/provenance/v1 "")"
 if [ -f "$FAKE/two-digests" ]; then
 	other=sha256:$(printf '%064d' 7)
-	out="$out,{\"critical\":{\"identity\":{\"docker-reference\":\"x\"},\"image\":{\"docker-manifest-digest\":\"$other\"},\"type\":\"x\"},\"optional\":{}}"
+	out="$out,$(entry "$other" https://sigstore.dev/cosign/sign/v1 "")"
 fi
 echo "[$out]"
 if [ -f "$FAKE/move-tag-to" ]; then

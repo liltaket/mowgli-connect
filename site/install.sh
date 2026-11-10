@@ -13,7 +13,9 @@
 # Options: --dir DIR, --relay URL, --name NAME, --teleop yes|no, --auto-update yes|no,
 #          --dns auto|public|system, --image IMAGE, --signer OWNER/REPO (whose
 #          .github/workflows/agent-image.yml signs IMAGE), --yes,
-#          --insecure-skip-verify (only with a custom --image: runs it unchecked, no auto-update)
+#          --insecure-skip-verify (only with a custom --image: runs it unchecked, no auto-update),
+#          --allow-downgrade (take the release IMAGE's tag names even if it is older than one
+#          that ran here or failed here before; otherwise refused, as in automatic updates)
 set -eu
 
 DIR="$HOME/mowgli-connect"
@@ -22,6 +24,7 @@ OFFICIAL_REPO=ghcr.io/liltaket/mowgli-connect-agent
 IMAGE="$OFFICIAL_REPO:latest"
 SIGNER="liltaket/mowgli-connect"
 SKIP_VERIFY=no
+DOWNGRADE=""
 NAME=""
 TELEOP=""
 AUTOUPDATE=""
@@ -44,8 +47,9 @@ while [ $# -gt 0 ]; do
 	--image) IMAGE=$2; shift 2 ;;
 	--signer) SIGNER=$2; shift 2 ;;
 	--insecure-skip-verify) SKIP_VERIFY=yes; shift ;;
+	--allow-downgrade) DOWNGRADE=--allow-downgrade; shift ;;
 	--yes | -y) YES=yes; shift ;;
-	-h | --help) sed -n '2,16p' "$0"; exit 0 ;;
+	-h | --help) sed -n '2,18p' "$0"; exit 0 ;;
 	*) die "unknown option $1 (see --help)" ;;
 	esac
 done
@@ -210,7 +214,8 @@ put "$DIR/update.sh" 0555 <<'UPDATER'
 #
 #   sh update.sh          update now if there is a newer signed release (the nightly job: cron)
 #   sh update.sh status   show the configured, running, last good and failed versions
-#   sh update.sh install  verify and start the release update-policy names (used by install.sh)
+#   sh update.sh install [--allow-downgrade]
+#                         verify and start the release update-policy names (used by install.sh)
 #
 # A release runs only after cosign (its own image, pinned by digest below) has verified that the
 # workflow in update-policy signed exactly that image digest (Sigstore keyless: GitHub Actions
@@ -218,6 +223,11 @@ put "$DIR/update.sh" 0555 <<'UPDATER'
 # digest, never a tag. The new agent must start and connect (tunnel up, quick tunnel reported,
 # pairing code from the relay, or paired) within MC_UPDATE_HEALTH_TIMEOUT seconds and keep
 # running; otherwise the last good version is started again and the release is not retried.
+# Each release carries a signed release number (the "seq" annotation: the release workflow's run
+# number). Following a tag, a release is refused if its number is lower than the highest that
+# ran well here, if it has none once one was seen, if it was replaced here before (releases
+# without numbers) or if it failed here. That holds for install too, unless install.sh pins a
+# digest or is given --allow-downgrade.
 # Whatever fails, the agent that runs keeps running, and the reason goes to update-state/status,
 # update-state/update.log, syslog (logger) and, from cron, to stderr (cron mails it if set up).
 set -eu
@@ -234,6 +244,7 @@ HEALTH_TIMEOUT=${MC_UPDATE_HEALTH_TIMEOUT:-240}
 HEALTH_SETTLE=${MC_UPDATE_HEALTH_SETTLE:-20}
 HEALTH_INTERVAL=${MC_UPDATE_HEALTH_INTERVAL:-5}
 MODE=${1:-run}
+ALLOW_DOWNGRADE=no
 PENDING=""
 
 bad() {
@@ -277,7 +288,23 @@ listed() { [ -f "$2" ] && awk -v x="$1" '$1 == x { f = 1 } END { exit !f }' "$2"
 current() { sed -n "s/^MC_IMAGE='\(.*\)'\$/\1/p" "$ENVF" | tail -1; }
 running() { "$DOCKER" inspect -f '{{.Config.Image}}' "$NAME" 2>/dev/null || true; }
 good() { cat "$STATE/good" 2>/dev/null || true; }
-set_good() {
+top_seq() { # the highest release number that ran well here (empty: none yet)
+	sq=$(cat "$STATE/seq" 2>/dev/null || true)
+	case $sq in *[!0-9]*) fail "$STATE/seq is not a number: fix it or remove it" ;; esac
+	echo "$sq"
+}
+record_seq() { # record_seq SEQ: keep the highest
+	sq=$(top_seq)
+	if [ -n "$1" ] && { [ -z "$sq" ] || [ "$1" -gt "$sq" ]; }; then
+		echo "$1" >"$STATE/seq.tmp"
+		mv -f "$STATE/seq.tmp" "$STATE/seq"
+	fi
+}
+before() { # before A B: A first ran well here before B did
+	[ -f "$STATE/history" ] && awk -v a="$1" -v b="$2" '$1 == a && !ia { ia = NR } $1 == b && !ib { ib = NR } END { exit !(ia && ib && ia < ib) }' "$STATE/history"
+}
+set_good() { # set_good IMAGE [SEQ]
+	record_seq "${2:-}"
 	echo "$1" >"$STATE/good.tmp"
 	mv -f "$STATE/good.tmp" "$STATE/good"
 	listed "$1" "$STATE/history" || echo "$1" >>"$STATE/history"
@@ -334,6 +361,7 @@ show_status() {
 	echo "  configured:  $(current)"
 	echo "  running:     $("$DOCKER" inspect -f '{{.Config.Image}} ({{.State.Status}})' "$NAME" 2>/dev/null || echo "no container")"
 	echo "  last good:   $(good)"
+	echo "  release no.: $(top_seq) (highest signed release number that ran here; lower ones are refused)"
 	echo "  pending:     $(st pending)"
 	echo "  last check:  $(st checked) $(st result): $(st message)"
 	if [ -s "$STATE/failed" ]; then
@@ -367,6 +395,15 @@ verify() {
 	fi
 	if is_digest "$REF" && [ "$ds" != "$REF" ]; then
 		VERIFY_ERR="cosign verified $ds, not the pinned $REF"
+		return 1
+	fi
+	# The signed release number (annotation seq), only from what cosign verified: one entry per
+	# signature or attestation of that digest (the provenance attestation has none). JSON escapes
+	# quotes inside values, so only a real "seq" key matches. Several numbers: the highest.
+	SEQ=$(grep -o '"seq": *"[^"]*"' "$STATE/verify.out" | sed 's/^"seq": *"//; s/"$//' |
+		awk '!/^(0|[1-9][0-9]*)$/ || length($0) > 9 { bad = 1 } m == "" || $0 + 0 > m + 0 { m = $0 } END { print bad ? "bad" : m }')
+	if [ "$SEQ" = bad ]; then
+		VERIFY_ERR="cosign verified $ds for $1, but its release number is not a plain number; keeping the agent that runs now"
 		return 1
 	fi
 	VERIFIED=$ds
@@ -424,7 +461,7 @@ rollback() {
 	fail "${1##*@} did not start properly ($2); went back to ${last##*@}, which does not work either ($HEALTH_ERR): probably a network or robot problem, so ${1##*@} is tried again next time" rolled-back
 }
 
-# activate IMAGE: download it, point .env at it, start it and check it.
+# activate IMAGE [SEQ]: download it, point .env at it, start it and check it.
 activate() {
 	PENDING=$1
 	set_status pending "starting ${1##*@}"
@@ -438,7 +475,7 @@ activate() {
 		rollback "$1" "docker compose up failed: $(tail -1 "$STATE/up.err")" no
 	fi
 	healthy "$1" || rollback "$1" "$HEALTH_ERR" yes
-	set_good "$1"
+	set_good "$1" "${2:-}"
 	PENDING=""
 	set_status updated "running ${1##*@} (verified, healthy)"
 	log "running ${1##*@} (verified, healthy)"
@@ -446,10 +483,11 @@ activate() {
 
 mkdir -p "$STATE"
 chmod 700 "$STATE"
-case $MODE in
-status) show_status; exit 0 ;;
-run | cron | install) ;;
-*) echo "usage: sh update.sh [status|install]" >&2; exit 2 ;;
+case $MODE:${2-} in
+status:) show_status; exit 0 ;;
+run: | cron: | install:) ;;
+install:--allow-downgrade) ALLOW_DOWNGRADE=yes ;;
+*) echo "usage: sh update.sh [status | install [--allow-downgrade]]" >&2; exit 2 ;;
 esac
 cd "$DIR"
 
@@ -514,7 +552,7 @@ log "checking $TARGET"
 verify "$TARGET" || fail "$VERIFY_ERR"
 new=$REPO@$VERIFIED
 cur=$(current)
-log "signature verified: $new"
+log "signature verified: $new (release number ${SEQ:-none})"
 
 if [ "$MODE" != install ] && [ "$new" = "$cur" ]; then
 	# Up to date. If this version was never confirmed (first install without a working
@@ -523,25 +561,52 @@ if [ "$MODE" != install ] && [ "$new" = "$cur" ]; then
 	# now; a release is only blamed for a container that ran it.
 	if [ "$(good)" != "$cur" ]; then
 		if [ "$(running)" != "$cur" ]; then
-			activate "$cur"
+			activate "$cur" "$SEQ"
 			exit 0
 		fi
 		healthy "$cur" || rollback "$cur" "$HEALTH_ERR" yes
-		set_good "$cur"
 	fi
+	set_good "$cur" "$SEQ"
 	set_status up-to-date "running ${cur##*@}, the newest signed release"
 	exit 0
 fi
-if [ "$MODE" != install ] && listed "$new" "$STATE/failed"; then
-	set_status held "${VERIFIED} failed its start-up check before; waiting for a newer release"
-	log "skipping $VERIFIED: it failed its start-up check before"
-	exit 0
+
+# Never back to an older release or to one that failed here: in automatic runs, and also when
+# install.sh follows a tag (rerunning it to change a setting must not move the robot back).
+# Only a pinned digest or install.sh --allow-downgrade chooses such a release on purpose. With
+# release numbers the number decides; releases without one are compared by when they first ran
+# here.
+why=""
+if [ "$new" != "$cur" ] && ! is_digest "$REF" && [ "$ALLOW_DOWNGRADE" = no ]; then
+	top=$(top_seq)
+	if listed "$new" "$STATE/failed"; then
+		why="it failed its start-up check here before"
+	elif [ -n "$top" ] && [ -z "$SEQ" ]; then
+		why="it carries no signed release number, and release $top already ran here"
+	elif [ -n "$top" ] && [ "$SEQ" -lt "$top" ]; then
+		why="its release number $SEQ is lower than $top, which already ran here (was the tag moved back?)"
+	elif [ -z "$top" ] && before "$new" "$(good)"; then
+		why="it is an older release this robot already replaced (was the tag moved back?)"
+	fi
 fi
-# Automatic runs only: someone at the robot running install.sh may choose any signed release.
-if [ "$MODE" != install ] && listed "$new" "$STATE/history"; then
-	fail "$TARGET now points to $VERIFIED, an older release this robot already replaced: not going back (was the tag moved?)"
+if [ -n "$why" ] && [ "$MODE" != install ]; then
+	if listed "$new" "$STATE/failed"; then
+		set_status held "${VERIFIED} failed its start-up check before; waiting for a newer release"
+		log "skipping $VERIFIED: it failed its start-up check before"
+		exit 0
+	fi
+	fail "$TARGET now points to $VERIFIED: $why; not going back"
 fi
-activate "$new"
+if [ -n "$why" ]; then
+	# install.sh: keep the verified version that runs, restarted so that new settings apply.
+	kept=""
+	if [ -n "$cur" ] && [ "$cur" = "$(good)" ]; then
+		activate "$cur"
+		kept="; ${cur##*@} keeps running, restarted with the new settings"
+	fi
+	fail "not installing $VERIFIED, which $TARGET points to: $why$kept. To install it anyway: sh install.sh --allow-downgrade (with the same options), or pin it: --image $new" refused
+fi
+activate "$new" "$SEQ"
 UPDATER
 
 # Nightly update as a cron job of this user (who can already run docker), at a random minute so
@@ -615,7 +680,7 @@ if [ "$SKIP_VERIFY" = yes ]; then
 	echo "WARNING: started $IMAGE without verifying it (--insecure-skip-verify)."
 else
 	echo "Checking the image signature (cosign, keyless: $SIGNER release workflow)..."
-	sh "$DIR/update.sh" install || die "stopped: the agent image was not verified or did not start (see above). Nothing unverified was started. Status: sh $DIR/update.sh status"
+	sh "$DIR/update.sh" install $DOWNGRADE || die "stopped, see above: no new agent image was started. What runs now: sh $DIR/update.sh status"
 fi
 
 echo "Waiting for the pairing code..."
