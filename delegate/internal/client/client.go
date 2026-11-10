@@ -360,7 +360,7 @@ func (c *Client) session(ctx context.Context, robot string) (robotSession, error
 			cookie = ck.Name + "=" + ck.Value
 		}
 	}
-	if resp.StatusCode != http.StatusOK || cookie == "" {
+	if resp.StatusCode/100 != 2 || cookie == "" { // the robot agent answers 204 No Content
 		return robotSession{}, fmt.Errorf("the robot did not accept the grant (%d)", resp.StatusCode)
 	}
 	s = robotSession{base: base, cookie: cookie, expires: c.now().Add(robotSessionTTL)}
