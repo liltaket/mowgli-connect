@@ -64,13 +64,28 @@ Out of scope: vulnerabilities in MowgliNext itself, in Cloudflare or GitHub, and
   the robot. It does not include settings, maps, schedules, containers, updates, the joystick or
   releasing an emergency stop. Removing someone reaches the robot at its next sync (3 minutes by
   default). Design, threat model and what is not verified: [docs/sharing.md](docs/sharing.md).
-- **Updates are a root of trust too.** The robot runs the image `ghcr.io/liltaket/mowgli-connect-agent`
-  it pulls, and automatic updates (on by default) pull `:latest` every night. Whoever can publish
-  that image (the GitHub account, this repository's Actions, or GHCR) could ship one that skips the
-  network lock and the privilege drop, reads the robot's key and tunnel token, and reaches the
-  robot's GUI and home network. Builds come only from this repository's `main` branch, with
-  provenance and an SBOM, but the robot does not verify them. If that trust is too much, install
-  with `--auto-update no` and update by hand after reading the changes.
+- **Updates are a root of trust too.** A malicious agent image could skip the network lock and the
+  privilege drop, read the robot's key and tunnel token, and reach the robot's GUI and home
+  network. So the robot runs an image only after cosign has verified a Sigstore keyless signature
+  on its digest from this repository's `agent-image.yml` workflow on `main` or an `agent-v*` tag
+  (issuer GitHub Actions), checked against a policy on the robot that the container cannot reach.
+  It then runs that digest, never a tag, refuses a signed release number lower than one that
+  already ran there, and rolls back a release that does not start. Pushing to GHCR or moving
+  `:latest` is therefore not enough. What remains trusted: control of this GitHub repository and
+  its workflow (whatever reaches `main` or an `agent-v*` tag is signed; any token with `repo` or
+  `workflow` scope, including one on a developer machine or in a coding agent, is effectively a
+  release-signing key), the account and repository *names* (never rename or delete them), GitHub's
+  OIDC issuer and Sigstore (Fulcio, Rekor), the build images pinned in the workflow, the cosign
+  image pinned in each robot's `update.sh` until the installer is rerun there, root on the robot,
+  and the relay and Cloudflare as above. The repository settings that protect `main` and the tags
+  are not set up yet. It does not protect against a bad change merged to `main`, an old release
+  served to a robot that never ran a newer one (a first install takes whatever `:latest` is),
+  installs made before signed updates (run the installer again), `--insecure-skip-verify` (custom
+  images only), or a compromised agent that could use the MowgliNext GUI to change the host (not
+  verified either way). Not yet verified end to end: no signed agent image exists yet, and nothing
+  has run on a real Docker daemon or an arm64 robot. Details, repository settings and recovery:
+  [docs/updates.md](docs/updates.md). If that trust is too much, install with `--auto-update no`
+  and update by hand after reading the changes.
 - **The native app** (off until configured) signs in through a consent page and holds no bearer
   token: its identity is a Secure Enclave key, every call is signed, and each device is listed with
   Sign out. Design and threat model: [docs/app-api.md](docs/app-api.md).

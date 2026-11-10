@@ -47,6 +47,10 @@ Browser ──HTTPS──> relay  (Cloudflare Worker + D1, free tier)
    behavior tree are on the robot and independent of the tunnel. Remote joystick (teleop publish
    socket) is **blocked by default** (`MC_ALLOW_TELEOP=true` to enable) until tunnel latency and
    disconnect behaviour are tested on hardware.
+7. **The robot verifies what it runs.** Agent images are signed keyless (Sigstore, the release
+   workflow's GitHub identity); the robot checks that identity with cosign before it runs an
+   image, runs it by digest and rolls back a release that does not start
+   ([updates.md](updates.md)).
 
 ## Data traffic
 
