@@ -44,7 +44,7 @@ while [ $# -gt 0 ]; do
 	--signer) SIGNER=$2; shift 2 ;;
 	--insecure-skip-verify) SKIP_VERIFY=yes; shift ;;
 	--yes | -y) YES=yes; shift ;;
-	-h | --help) sed -n '2,19p' "$0"; exit 0 ;;
+	-h | --help) sed -n '2,16p' "$0"; exit 0 ;;
 	*) die "unknown option $1 (see --help)" ;;
 	esac
 done
