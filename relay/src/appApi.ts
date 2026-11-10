@@ -410,26 +410,31 @@ export async function handleAppApi(request: Request, env: Env, url: URL): Promis
 
   if (path === "/v1/app/robots") {
     const rows = await env.DB.prepare(
-      `SELECT r.robot_id, r.name, r.hostname, m.role, m.label, r.allow_teleop, r.tunnel_id, r.agent_version, r.first_online_at
+      `SELECT r.robot_id, r.name, r.hostname, m.role, m.label, r.allow_teleop, r.tunnel_id, r.agent_version, r.first_online_at,
+              ou.login AS owner_login, o.label AS owner_label
        FROM members m JOIN robots r ON r.robot_id = m.robot_id
+       LEFT JOIN members o ON o.robot_id = r.robot_id AND o.role = 'owner' LEFT JOIN users ou ON ou.id = o.user_id
        WHERE m.user_id = ? AND r.status = 'claimed' ORDER BY m.created_at`,
     )
       .bind(user.id)
-      .all<{ robot_id: string; name: string | null; hostname: string | null; role: string; label: string | null; allow_teleop: number | null; tunnel_id: string | null; agent_version: string | null; first_online_at: number | null }>();
+      .all<{ robot_id: string; name: string | null; hostname: string | null; role: Role; label: string | null; allow_teleop: number | null; tunnel_id: string | null; agent_version: string | null; first_online_at: number | null; owner_login: string | null; owner_label: string | null }>();
     const prov = createProvisioner(env);
     const latest = await latestAgentSha(env);
     const robots = await Promise.all(
       rows.results.map(async (r, i) => {
         const online = i < 20 && r.tunnel_id && prov.connected ? await prov.connected(r.tunnel_id) : null;
         if (online && r.first_online_at === null) await markFirstOnline(env, r.robot_id);
+        const owner = r.role === "owner";
         return {
           robotId: r.robot_id,
-          name: r.label ?? r.name ?? r.robot_id,
+          name: r.label ?? (owner ? null : r.owner_label) ?? r.name ?? r.robot_id,
           hostname: r.hostname,
           role: r.role,
+          sharedBy: owner ? null : r.owner_login,
           online,
-          joystick: r.allow_teleop === null ? null : r.allow_teleop === 1,
-          updateAvailable: r.role === "owner" ? updateAvailable(r.agent_version, latest) : null,
+          // The robot's own configuration is the owner's business (only the owner can drive).
+          joystick: !owner || r.allow_teleop === null ? null : r.allow_teleop === 1,
+          updateAvailable: owner ? updateAvailable(r.agent_version, latest) : null,
         };
       }),
     );

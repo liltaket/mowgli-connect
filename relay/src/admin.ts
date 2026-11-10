@@ -285,7 +285,7 @@ export async function handleAdmin(request: Request, env: Env, url: URL, user: Se
   return redirect("/admin?notice=removed");
 }
 
-function lookupError(reason: "not_found" | "not_a_user" | "unavailable", login?: string): string {
+export function lookupError(reason: "not_found" | "not_a_user" | "unavailable", login?: string): string {
   if (reason === "not_found") return login ? `There is no GitHub account called ${login}.` : "That GitHub account no longer exists.";
   if (reason === "not_a_user") return "That is an organization or a bot, not a person's account.";
   return "GitHub did not answer. Try again in a moment.";

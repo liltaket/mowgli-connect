@@ -542,3 +542,43 @@ describe("sign-out races (review 13)", () => {
     expect((await exchange(otherKey, code, ch.verifier)).status).toBe(400);
   });
 });
+
+describe("robots shared with an app user", () => {
+  it("lists them with the stored role, mints grants with it, and offers no owner powers", async () => {
+    const genv: Env = { ...env, ALLOWED_GITHUB_LOGINS: "" }; // owners are invited, guests are not
+    const owner = await newUser("app-owner");
+    await testEnv.DB.prepare("INSERT INTO invites (user_id, login, invited_by, created_at) VALUES (?, 'app-owner', 'gh:1', 0)").bind(owner.id).run();
+    const robot = await newRobot();
+    const { pairingCode } = (await (await register(robot, "Shared Bot")).json()) as { pairingCode: string };
+    const claim = await call("/claim", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: ORIGIN, Cookie: owner.cookie }, body: `code=${pairingCode}&label=Back+lawn`, redirect: "manual" }, genv);
+    expect(claim.status).toBe(303);
+    const guestUser = await newUser("app-guest");
+    await testEnv.DB.prepare("INSERT INTO members (robot_id, user_id, role, created_at) VALUES (?, ?, 'operator', ?)").bind(robot.robotId, guestUser.id, nowSeconds()).run();
+    const { dev } = await signedIn(guestUser, genv);
+
+    const list = (await (await api(dev, "GET", "/v1/app/robots", undefined, genv)).json()) as { robots: Record<string, unknown>[] };
+    expect(list.robots).toEqual([
+      { robotId: robot.robotId, name: "Back lawn", hostname: "back-lawn.robots.test", role: "operator", sharedBy: "app-owner", online: true, joystick: null, updateAvailable: null },
+    ]);
+    const grant = (await (await api(dev, "POST", `/v1/app/robots/${robot.robotId}/grant`, undefined, genv)).json()) as { grant: string };
+    expect(decodeJws(grant.grant).payload.role).toBe("operator");
+    await testEnv.DB.prepare("UPDATE members SET role = 'viewer' WHERE robot_id = ? AND user_id = ?").bind(robot.robotId, guestUser.id).run();
+    const again = (await (await api(dev, "POST", `/v1/app/robots/${robot.robotId}/grant`, undefined, genv)).json()) as { grant: string };
+    expect(decodeJws(again.grant).payload.role).toBe("viewer");
+
+    // A guest owns nothing and can add nothing.
+    expect(await (await api(dev, "GET", "/v1/app/me", undefined, genv)).json()).toMatchObject({ robotLimit: 0, robots: 0 });
+    const other = await newRobot();
+    const code = ((await (await register(other)).json()) as { pairingCode: string }).pairingCode;
+    expect((await api(dev, "POST", "/v1/app/claim", { code, step: "confirm" }, genv)).status).toBe(403);
+    // The owner's list still says owner, with the owner-only fields.
+    const ownerDev = (await signedIn(owner, genv)).dev;
+    const mine = (await (await api(ownerDev, "GET", "/v1/app/robots", undefined, genv)).json()) as { robots: Record<string, unknown>[] };
+    expect(mine.robots[0]).toMatchObject({ role: "owner", sharedBy: null });
+
+    // Removing the share signs the guest's app out (their last way in).
+    const rm = await call(`/robots/${robot.robotId}/members/${guestUser.id}/remove`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: ORIGIN, Cookie: owner.cookie }, body: "", redirect: "manual" }, genv);
+    expect(rm.status).toBe(303);
+    expect((await api(dev, "GET", "/v1/app/robots", undefined, genv)).status).toBe(401);
+  });
+});

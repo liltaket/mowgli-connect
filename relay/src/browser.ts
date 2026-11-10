@@ -1,5 +1,5 @@
 import type { Env } from "./env";
-import { isAdmin, ownedRobots, robotLimit } from "./access";
+import { canOwn, isAdmin, ownedRobots, robotLimit } from "./access";
 import { handleAdmin, isAdminPath } from "./admin";
 import { appEnabled, handleAppBrowser, signOutDevice } from "./appApi";
 import { claimRobot, limitMessage, planAddress, previewClaim, reachedLimit, unlinkRobot, type AddressPlan } from "./claim";
@@ -8,6 +8,7 @@ import { mintGrant, type Role } from "./grant";
 import { finishLogin, startLogin } from "./oauth";
 import { formatPairingCode, normalizePairingCode } from "./pairing";
 import { createProvisioner } from "./provisioner";
+import { handleShare, isSharePath, roleLabel } from "./share";
 import {
   clearSessionCookie,
   destroySession,
@@ -23,6 +24,7 @@ const NOTICES: Record<string, string> = {
   claimed: "Robot added. It is setting up its secure connection, which usually takes under a minute the first time. You can press Open now: it waits for the robot.",
   unlinked: "Robot unlinked.",
   revoked: "All sessions on that robot were signed out.",
+  left: "You left that robot. It is no longer in your list.",
   device_signed_out:
     "The app on that device is signed out. Everyone was signed out of the robots you own (its robot sessions end within a few minutes), and you were signed out of Mowgli Connect in every other browser. Open your robots again from here.",
 };
@@ -73,12 +75,18 @@ interface RobotListRow {
   first_online_at: number | null;
   claimed_at: number | null;
   agent_version: string | null;
+  owner_login: string | null;
+  owner_label: string | null;
+  shares: number;
 }
 
 async function dashboard(env: Env, user: SessionUser, url: URL): Promise<Response> {
   const rows = await env.DB.prepare(
-    `SELECT r.robot_id, r.name, r.hostname, m.role, m.label, r.allow_teleop, r.tunnel_id, r.first_online_at, r.claimed_at, r.agent_version
+    `SELECT r.robot_id, r.name, r.hostname, m.role, m.label, r.allow_teleop, r.tunnel_id, r.first_online_at, r.claimed_at, r.agent_version,
+            ou.login AS owner_login, o.label AS owner_label,
+            (SELECT COUNT(*) FROM members s WHERE s.robot_id = r.robot_id AND s.role != 'owner') AS shares
      FROM members m JOIN robots r ON r.robot_id = m.robot_id
+     LEFT JOIN members o ON o.robot_id = r.robot_id AND o.role = 'owner' LEFT JOIN users ou ON ou.id = o.user_id
      WHERE m.user_id = ? AND r.status = 'claimed' ORDER BY m.created_at`,
   )
     .bind(user.id)
@@ -100,19 +108,20 @@ async function dashboard(env: Env, user: SessionUser, url: URL): Promise<Respons
   const limit = await robotLimit(env, user.id);
   const owned = await ownedRobots(env, user.id);
   const full = limit !== null && owned >= limit;
+  const guest = !(await canOwn(env, user.id, user.login));
   const devicesSection = await devicesHtml(env, user);
   return page(
     "Robots",
     html`
 ${notice ? html`<p class="notice" role="status">${notice}</p>` : ""}
-<div class="who"><h1>My robots</h1></div>
+<div class="who"><h1>${guest ? "Robots shared with you" : "My robots"}</h1></div>
 ${
   rows.results.length === 0
     ? html`<div class="empty"><strong>No robots yet.</strong><span>Install the agent on your robot (<a href="${HOMEPAGE}#install">how</a>), then enter the pairing code it shows below.</span></div>`
     : html`<ul class="robots">
 ${rows.results.map(
   (r) => html`<li class="robot">
-<span class="name">${r.label ?? r.name ?? r.robot_id}</span>
+<span class="name">${r.label ?? (r.role === "owner" ? null : r.owner_label) ?? r.name ?? r.robot_id}</span>
 <a class="btn primary open" href="/open/${r.robot_id}">Open</a>
 <span class="meta">${
     !r.hostname
@@ -124,8 +133,12 @@ ${rows.results.map(
         : online.get(r.robot_id) === true
           ? html`<span class="state">Online</span>`
           : html`<span class="state">Tunnel ready</span>`
-  }<span>${r.role === "owner" ? "Owner" : "Viewer"}</span>${
-    r.allow_teleop === null ? "" : html`<span>Remote joystick ${r.allow_teleop ? "on" : "off"}</span>`
+  }${
+    r.role === "owner"
+      ? html`<span>Owner${r.shares > 0 ? `, shared with ${r.shares}` : ""}</span>`
+      : html`<span>Shared with you${r.owner_login ? ` by @${r.owner_login}` : ""}: ${roleLabel(r.role)}</span>`
+  }${
+    r.role !== "owner" || r.allow_teleop === null ? "" : html`<span>Remote joystick ${r.allow_teleop ? "on" : "off"}</span>`
   }${
     r.role === "owner" && updateAvailable(r.agent_version, latest) ? html`<span class="update">Update available</span>` : ""
   }</span>
@@ -133,6 +146,7 @@ ${
   r.role === "owner"
     ? html`<details><summary>Manage</summary><div class="manage">
 <div><code>${r.robot_id}</code>${r.hostname ? html`<code>${r.hostname}</code>` : ""}</div>
+<div><a class="btn" href="/robots/${r.robot_id}/share">Share</a><p>${r.shares > 0 ? `Shared with ${r.shares} ${r.shares === 1 ? "person" : "people"}. ` : ""}Let someone else open this robot with their own GitHub account, view only or with control of mowing.</p></div>
 <form method="post" action="/robots/${r.robot_id}/sessions/revoke"><button>Sign everyone out</button><p>Ends every open session on this robot, including yours.</p></form>
 <p>Remote joystick is ${r.allow_teleop ? "allowed" : "off"} on this robot. Only the robot can change it: rerun the installer there.</p>
 ${
@@ -142,13 +156,19 @@ ${
 }
 <form method="post" action="/robots/${r.robot_id}/unlink"><button class="danger">Unlink robot</button><p>Removes the robot from your account and deletes its tunnel. You will need a new pairing code to add it again.</p></form>
 </div></details>`
-    : ""
+    : html`<details><summary>Shared with you</summary><div class="manage">
+<p>${r.role === "operator" ? "You can watch the robot and use its mowing controls: start, pause, stop, dock and emergency stop." : "You can watch the robot: its status, live map and schedules."} Only its owner can change its settings or share it.</p>
+<form method="post" action="/robots/${r.robot_id}/leave"><button class="danger">Leave</button><p>Removes the robot from your list. Its owner can share it with you again.</p></form>
+</div></details>`
 }
 </li>`,
 )}
 </ul>`
 }
-<h2>Add a robot</h2>
+${
+  guest
+    ? html`<h2>Add a robot</h2><div class="empty"><strong>Your account can open robots shared with you.</strong><span>To add a robot of your own, ask the person who runs Mowgli Connect for an invitation.</span></div>`
+    : html`<h2>Add a robot</h2>
 ${limit === null ? "" : html`<p class="quota">${owned} of ${limit} ${limit === 1 ? "robot" : "robots"} on your account.</p>`}
 ${
   full
@@ -163,6 +183,7 @@ ${
 <p class="muted hint" id="code-hint">Three words, shown by the installer on your robot (or <code>docker logs mowgli-connect</code>). Spaces, dashes and capitals do not matter. The code is valid for 15 minutes. You see the robot and its address before it is added.</p>
 </form>
 <script src="/pair.js"></script>`
+}`
 }
 ${devicesSection}`,
     200,
@@ -209,17 +230,18 @@ function claimError(env: Env, user: SessionUser, message: string, status: number
 }
 
 function loggedOutPage(url: URL): Response {
-  const signedOut = url.searchParams.get("notice") === "signedout";
+  const notice = url.searchParams.get("notice");
   return page(
     "Sign in",
-    html`${signedOut ? html`<p class="notice" role="status">You are signed out of Mowgli Connect. A robot you opened stays signed in in this browser for up to 12 hours. To end that now, sign in and use Sign everyone out under the robot's Manage.</p>` : ""}
+    html`${notice === "signedout" ? html`<p class="notice" role="status">You are signed out of Mowgli Connect. A robot you opened stays signed in in this browser for up to 12 hours. To end that now, sign in and use Sign everyone out under the robot's Manage.</p>` : ""}
+${notice === "left_last" ? html`<p class="notice" role="status">You left the last robot shared with you, so you are signed out of Mowgli Connect.</p>` : ""}
 <div class="landing"><div>${markSvg("big-mark")}</div>
 <div><h1>Your mower's own app, from anywhere</h1>
 <p class="lead">Sign in to see your robots and open their own web interface, without VPN or port forwarding.</p>
 <p class="actions"><a class="btn primary gh" href="/login">${GITHUB_ICON}Sign in with GitHub</a></p>
 <ul class="facts">
 <li>GitHub shares your public profile only. Mowgli Connect keeps your user id, username and name, and gets no access to your repositories.</li>
-<li>Access is invite-only while Mowgli Connect is a prototype.</li>
+<li>Access is invite-only while Mowgli Connect is a prototype. Someone who shares a robot with you lets you in to open it.</li>
 <li>New here? <a href="${HOMEPAGE}">See how it works</a>, or <a href="${HOMEPAGE}#install">install it on your robot</a>.</li>
 </ul></div></div>`,
     200,
@@ -324,6 +346,7 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
     pathname === "/claim" ||
     /^\/open\/[^/]+$/.test(pathname) ||
     /^\/robots\/[^/]+\/(unlink|sessions\/revoke)$/.test(pathname) ||
+    isSharePath(pathname) ||
     isAdminPath(pathname) ||
     pathname === "/app/authorize" ||
     pathname === "/app/callback" ||
@@ -471,6 +494,8 @@ ${help}${retry}</div>`,
     });
     return redirect(`https://${row.hostname}/_connect/callback#grant=${grant}`, 302);
   }
+
+  if (isSharePath(pathname)) return handleShare(request, env, url, user, (u) => pageUser(env, u), loginRedirect, notFound);
 
   const act = /^\/robots\/([^/]+)\/(unlink|sessions\/revoke)$/.exec(pathname);
   if (act && method === "POST") {
