@@ -461,15 +461,63 @@ t_downgrade() {
 
 t_lock() {
 	installed lock
-	mkdir "$DIR/update-state/lock"
-	echo $$ >"$DIR/update-state/lock/pid" # this test process: alive
+	lockf=$DIR/update-state/update.lock
+	# Another run holds the flock.
+	touch "$T/hold"
+	(
+		exec 8>>"$lockf"
+		flock 8
+		touch "$T/locked"
+		while [ -f "$T/hold" ]; do sleep 0.1; done
+	) &
+	holder=$!
+	while [ ! -f "$T/locked" ]; do sleep 0.1; done
 	upd cron && r=0 || r=$?
 	check "concurrent run refused" eq "$r" 1
-	rm -rf "$DIR/update-state/lock"
-	mkdir "$DIR/update-state/lock"
-	echo 999999 >"$DIR/update-state/lock/pid" # stale
+	check "concurrent run: status says skipped" eq "$(result)" skipped
+	check "concurrent run: status says why" contains "$DIR/update-state/status" "locked: another update"
+	check "concurrent run: nothing started" eq "$(starts)" 1
+	rm "$T/hold"
+	wait "$holder"
 	upd cron
-	check "stale lock is taken over" eq "$(result)" up-to-date
+	check "lock released when its holder ends" eq "$(result)" up-to-date
+	# A lock directory of the earlier updater, even naming a live pid, no longer blocks.
+	mkdir "$DIR/update-state/lock"
+	echo $$ >"$DIR/update-state/lock/pid"
+	upd cron
+	check "old lock directory ignored" eq "$(result)" up-to-date
+
+	# Without a usable flock: the symlink lock on tmpfs.
+	installed lock-tmpfs
+	printf '#!/bin/sh\nexit 127\n' >"$T/bin/flock"
+	chmod +x "$T/bin/flock"
+	mkdir -m 700 "$T/run"
+	export XDG_RUNTIME_DIR=$T/run
+	l=$T/run/mowgli-connect-update-$(id -u)-$(printf '%s' "$(cd "$DIR" && pwd -P)" | cksum | cut -d' ' -f1)
+	boot=$(cat /proc/sys/kernel/random/boot_id)
+	start=$(sed 's/.*) //' /proc/$$/stat | cut -d' ' -f20)
+	upd cron
+	check "tmpfs lock: a run works" eq "$(result)" up-to-date
+	check "tmpfs lock: and removes its lock" fails test -L "$l"
+	ln -s "$boot $$ $start" "$l" # this test process: alive
+	upd cron && r=0 || r=$?
+	check "tmpfs lock: live owner refused" eq "$r" 1
+	check "tmpfs lock: status says skipped" eq "$(result)" skipped
+	check "tmpfs lock: live owner's lock kept" eq "$(readlink "$l")" "$boot $$ $start"
+	for stale in "$boot $$ 1" "other-boot $$ $start" "$boot 999999999 $start" "garbage"; do
+		rm -f "$l"
+		ln -s "$stale" "$l"
+		upd cron
+		check "tmpfs lock: stale '$stale' taken over" eq "$(result)" up-to-date
+		check "tmpfs lock: stale '$stale' removed after the run" fails test -L "$l"
+	done
+	rm -f "$l"
+	ln -s "$boot 999999999 $start" "$l"
+	mkdir "$l.t" # another run is taking over right now
+	upd cron && r=0 || r=$?
+	check "tmpfs lock: concurrent takeover refused" eq "$r" 1
+	rmdir "$l.t"
+	unset XDG_RUNTIME_DIR
 }
 
 t_options() {

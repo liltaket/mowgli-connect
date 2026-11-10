@@ -253,9 +253,10 @@ set_status() { # set_status RESULT MESSAGE
 		echo "result=$1"
 		echo "message=$(oneline "$2")"
 		echo "pending=$PENDING"
-	} >"$STATE/status.tmp"
-	mv -f "$STATE/status.tmp" "$STATE/status"
+	} >"$STATE/status.tmp.$$"
+	mv -f "$STATE/status.tmp.$$" "$STATE/status"
 }
+st() { sed -n "s/^$1=//p" "$STATE/status" 2>/dev/null | tail -1; } # st FIELD of the last status
 fail() { # fail MESSAGE [RESULT]: record why and stop; what runs keeps running
 	PENDING=""
 	set_status "${2:-failed}" "$1"
@@ -322,7 +323,6 @@ for v in "$HEALTH_TIMEOUT" "$HEALTH_SETTLE" "$HEALTH_INTERVAL"; do
 done
 
 show_status() {
-	st() { sed -n "s/^$1=//p" "$STATE/status" 2>/dev/null | tail -1; }
 	echo "Mowgli Connect agent updates ($DIR)"
 	echo "  follows:     $TARGET"
 	if [ "$VERIFY" = yes ]; then
@@ -453,17 +453,49 @@ run | cron | install) ;;
 esac
 cd "$DIR"
 
-if ! mkdir "$STATE/lock" 2>/dev/null; then
-	pid=$(cat "$STATE/lock/pid" 2>/dev/null || true)
-	if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-		echo "mowgli-connect: another update is running (pid $pid)" >&2
-		exit 1
-	fi
-	rm -rf "$STATE/lock"
-	mkdir "$STATE/lock"
+# One update at a time. With flock(1) (util-linux or busybox) the kernel holds the lock and drops
+# it when this run ends, however it ends: nothing stale survives a crash or a reboot. Without
+# it, the lock is a symlink (created atomically) on tmpfs whose target names its owner: boot id,
+# pid and that process's start time, so a lock of an earlier boot, a dead run or a reused pid
+# is not taken for a live one. A stale one is replaced under a second lock (mkdir), so two runs
+# never both take it over.
+LOCK=""
+TOKEN=""
+owner() { # owner PID: "BOOT_ID PID START_TIME"; START_TIME is "gone" without such a process
+	b=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown)
+	t=$(sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f20)
+	echo "$b $1 ${t:-gone}"
+}
+lock() {
+	exec 9>>"$STATE/update.lock"
+	flock -n 9 2>/dev/null && return 0 || r=$?
+	[ "$r" != 1 ] || return 1 # held by another run
+	exec 9>&-
+	for d in "${XDG_RUNTIME_DIR:-}" /dev/shm /run/lock "$STATE"; do
+		[ -n "$d" ] && [ -d "$d" ] && [ -w "$d" ] && break
+	done
+	LOCK=$d/mowgli-connect-update-$(id -u)-$(printf '%s' "$DIR" | cksum | cut -d' ' -f1)
+	TOKEN=$(owner $$)
+	ln -s "$TOKEN" "$LOCK" 2>/dev/null && return 0
+	held=$(readlink "$LOCK" 2>/dev/null) || return 1
+	pid=$(echo "$held" | cut -d' ' -f2)
+	case $pid in "" | *[!0-9]*) ;; *) [ "${held##* }" = gone ] || [ "$held" != "$(owner "$pid")" ] || return 1 ;; esac
+	# Stale. A takeover lock older than a minute was left by a run killed while taking over.
+	find "$LOCK.t" -maxdepth 0 -mmin +1 -exec rmdir {} \; 2>/dev/null || true
+	mkdir "$LOCK.t" 2>/dev/null || return 1
+	[ "$(readlink "$LOCK" 2>/dev/null)" != "$held" ] || rm -f "$LOCK"
+	rmdir "$LOCK.t"
+	ln -s "$TOKEN" "$LOCK" 2>/dev/null
+}
+unlock() { [ -z "$LOCK" ] || [ "$(readlink "$LOCK" 2>/dev/null)" != "$TOKEN" ] || rm -f "$LOCK"; }
+if ! lock; then
+	PENDING=$(st pending)
+	set_status skipped "locked: another update of $DIR is running"
+	log "skipped: another update is running"
+	[ "$MODE" != cron ] || echo "mowgli-connect update skipped: another update is running (sh $DIR/update.sh status)" >&2
+	exit 1
 fi
-echo $$ >"$STATE/lock/pid"
-trap 'rm -rf "$STATE/lock"' EXIT
+trap unlock EXIT
 trap 'exit 1' HUP INT TERM
 if [ -f "$STATE/update.log" ] && [ "$(wc -l <"$STATE/update.log")" -gt 2000 ]; then
 	tail -n 1000 "$STATE/update.log" >"$STATE/update.log.tmp"
