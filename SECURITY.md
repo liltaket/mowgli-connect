@@ -68,6 +68,11 @@ Out of scope: vulnerabilities in MowgliNext itself, in Cloudflare or GitHub, and
 - **The native app** (off until configured) signs in through a consent page and holds no bearer
   token: its identity is a Secure Enclave key, every call is signed, and each device is listed with
   Sign out. Design and threat model: [docs/app-api.md](docs/app-api.md).
+- **AI agents** (off until configured) act only within a delegation the person approved on a consent
+  page: an Ed25519 key the agent holds, signed single-use calls, limited scopes and robots, an
+  expiry, revocation and an activity log. They can never get an owner session on a robot: robots
+  list them as viewers of their own. Design and threat model:
+  [docs/agent-delegation.md](docs/agent-delegation.md).
 - If the robot cannot reach the relay for longer than `MC_MAX_STALE` (10 minutes by default), remote
   sessions stop working, so a revocation cannot be outwaited.
 
