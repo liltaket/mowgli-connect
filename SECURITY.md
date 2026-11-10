@@ -58,13 +58,20 @@ Out of scope: vulnerabilities in MowgliNext itself, in Cloudflare or GitHub, and
 - Who may sign in is decided by GitHub **id**, never by login: the admin (`ADMIN_GITHUB_IDS`) and
   the people they invite from the relay's admin page. Removing someone ends their relay sessions at
   once; their robots stop accepting them at the next sync, within a few minutes.
-- **Updates are a root of trust too.** The robot runs the image `ghcr.io/liltaket/mowgli-connect-agent`
-  it pulls, and automatic updates (on by default) pull `:latest` every night. Whoever can publish
-  that image (the GitHub account, this repository's Actions, or GHCR) could ship one that skips the
-  network lock and the privilege drop, reads the robot's key and tunnel token, and reaches the
-  robot's GUI and home network. Builds come only from this repository's `main` branch, with
-  provenance and an SBOM, but the robot does not verify them. If that trust is too much, install
-  with `--auto-update no` and update by hand after reading the changes.
+- **Updates are a root of trust too.** A malicious agent image could skip the network lock and the
+  privilege drop, read the robot's key and tunnel token, and reach the robot's GUI and home
+  network. So the robot runs an image only after cosign has verified a Sigstore keyless signature
+  on its digest from this repository's `agent-image.yml` workflow on `main` or an `agent-v*` tag
+  (issuer GitHub Actions), checked against a policy on the robot that the container cannot reach.
+  It then runs that digest, never a tag, and rolls back a release that does not start. Pushing to
+  GHCR or moving `:latest` is therefore not enough. What remains trusted: control of this GitHub
+  repository and its workflow (whatever reaches `main` is signed), GitHub's OIDC issuer and
+  Sigstore (Fulcio, Rekor), the cosign image pinned in the installer, root on the robot, and the
+  relay and Cloudflare as above. It does not protect against a bad change merged to `main`, a
+  downgrade to a signed release the robot never ran, installs made before signed updates (run the
+  installer again) or `--insecure-skip-verify`. Details, repository settings and recovery:
+  [docs/updates.md](docs/updates.md). If that trust is too much, install with `--auto-update no`
+  and update by hand after reading the changes.
 - **The native app** (off until configured) signs in through a consent page and holds no bearer
   token: its identity is a Secure Enclave key, every call is signed, and each device is listed with
   Sign out. Design and threat model: [docs/app-api.md](docs/app-api.md).

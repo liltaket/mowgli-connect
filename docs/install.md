@@ -34,7 +34,10 @@ continue), and then runs it.
    MowgliNext's files, and MowgliNext updates do not touch it.
 5. Checks whether the network's DNS server is slow, and if so gives the container public resolvers
    first (see [troubleshooting](#the-robot-takes-long-to-connect-30-s-or-more)).
-6. Starts the agent container, named `mowgli-connect`, which pulls the image from GHCR.
+6. Checks the agent image's signature with cosign: it must have been signed by this repository's
+   release workflow (see [Signed updates](#signed-updates)). Only then does it download the
+   image by its digest and start the container, named `mowgli-connect`. Without a valid
+   signature nothing is started.
 7. Prints a pairing code.
 
 Without questions (for scripts and coding agents):
@@ -76,20 +79,47 @@ job for your user, marked `# mowgli-connect auto-update`, that runs once a night
 past 03:00:
 
 ```sh
-cd ~/mowgli-connect && docker compose pull -q && docker compose up -d
+sh ~/mowgli-connect/update.sh
 ```
 
-That restarts the agent only when there is a new image, which interrupts remote access for a few
-seconds. connect.bronc.app shows "Update available" next to a robot with an older agent. To update
-by hand, run the command above. To turn automatic updates on or off, run the installer again with
-`--auto-update yes` or `--auto-update no` (it keeps the robot's identity and pairing).
+That is also the command to update by hand. It restarts the agent only when there is a newer
+signed release, which interrupts remote access for a few seconds. connect.bronc.app shows "Update
+available" next to a robot with an older agent. To turn automatic updates on or off, run the
+installer again with `--auto-update yes` or `--auto-update no` (it keeps the robot's identity and
+pairing).
 
-Automatic updates mean trusting whoever can publish the agent image: a malicious image would run on
-the robot with the container's privileges, outside the network lock. See
-[SECURITY.md](../SECURITY.md). Turn them off if you would rather read each change first.
+See what the robot runs and how the last check went:
+
+```sh
+sh ~/mowgli-connect/update.sh status
+```
 
 The robot's key and pairing are kept in the container's data volume, so you do not need to pair
-again.
+again, after an update or after a rollback.
+
+**Installed before signed updates?** If `~/mowgli-connect/update.sh` does not exist, the robot
+still has the old nightly job, which pulls `:latest` without any check. Run the installer again
+(same answers; identity and pairing are kept) to switch to signed updates.
+
+### Signed updates
+
+An agent image runs on the robot only if cosign has verified that it was signed by this
+repository's release workflow (`.github/workflows/agent-image.yml` on `main` or an `agent-v*` tag,
+GitHub Actions keyless signing). The robot then runs exactly that image digest. If a new release
+does not start properly (the container stops, or there is no tunnel connection, pairing code or
+pairing within four minutes), the robot goes back to the version it had and does not try that
+release again. If the signature is missing or wrong, or GHCR or Sigstore cannot be reached, the
+running agent stays as it is and `update.sh status` says why. From the nightly job, a failure is
+also written to syslog (`journalctl -t mowgli-connect-update`) and mailed by cron if the robot can
+send mail.
+
+This still means trusting this repository: whatever is merged and built by its release workflow is
+signed. Turn automatic updates off if you would rather read each change first. Design, threat
+model and limits: [updates.md](updates.md).
+
+Custom or self-built images: `--image ghcr.io/you/agent:tag --signer you/your-fork` trusts your
+fork's `agent-image.yml` instead. `--insecure-skip-verify` runs an image without any check; it is
+meant for local development only, turns automatic updates off and says so in the status.
 
 ## Uninstall
 
@@ -120,6 +150,22 @@ minutes by default), remote sessions stop working until it is reachable again. A
 network is not affected.
 
 **You lost the pairing code.** Run `docker logs mowgli-connect` to see it again.
+
+**An update failed, or the status says it rolled back.** Run `sh ~/mowgli-connect/update.sh status`.
+The agent that runs is the last good version, so remote access keeps working. "no valid signature"
+means the image was not signed as expected or GHCR or Sigstore could not be reached: it is tried
+again the next night, nothing to do unless it persists (then report it, it may be an attack on the
+release). "rolled back" means a release did not start properly; it will not be tried again, and the
+next release is installed as usual. Details are in `~/mowgli-connect/update-state/update.log` and
+`docker logs mowgli-connect`.
+
+**The installer stops with "no valid signature".** Nothing was started. Check the robot's internet
+connection and DNS (it needs `ghcr.io` and Sigstore's `tuf-repo-cdn.sigstore.dev`). If those work,
+the published image is not signed: do not work around it, report it.
+
+**Go back to a specific version by hand.** Pin a digest that is listed as good or in the log:
+`sh install.sh --image ghcr.io/liltaket/mowgli-connect-agent@sha256:… --auto-update no` (it is
+verified like any update). Run the installer again without `--image` to follow releases again.
 
 **Anything else.** Open an issue on GitHub with the output of `docker logs mowgli-connect`. For
 security problems, follow [SECURITY.md](../SECURITY.md) instead.

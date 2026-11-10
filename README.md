@@ -43,8 +43,8 @@ Requirements: a MowgliNext robot with Docker and Docker Compose v2, internet acc
    ```
 
    The installer asks for the robot name, whether to allow the remote joystick (default no,
-   recommended) and whether to install updates automatically (default yes, nightly), starts the
-   container and prints a pairing code.
+   recommended) and whether to install updates automatically (default yes, nightly), checks the
+   agent image's signature, starts the container and prints a pairing code.
 
    Using a coding agent such as Claude Code or Codex? Point it at the
    [agent install guide](https://bronc.app/agents.md); it follows the
@@ -54,11 +54,14 @@ Requirements: a MowgliNext robot with Docker and Docker Compose v2, internet acc
 
 See the pairing code again: `docker logs mowgli-connect`.
 
-**Update:**
+**Update** (only releases signed by this repository's release workflow; a release that does not
+start is rolled back, see [docs/updates.md](docs/updates.md)):
 
 ```sh
-cd ~/mowgli-connect && docker compose pull && docker compose up -d
+sh ~/mowgli-connect/update.sh          # status: sh ~/mowgli-connect/update.sh status
 ```
+
+Installed before signed updates (no `update.sh` in `~/mowgli-connect`)? Run the installer again.
 
 **Uninstall:**
 
@@ -105,11 +108,13 @@ Agent and relay contract: [docs/protocol.md](docs/protocol.md); native app API: 
 |---|---|
 | [`agent/`](agent) | Go agent + cloudflared, one container on the robot. Authenticating reverse proxy in front of the GUI. |
 | [`relay/`](relay) | Cloudflare Worker + D1: GitHub login, pairing, grants, tunnel provisioning. See [relay/README.md](relay/README.md) to self-host. |
-| [`docs/`](docs) | [Install guide](docs/install.md), [architecture](docs/architecture.md), [protocol](docs/protocol.md), [test report](docs/test-report.md), and [research](docs/research) (T3 Connect analysis, GUI traffic, Cloudflare pricing, licensing, security reviews). |
+| [`docs/`](docs) | [Install guide](docs/install.md), [signed updates](docs/updates.md), [architecture](docs/architecture.md), [protocol](docs/protocol.md), [test report](docs/test-report.md), and [research](docs/research) (T3 Connect analysis, GUI traffic, Cloudflare pricing, licensing, security reviews). |
 | [`sim/`](sim/README.md) | Test tools: fake Foxglove/ROS robot feeding the real GUI, WebSocket traffic meter. Not for production. **`sim/foxglove-sim` contains code and schemas copied from MowgliNext and stays under MowgliNext's license** (GPLv3 + its commercial clause, see `sim/foxglove-sim/LICENSE`); it is never shipped with the agent or relay. Move it to its own repo before any commercial use. |
 | [`site/`](site) | The project site, published to GitHub Pages by `.github/workflows/pages.yml`. Also hosts `install.sh`. |
 
-The agent image is published as `ghcr.io/liltaket/mowgli-connect-agent` (linux/amd64 + linux/arm64).
+The agent image is published as `ghcr.io/liltaket/mowgli-connect-agent` (linux/amd64 + linux/arm64),
+signed keyless by its release workflow; robots installed with `install.sh` run only verified
+digests ([docs/updates.md](docs/updates.md)). Installer tests: `sh test/installer/run.sh`.
 
 ### Two tunnel modes
 
@@ -133,6 +138,8 @@ deployment between modes while robots are claimed.
    [`agent/docker-compose.example.yaml`](agent/docker-compose.example.yaml) to MowgliNext's
    `docker/stack-overrides.yaml` (gitignored, kept across updates), set `MC_RELAY_URL`, and start it.
    The agent must run through Docker Compose: it refuses to start without Docker's embedded DNS.
+   This path does not verify or update the image: check its signature and pin the digest as the
+   file shows ([docs/updates.md](docs/updates.md)).
 3. `docker logs mowgli-connect` shows the pairing code; open the claim link and sign in.
 4. Open the robot from the relay dashboard, from anywhere.
 
