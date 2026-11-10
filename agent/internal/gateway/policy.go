@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -15,10 +16,11 @@ type Policy interface {
 	Allow(role, method, path string, websocket bool) bool
 }
 
-// BodyPolicy is implemented by a Policy whose decision for some routes depends on the request
-// body. AllowBody runs after Allow; it may read the body and must leave the same bytes in place.
-type BodyPolicy interface {
-	AllowBody(role string, r *http.Request) bool
+// RequestPolicy is implemented by a Policy whose decision for some routes depends on more of the
+// request than its method and path (its body, or its query). AllowRequest runs after Allow; it
+// may read the body and must leave the same bytes in place.
+type RequestPolicy interface {
+	AllowRequest(role string, r *http.Request) bool
 }
 
 const (
@@ -84,11 +86,31 @@ var mowgliViewerAPI = map[string]bool{
 
 var mowgliViewerSockets = []string{"/api/mowglinext/multiplex", "/api/mowglinext/subscribe/"}
 
+// The GUI's tile proxy (gui/pkg/api/tiles.go, /tiles/*proxyPath) forwards the path, the query
+// and the headers to the tile server the owner configured, on the robot's network. Viewers get
+// map tiles in the plain z/x/y shape only (AllowRequest also refuses a query or escapes), not a
+// way to send arbitrary requests to that server.
+const tilesPrefix = "/tiles/"
+
+var tilePath = regexp.MustCompile(`^/tiles/[0-9]{1,2}/[0-9]{1,8}/[0-9]{1,8}(\.(png|jpg|jpeg|webp|pbf|mvt))?$`)
+
+// mowgliReadableKeys are the config-store keys viewers may read with POST /api/config/keys/get
+// (checked by body, AllowRequest): the map page's display settings (pages/MapPage.tsx) and the
+// obstacle outlines it loads (pages/map/hooks/useObstacleOriginals.ts) at mowglinext 8d78819.
+// Not the settings hook's request (hooks/useSettings.ts): it asks for every system.* key at
+// once, the HomeKit PIN among them, so it stays owner-only and shared users see its error.
+var mowgliReadableKeys = map[string]bool{
+	"gui.map.offset.x": true, "gui.map.offset.y": true, "gui.map.display.bearing": true,
+	"gui.map.display.rotation_locked": true, "map.obstacleOriginals": true,
+}
+
+const configKeysGet = "/api/config/keys/get"
+
 // Operators get what viewers get plus these ROS service calls, the GUI's mowing controls
 // (gui/web/src/pages/MowgliNextPage.tsx, MapPage.tsx, components/MowerActions.tsx at
 // mowglinext 8d78819). Exact paths only: the GUI's router is case-sensitive and does not
 // rewrite them. The two calls whose argument selects what happens are also checked by body
-// (AllowBody); everything else (settings, maps, schedules, containers, updates, firmware,
+// (AllowRequest); everything else (settings, maps, schedules, containers, updates, firmware,
 // calibration, tuning, diagnostics, fleet, remote access, the joystick) stays owner-only.
 var mowgliOperatorCalls = map[string]bool{
 	"/api/mowglinext/call/high_level_control":    true, // body: start/continue, dock, pause/stop
@@ -123,22 +145,41 @@ func (m MowgliPolicy) Allow(role, method, path string, ws bool) bool {
 			return method == "GET" && hasAnyPrefix(path, mowgliViewerSockets)
 		}
 		if !safeMethod(method) {
-			return role == RoleOperator && method == http.MethodPost && mowgliOperatorCalls[path]
+			return method == http.MethodPost && (path == configKeysGet || role == RoleOperator && mowgliOperatorCalls[path])
 		}
 		if path == "/api" || strings.HasPrefix(path, "/api/") {
 			return mowgliViewerAPI[path]
+		}
+		if hasAnyPrefix(path, []string{tilesPrefix}) {
+			return tilePath.MatchString(path)
 		}
 		return !hasAnyPrefix(path, []string{"/swagger/"})
 	}
 	return false
 }
 
-// maxCallBody bounds the operator call bodies read for AllowBody; the GUI's own are a few bytes.
+// maxCallBody bounds the request bodies read for AllowRequest; the GUI's own are a few bytes.
 const maxCallBody = 1024
 
-func (m MowgliPolicy) AllowBody(role string, r *http.Request) bool {
-	if role != RoleOperator || safeMethod(r.Method) {
+func (m MowgliPolicy) AllowRequest(role string, r *http.Request) bool {
+	if role == RoleOwner {
 		return true
+	}
+	if role != RoleOperator && role != RoleViewer {
+		return false
+	}
+	if safeMethod(r.Method) {
+		if hasAnyPrefix(r.URL.Path, []string{tilesPrefix}) {
+			// Allow matched the decoded path; the tile server gets it spelled the same way.
+			return r.URL.RawPath == "" && r.URL.RawQuery == "" && !r.URL.ForceQuery
+		}
+		return true
+	}
+	if r.URL.Path == configKeysGet {
+		return bodyHasOnlyKeys(r, mowgliReadableKeys)
+	}
+	if role != RoleOperator {
+		return false
 	}
 	switch r.URL.Path {
 	case "/api/mowglinext/call/high_level_control":
@@ -154,6 +195,20 @@ func (m MowgliPolicy) AllowBody(role string, r *http.Request) bool {
 	return false // a route Allow let through that this check does not know
 }
 
+// readCallBody reads a small request body and puts the same bytes back for the proxy. It reports
+// false for a missing body, a read error or a body over maxCallBody.
+func readCallBody(r *http.Request) ([]byte, bool) {
+	if r.Body == nil {
+		return nil, false
+	}
+	b, err := io.ReadAll(io.LimitReader(r.Body, maxCallBody+1))
+	r.Body.Close()
+	r.Body = io.NopCloser(bytes.NewReader(b))
+	r.ContentLength, r.TransferEncoding = int64(len(b)), nil
+	r.Header.Del("Transfer-Encoding")
+	return b, err == nil && len(b) <= maxCallBody
+}
+
 // bodyHasOnly reads a small request body and reports whether it is exactly one JSON object with
 // a single member, named by one of names (the GUI's field tag, and the casing its web app sends,
 // both matched by the GUI's encoding/json decoder), whose value is a plain unsigned 8-bit
@@ -161,15 +216,8 @@ func (m MowgliPolicy) AllowBody(role string, r *http.Request) bool {
 // no JSON parser can read another value, or a default zero, from the same bytes. The body is put
 // back for the proxy byte for byte.
 func bodyHasOnly(r *http.Request, names []string, ok func(uint64) bool) bool {
-	if r.Body == nil {
-		return false
-	}
-	b, err := io.ReadAll(io.LimitReader(r.Body, maxCallBody+1))
-	r.Body.Close()
-	r.Body = io.NopCloser(bytes.NewReader(b))
-	r.ContentLength, r.TransferEncoding = int64(len(b)), nil
-	r.Header.Del("Transfer-Encoding")
-	if err != nil || len(b) > maxCallBody {
+	b, read := readCallBody(r)
+	if !read {
 		return false
 	}
 	dec := json.NewDecoder(bytes.NewReader(b))
@@ -198,6 +246,40 @@ func bodyHasOnly(r *http.Request, names []string, ok func(uint64) bool) bool {
 		return false
 	}
 	return ok(v)
+}
+
+// bodyHasOnlyKeys reports whether the body is one JSON object of one or more distinct members
+// named by allowed, each with the empty string as its value: a config read as the GUI's web app
+// sends it. Duplicate or unknown keys, other values and trailing data are refused, so the GUI
+// (which reads the object into a map and looks up every key in it) reads only allowed keys.
+func bodyHasOnlyKeys(r *http.Request, allowed map[string]bool) bool {
+	b, read := readCallBody(r)
+	if !read {
+		return false
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return false
+	}
+	seen := map[string]bool{}
+	for dec.More() {
+		t, err := dec.Token()
+		key, isStr := t.(string)
+		if err != nil || !isStr || !allowed[key] || seen[key] {
+			return false
+		}
+		seen[key] = true
+		if t, err := dec.Token(); err != nil || t != "" {
+			return false
+		}
+	}
+	if t, err := dec.Token(); err != nil || t != json.Delim('}') {
+		return false
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return false
+	}
+	return len(seen) > 0
 }
 
 func contains(xs []string, s string) bool {

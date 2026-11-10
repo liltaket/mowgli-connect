@@ -29,6 +29,35 @@ func TestMowgliPolicyRoles(t *testing.T) {
 		{"GET", "/api/schedules", false, all},
 		{"GET", "/api/weather", false, all},
 		{"GET", "/swagger/index.html", false, ownerOnly},
+		// Map tiles through the GUI's tile proxy: the z/x/y shape only (a query or escapes are
+		// refused by AllowRequest, see TestTileRequests).
+		{"GET", "/tiles/3/4/5", false, all},
+		{"GET", "/tiles/3/4/5.png", false, all},
+		{"GET", "/tiles/19/280000/170000.jpeg", false, all},
+		{"HEAD", "/tiles/3/4/5.pbf", false, all},
+		{"GET", "/tiles/3/4/5.webp", false, all},
+		{"GET", "/tiles/3/4/5.mvt", false, all},
+		{"GET", "/tiles/3/4/5.jpg", false, all},
+		{"GET", "/tiles", false, ownerOnly},
+		{"GET", "/tiles/", false, ownerOnly},
+		{"GET", "/tiles/3/4", false, ownerOnly},
+		{"GET", "/tiles/3/4/5/6", false, ownerOnly},
+		{"GET", "/tiles/3/4/5/", false, ownerOnly},
+		{"GET", "/tiles/a/4/5", false, ownerOnly},
+		{"GET", "/tiles/-3/4/5", false, ownerOnly},
+		{"GET", "/tiles/123/4/5", false, ownerOnly},
+		{"GET", "/tiles/3/4/123456789", false, ownerOnly},
+		{"GET", "/tiles/3/4/5.PNG", false, ownerOnly},
+		{"GET", "/tiles/3/4/5.svg", false, ownerOnly},
+		{"GET", "/tiles/3/4/5.png.json", false, ownerOnly},
+		{"GET", "/tiles/3/4/5\n", false, ownerOnly},
+		{"GET", "/tiles/3/4/5.png\n", false, ownerOnly},
+		{"GET", "/tiles/vt/lyrs=s,h&x=1&y=2&z=3", false, ownerOnly},
+		{"GET", "/tiles/admin/config", false, ownerOnly},
+		{"GET", "/tiles/3/4/5", true, ownerOnly},
+		{"POST", "/tiles/3/4/5", false, ownerOnly},
+		{"PUT", "/tiles/3/4/5", false, ownerOnly},
+		{"DELETE", "/tiles/3/4/5", false, ownerOnly},
 		// Reads that return configuration, credentials or private data.
 		{"GET", "/api", false, ownerOnly},
 		{"GET", "/api/settings", false, ownerOnly},
@@ -67,7 +96,9 @@ func TestMowgliPolicyRoles(t *testing.T) {
 		{"POST", "/api/settings", false, ownerOnly},
 		{"POST", "/api/settings/yaml", false, ownerOnly},
 		{"POST", "/api/config/keys/set", false, ownerOnly},
-		{"POST", "/api/config/keys/get", false, ownerOnly},
+		{"POST", "/api/config/keys/get", false, all}, // map display keys only, by body (TestReadableConfigKeys)
+		{"GET", "/api/config/keys/get", false, ownerOnly},
+		{"PUT", "/api/config/keys/get", false, ownerOnly},
 		{"POST", "/api/params", false, ownerOnly},
 		{"POST", "/api/schedules", false, ownerOnly},
 		{"PUT", "/api/schedules/1", false, ownerOnly},
@@ -219,10 +250,10 @@ func TestOperatorBodies(t *testing.T) {
 		{area, `{"area":1,"x":2}`, false},
 		{fresh, `{}`, true},
 		{fresh, ``, true},
-		{"/api/mowglinext/call/mow_enabled", `{"mow_enabled":1}`, false}, // unknown to AllowBody: refused
+		{"/api/mowglinext/call/mow_enabled", `{"mow_enabled":1}`, false}, // unknown to AllowRequest: refused
 	} {
 		r := httptest.NewRequest("POST", tc.path, strings.NewReader(tc.body))
-		if got := (MowgliPolicy{}).AllowBody(RoleOperator, r); got != tc.allow {
+		if got := (MowgliPolicy{}).AllowRequest(RoleOperator, r); got != tc.allow {
 			t.Errorf("operator %s %s: allow=%v, want %v", tc.path, tc.body, got, tc.allow)
 		}
 		if tc.allow {
@@ -230,19 +261,102 @@ func TestOperatorBodies(t *testing.T) {
 				t.Errorf("%s %s: body %q (length %d) after the check", tc.path, tc.body, b, r.ContentLength)
 			}
 		}
-		// Owners and readers are not body-checked (Allow already decided for them).
-		for _, role := range []string{RoleOwner, RoleViewer} {
+		// Owners are not body-checked; viewers never pass a control, whatever Allow said.
+		for role, want := range map[string]bool{RoleOwner: true, RoleViewer: false, "admin": false} {
 			r := httptest.NewRequest("POST", tc.path, strings.NewReader(tc.body))
-			if !(MowgliPolicy{}).AllowBody(role, r) {
-				t.Errorf("%s %s %s: refused", role, tc.path, tc.body)
+			if got := (MowgliPolicy{}).AllowRequest(role, r); got != want {
+				t.Errorf("%s %s %s: allow=%v, want %v", role, tc.path, tc.body, got, want)
 			}
 			if b, _ := io.ReadAll(r.Body); string(b) != tc.body {
 				t.Errorf("%s %s: body changed", role, tc.path)
 			}
 		}
 	}
-	if !(MowgliPolicy{}).AllowBody(RoleOperator, httptest.NewRequest("GET", "/api/system/info", nil)) {
-		t.Error("operator GET refused by the body check")
+	if !(MowgliPolicy{}).AllowRequest(RoleOperator, httptest.NewRequest("GET", "/api/system/info", nil)) {
+		t.Error("operator GET refused by the request check")
+	}
+}
+
+// The tile proxy forwards the query and the path as sent to the tile server: for anyone but the
+// owner, only a plain z/x/y path with no query.
+func TestTileRequests(t *testing.T) {
+	for _, tc := range []struct {
+		target string
+		allow  bool
+	}{
+		{"/tiles/3/4/5", true},
+		{"/tiles/3/4/5.png", true},
+		{"/tiles/3/4/5?", false},
+		{"/tiles/3/4/5?x=1", false},
+		{"/tiles/3/4/5.png?access_token=x", false},
+		{"/tiles/3/4/5?url=http://169.254.169.254/", false},
+		{"/tiles/%33/4/5", false},      // decodes to /tiles/3/4/5, but reaches the GUI escaped
+		{"/tiles/3/4/5%2Epng", false},  // the same
+		{"/api/system/info?x=1", true}, // only the tile proxy is checked here
+	} {
+		for role, want := range map[string]bool{RoleOwner: true, RoleOperator: tc.allow, RoleViewer: tc.allow} {
+			for _, method := range []string{"GET", "HEAD"} {
+				if got := (MowgliPolicy{}).AllowRequest(role, httptest.NewRequest(method, tc.target, nil)); got != want {
+					t.Errorf("%s %s %s: allow=%v, want %v", role, method, tc.target, got, want)
+				}
+			}
+		}
+	}
+}
+
+// Viewers and operators may read the map page's display settings from the config store, with
+// exactly the bodies the GUI's web app sends, and no other key: other keys hold credentials.
+func TestReadableConfigKeys(t *testing.T) {
+	const mapPage = `{"gui.map.offset.x":"","gui.map.offset.y":"","gui.map.display.bearing":"","gui.map.display.rotation_locked":""}`
+	// What hooks/useSettings.ts asks for on every page: stays owner-only.
+	const settings = `{"system.api.addr":"","system.api.webDirectory":"","system.map.enabled":"","system.map.tileServer":"",` +
+		`"system.map.tileUri":"","system.mower.configFile":"","system.mqtt.enabled":"","system.mqtt.host":"","system.mqtt.prefix":"",` +
+		`"system.homekit.enabled":"","system.homekit.pincode":"","system.ros.nodeName":"","system.ros.masterUri":"","system.ros.nodeHost":""}`
+	for _, tc := range []struct {
+		body  string
+		allow bool
+	}{
+		{mapPage, true},
+		{`{"map.obstacleOriginals":""}`, true},
+		{`{"gui.map.offset.x":""}`, true},
+		{` { "gui.map.display.bearing" : "" } ` + "\n", true},
+		{`{"gui.map.offset.x":""}`, true}, // the same key, escaped: every parser decodes it alike
+		{settings, false},
+		{`{"system.homekit.pincode":""}`, false},
+		{`{"system.map.tileServer":""}`, false},
+		{`{"gui.firmware.config":""}`, false},
+		{`{"gui.map.offset.x":"","system.homekit.pincode":""}`, false},
+		{`{"GUI.map.offset.x":""}`, false},
+		{`{"gui.map.offset.x ":""}`, false},
+		{`{"gui.map.offset.x":"","gui.map.offset.x":""}`, false},
+		{`{"gui.map.offset.x":"1"}`, false},
+		{`{"gui.map.offset.x":null}`, false},
+		{`{"gui.map.offset.x":0}`, false},
+		{`{"gui.map.offset.x":{}}`, false},
+		{`{"gui.map.offset.x":[""]}`, false},
+		{`{"gui.map.offset.x":""}{"system.homekit.pincode":""}`, false},
+		{`{"gui.map.offset.x":""}x`, false},
+		{`{"gui.map.offset.x":"",}`, false},
+		{`[{"gui.map.offset.x":""}]`, false},
+		{`{}`, false},
+		{``, false},
+		{`{"gui.map.offset.x":""` + strings.Repeat(" ", maxCallBody) + `}`, false},
+	} {
+		for role, want := range map[string]bool{RoleOwner: true, RoleOperator: tc.allow, RoleViewer: tc.allow, "admin": false} {
+			r := httptest.NewRequest("POST", "/api/config/keys/get", strings.NewReader(tc.body))
+			if got := (MowgliPolicy{}).AllowRequest(role, r); got != want {
+				t.Errorf("%s %s: allow=%v, want %v", role, tc.body, got, want)
+			}
+			if b, _ := io.ReadAll(r.Body); want && (string(b) != tc.body || r.ContentLength != int64(len(tc.body))) {
+				t.Errorf("%s %s: body %q (length %d) after the check", role, tc.body, b, r.ContentLength)
+			}
+		}
+	}
+	// Writing those keys stays the owner's.
+	for _, role := range []string{RoleOperator, RoleViewer} {
+		if (MowgliPolicy{}).Allow(role, "POST", "/api/config/keys/set", false) {
+			t.Errorf("%s may write config keys", role)
+		}
 	}
 }
 
@@ -311,6 +425,37 @@ func TestOperatorInGateway(t *testing.T) {
 	f.gw.UpdateState(f.state)
 	if r := f.req("GET", "/api/system/info", h, ""); r.StatusCode != 401 {
 		t.Fatalf("removed operator still signed in: %d", r.StatusCode)
+	}
+}
+
+// End to end: a viewer gets the map page's settings and plain tiles, nothing else of either.
+func TestViewerMapInGateway(t *testing.T) {
+	f := newFixture(t, MowgliPolicy{})
+	tok, _ := f.login(f.grant(func(c map[string]any) { c["sub"] = "gh:2"; c["role"] = RoleViewer }))
+	h := map[string]string{"Cookie": cookie(tok), "Origin": "https://" + testHost, "Content-Type": "application/json"}
+	const body = `{"gui.map.offset.x":"","gui.map.offset.y":"","gui.map.display.bearing":"","gui.map.display.rotation_locked":""}`
+	r := f.req("POST", "/api/config/keys/get", h, body)
+	var echo map[string]string
+	if r.StatusCode != 200 || json.NewDecoder(r.Body).Decode(&echo) != nil || echo["body"] != body {
+		t.Fatalf("viewer map settings: %d %v", r.StatusCode, echo)
+	}
+	for _, tc := range []struct{ method, path, body string }{
+		{"POST", "/api/config/keys/get", `{"system.homekit.pincode":""}`},
+		{"POST", "/api/config/keys/set", `{"gui.map.offset.x":"1"}`},
+		{"GET", "/tiles/3/4/5.png?x=1", ``},
+		{"GET", "/tiles/vt/lyrs=s,h&x=1&y=2&z=3", ``},
+	} {
+		if r := f.req(tc.method, tc.path, h, tc.body); r.StatusCode != 403 {
+			t.Errorf("viewer %s %s %s: %d", tc.method, tc.path, tc.body, r.StatusCode)
+		}
+	}
+	if r := f.req("GET", "/tiles/3/4/5.png", h, ""); r.StatusCode != 200 {
+		t.Errorf("viewer tile: %d", r.StatusCode)
+	}
+	// The CSRF check applies to the read as to any POST.
+	bad := map[string]string{"Cookie": cookie(tok), "Origin": "https://evil.example.com"}
+	if r := f.req("POST", "/api/config/keys/get", bad, body); r.StatusCode != 403 {
+		t.Fatalf("cross-origin config read: %d", r.StatusCode)
 	}
 }
 

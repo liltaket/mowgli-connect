@@ -65,8 +65,9 @@ type Config struct {
 	// SessionFile, if set, keeps sessions across agent restarts (only token hashes are stored).
 	SessionFile string
 	// Resync, if set, asks for an immediate relay sync and waits for it. It is called (at most
-	// every resyncMinGap) when a correctly signed grant names a newer epoch or an unknown
-	// member, so the agent can poll the relay rarely and still admit new members at once.
+	// every resyncMinGap) when a correctly signed grant names a newer epoch, an unknown member
+	// or a higher role than the member list gives, so the agent can poll the relay rarely and
+	// still admit new members and upgrades at once.
 	Resync func()
 	Logger *slog.Logger
 	Now    func() time.Time
@@ -269,7 +270,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
 		return
 	}
-	if bp, ok := g.cfg.Policy.(BodyPolicy); ok && !bp.AllowBody(role, r) {
+	if rp, ok := g.cfg.Policy.(RequestPolicy); ok && !rp.AllowRequest(role, r) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
 		return
 	}
