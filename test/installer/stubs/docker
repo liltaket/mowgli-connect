@@ -1,0 +1,96 @@
+#!/bin/sh
+# Fake docker for test/installer/run.sh. State lives in $FAKE:
+#   tag.<tag>          digest the registry serves for that tag
+#   behavior.<digest>  healthy (logs a pairing code) | silent (never connects) | crash (restarts)
+#   registry-down      every registry access fails
+#   pullfail.<digest>  pulling that digest fails (the registry serves content with another digest)
+#   running            image of the mowgli-connect container (absent: no container)
+#   calls              every invocation, one per line
+# "docker run <cosign image> verify ..." runs $FAKE_COSIGN (or $MC_TEST_COSIGN, a real cosign).
+set -eu
+echo "docker $*" >>"$FAKE/calls"
+COSIGN_PIN=ghcr.io/sigstore/cosign/cosign:v3.1.4@sha256:0f06154836d2de34f887a5c273506d52ca43edaa1d9e53e6510fa78a48f69c2d
+
+digest_of() { # image ref -> digest (tags resolved through the fake registry)
+	case $1 in
+	*@sha256:*) echo "${1#*@}" ;;
+	*) cat "$FAKE/tag.${1##*:}" 2>/dev/null || true ;;
+	esac
+}
+behavior() { cat "$FAKE/behavior.$(digest_of "$1")" 2>/dev/null || echo healthy; }
+
+case ${1:-} in
+info | version) exit 0 ;;
+compose)
+	shift
+	proj=$PWD
+	cmd=""
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--project-directory) proj=$2; shift 2 ;;
+		version) exit 0 ;;
+		pull) cmd=pull; shift ;;
+		up) cmd=up; shift ;;
+		down) cmd=down; shift ;;
+		*) shift ;;
+		esac
+	done
+	img=$(sed -n "s/^MC_IMAGE='\(.*\)'\$/\1/p" "$proj/.env" | tail -1)
+	[ -n "$img" ] || { echo "required variable MC_IMAGE is missing a value" >&2; exit 1; }
+	case $cmd in
+	pull)
+		[ ! -f "$FAKE/registry-down" ] || { echo "registry unreachable" >&2; exit 1; }
+		echo "$img" >>"$FAKE/pulled"
+		;;
+	up)
+		# Compose pulls a missing image itself; the tests check that never happens unverified.
+		grep -qxF "$img" "$FAKE/pulled" 2>/dev/null || echo "$img" >>"$FAKE/compose-pulled"
+		echo "$img" >"$FAKE/running"
+		echo "$img" >>"$FAKE/started"
+		;;
+	down) rm -f "$FAKE/running" ;;
+	esac
+	;;
+pull)
+	ref=$3 # pull -q REF
+	[ ! -f "$FAKE/registry-down" ] || { echo "Error response from daemon: Get https://ghcr.io/v2/: dial tcp: lookup ghcr.io: no such host" >&2; exit 1; }
+	d=$(digest_of "$ref")
+	[ ! -f "$FAKE/pullfail.$d" ] || { echo "Error response from daemon: manifest verification failed for digest $d" >&2; exit 1; }
+	echo "$ref" >>"$FAKE/pulled"
+	;;
+run)
+	img=""
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--tmpfs | --env | --user | --cap-drop | --security-opt) shift 2 ;;
+		-*) shift ;;
+		run) shift ;;
+		*) img=$1; shift; break ;;
+		esac
+	done
+	[ "$img" = "$COSIGN_PIN" ] || { echo "fake docker: unexpected image $img" >&2; exit 99; }
+	if [ -n "${MC_TEST_COSIGN:-}" ]; then
+		HOME=$FAKE/cosign-home exec "$MC_TEST_COSIGN" "$@"
+	fi
+	exec sh "$FAKE_COSIGN" "$@"
+	;;
+inspect)
+	[ -f "$FAKE/running" ] || { echo "Error: No such object: mowgli-connect" >&2; exit 1; }
+	img=$(cat "$FAKE/running")
+	case $3 in
+	*RestartCount*)
+		if [ "$(behavior "$img")" = crash ]; then echo "$img true 3"; else echo "$img true 0"; fi
+		;;
+	*) echo "$img (running)" ;;
+	esac
+	;;
+logs)
+	[ -f "$FAKE/running" ] || exit 1
+	img=$(cat "$FAKE/running")
+	echo "time=x level=INFO msg=\"mowgli connect agent\" version=test"
+	if [ "$(behavior "$img")" = healthy ]; then
+		printf '  Code:    word-word-word   (valid for 15 min)\n' >&2
+	fi
+	;;
+*) echo "fake docker: unsupported: $*" >&2; exit 98 ;;
+esac

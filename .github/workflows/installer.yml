@@ -1,0 +1,27 @@
+name: Installer
+
+# The robot installer and the verified updater it writes (site/install.sh), tested with fake
+# docker, cosign and crontab (test/installer). No network, no Docker daemon.
+on:
+  push:
+    branches: [main]
+    paths: [site/install.sh, test/installer/**, .github/workflows/installer.yml]
+  pull_request:
+    paths: [site/install.sh, test/installer/**, .github/workflows/installer.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: shellcheck
+        run: shellcheck --version && shellcheck -s sh -S warning site/install.sh test/installer/run.sh test/installer/stubs/*
+      - name: tests (dash)
+        run: sh test/installer/run.sh
+      - name: tests (bash)
+        run: TEST_SH=bash sh test/installer/run.sh

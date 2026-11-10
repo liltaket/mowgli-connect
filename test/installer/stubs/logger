@@ -1,0 +1,3 @@
+#!/bin/sh
+# Fake logger for test/installer/run.sh: syslog is $FAKE/syslog.
+echo "$*" >>"$FAKE/syslog"
