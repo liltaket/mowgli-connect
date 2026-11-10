@@ -1,4 +1,4 @@
-import { afterShareEnded, GITHUB_USER_ID } from "./access";
+import { afterShareEnded, canOwn, GITHUB_USER_ID } from "./access";
 import { cleanGithubLogin, lookupError } from "./admin";
 import type { Env } from "./env";
 import type { GithubProfile } from "./github";
@@ -272,8 +272,9 @@ export async function handleShare(
   }
 
   // Everything else is the owner's. Anyone else, the people it is shared with included, gets the
-  // same answer as for a robot that does not exist.
-  const robot = await ownedRobot(env, robotId, user.id);
+  // same answer as for a robot that does not exist; so does an owner who may no longer own robots
+  // (removed by the admin, but signed in as someone's guest), whose robot nobody can open.
+  const robot = (await canOwn(env, user.id, user.login)) ? await ownedRobot(env, robotId, user.id) : null;
   if (!robot) return notFound();
   const pu = pageUser(user);
   const base = `/robots/${robotId}/share`;

@@ -323,6 +323,32 @@ describe("sharing is the owner's", () => {
     expect(await member(robot.robotId, vwId)).toEqual({ role: "viewer" });
   });
 
+  it("an owner who may no longer own robots cannot manage their shares, even signed in as a guest", async () => {
+    const owner = await invitedUser("removed-owner");
+    const robot = await ownedRobot(owner);
+    const vwId = await share(owner, robot, { id: nextId(), login: "removed-owners-guest" });
+    await testEnv.DB.prepare("DELETE FROM invites WHERE user_id = ?").bind(owner.id).run();
+    // Someone else shares a robot with them, so they can still sign in, as a guest.
+    const other = await invitedUser();
+    await share(other, await ownedRobot(other), { id: Number(owner.id.slice(3)), login: "removed-owner" });
+    expect(await signedOut(owner)).toBe(false);
+    const missing = await (await get(`/robots/${(await newRobot()).robotId}/share`, owner)).text();
+    const page = await get(`/robots/${robot.robotId}/share`, owner);
+    expect(page.status).toBe(404);
+    expect(await page.text()).toBe(missing);
+    const before = lookups.length;
+    accounts.push({ id: nextId(), login: "wanted-by-removed" });
+    for (const [path, form] of [
+      ["share", { login: "wanted-by-removed", role: "viewer" }],
+      [`members/${vwId}/role`, { role: "operator" }],
+      [`members/${vwId}/remove`, {}],
+    ] as const) {
+      expect((await post(`/robots/${robot.robotId}/${path}`, owner, form)).status).toBe(404);
+    }
+    expect(lookups.length).toBe(before); // no GitHub lookup budget spent
+    expect(await member(robot.robotId, vwId)).toEqual({ role: "viewer" });
+  });
+
   it("the owner cannot be demoted or removed, and no form makes anyone an owner", async () => {
     const owner = await invitedUser();
     const robot = await ownedRobot(owner);
