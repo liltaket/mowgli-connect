@@ -3,6 +3,7 @@ import { isAdmin, ownedRobots, robotLimit } from "./access";
 import { handleAdmin, isAdminPath } from "./admin";
 import { appEnabled, handleAppBrowser, signOutDevice } from "./appApi";
 import { claimRobot, limitMessage, planAddress, previewClaim, reachedLimit, unlinkRobot, type AddressPlan } from "./claim";
+import { addedByDelegate, delegationsHtml, handleDelegationBrowser, isDelegationPath } from "./delegation";
 import { HOMEPAGE, html, lawn, markSvg, page, type PageUser, type SafeHtml } from "./html";
 import { mintGrant } from "./grant";
 import { finishLogin, startLogin } from "./oauth";
@@ -25,6 +26,8 @@ const NOTICES: Record<string, string> = {
   revoked: "All sessions on that robot were signed out.",
   device_signed_out:
     "The app on that device is signed out. Everyone was signed out of the robots you own (its robot sessions end within a few minutes), and you were signed out of Mowgli Connect in every other browser. Open your robots again from here.",
+  delegation_revoked: "The AI agent's access ended. Its read-only robot sessions end within a few minutes.",
+  delegation_renewed: "The AI agent's access was renewed.",
 };
 
 const GITHUB_ICON = html`<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>`;
@@ -101,6 +104,8 @@ async function dashboard(env: Env, user: SessionUser, url: URL): Promise<Respons
   const owned = await ownedRobots(env, user.id);
   const full = limit !== null && owned >= limit;
   const devicesSection = await devicesHtml(env, user);
+  const agentsSection = await delegationsHtml(env, user);
+  const byAgent = await addedByDelegate(env, user.id);
   return page(
     "Robots",
     html`
@@ -125,6 +130,8 @@ ${rows.results.map(
           ? html`<span class="state">Online</span>`
           : html`<span class="state">Tunnel ready</span>`
   }<span>${r.role === "owner" ? "Owner" : "Viewer"}</span>${
+    byAgent.has(r.robot_id) ? html`<span>Added by ${byAgent.get(r.robot_id)!}</span>` : ""
+  }${
     r.allow_teleop === null ? "" : html`<span>Remote joystick ${r.allow_teleop ? "on" : "off"}</span>`
   }${
     r.role === "owner" && updateAvailable(r.agent_version, latest) ? html`<span class="update">Update available</span>` : ""
@@ -164,7 +171,8 @@ ${
 </form>
 <script src="/pair.js"></script>`
 }
-${devicesSection}`,
+${devicesSection}
+${agentsSection}`,
     200,
     {},
     pageUser(env, user),
@@ -327,7 +335,8 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
     isAdminPath(pathname) ||
     pathname === "/app/authorize" ||
     pathname === "/app/callback" ||
-    /^\/devices\/[^/]+\/revoke$/.test(pathname);
+    /^\/devices\/[^/]+\/revoke$/.test(pathname) ||
+    isDelegationPath(pathname);
   if (!known) return null;
 
   // CSRF: every state-changing browser request must carry our own Origin.
@@ -348,6 +357,10 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
 
   if (pathname === "/app/authorize" || pathname === "/app/callback") {
     return (await handleAppBrowser(request, env, url, user, (u) => pageUser(env, u), loginRedirect)) ?? notFound();
+  }
+
+  if (isDelegationPath(pathname)) {
+    return handleDelegationBrowser(request, env, url, user, { pageUser: (u) => pageUser(env, u), loginRedirect, notFound, redirect });
   }
 
   const dev = /^\/devices\/([^/]+)\/revoke$/.exec(pathname);
