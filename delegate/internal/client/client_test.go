@@ -121,7 +121,7 @@ func TestReadRobotUsesAViewerSessionAndOnlyGET(t *testing.T) {
 			}
 			n := sessions.Add(1)
 			http.SetCookie(w, &http.Cookie{Name: "__Host-mc_session", Value: "S" + string(rune('0'+n)), Path: "/", Secure: true, HttpOnly: true})
-			w.Write([]byte(`{}`))
+			w.WriteHeader(http.StatusNoContent) // as the real gateway (agent/internal/gateway/connect.go)
 		case r.URL.Path == "/api/system/info":
 			if r.Method != "GET" {
 				t.Errorf("method %s", r.Method)
