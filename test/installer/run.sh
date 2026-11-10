@@ -337,6 +337,12 @@ t_downgrade() {
 	check "downgrade: refused" eq "$r" 1
 	check "downgrade: stays on newer" eq "$(running)" "$REPO@$D2"
 	check "downgrade: reason" contains "$DIR/update-state/status" "older release"
+	# By hand: pin the older release, then follow the tag again.
+	install_robot --image "$REPO@$D1" --auto-update no
+	check "pin an older release by hand" eq "$(running)" "$REPO@$D1"
+	publish "$D2"
+	install_robot --auto-update yes
+	check "follow the tag again after a pin" eq "$(running)" "$REPO@$D2"
 }
 
 t_lock() {

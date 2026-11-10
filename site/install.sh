@@ -491,7 +491,8 @@ if [ "$MODE" != install ] && listed "$new" "$STATE/failed"; then
 	log "skipping $VERIFIED: it failed its start-up check before"
 	exit 0
 fi
-if [ "$new" != "$cur" ] && ! is_digest "$REF" && listed "$new" "$STATE/history"; then
+# Automatic runs only: someone at the robot running install.sh may choose any signed release.
+if [ "$MODE" != install ] && listed "$new" "$STATE/history"; then
 	fail "$TARGET now points to $VERIFIED, an older release this robot already replaced: not going back (was the tag moved?)"
 fi
 activate "$new"
