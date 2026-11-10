@@ -137,7 +137,7 @@ ${
 <p>Remote joystick is ${r.allow_teleop ? "allowed" : "off"} on this robot. Only the robot can change it: rerun the installer there.</p>
 ${
   updateAvailable(r.agent_version, latest)
-    ? html`<div><p>A newer version of the agent is available. On the robot, run:</p><code class="cmdline">cd ~/mowgli-connect &amp;&amp; docker compose pull &amp;&amp; docker compose up -d</code><p>Or rerun the installer and turn on automatic updates.</p></div>`
+    ? html`<div><p>A newer version of the agent is available. On the robot, run:</p><code class="cmdline">sh ~/mowgli-connect/update.sh</code><p>No <code>update.sh</code> there (installed before signed updates)? Run the installer again.</p></div>`
     : ""
 }
 <form method="post" action="/robots/${r.robot_id}/unlink"><button class="danger">Unlink robot</button><p>Removes the robot from your account and deletes its tunnel. You will need a new pairing code to add it again.</p></form>
