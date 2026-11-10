@@ -544,6 +544,15 @@ t_seq() {
 	check "after --allow-downgrade: forward again" eq "$(running)" "$REPO@$D6"
 	install_robot --image "$REPO@$D2" --auto-update no
 	check "pinned digest with a lower number: by hand" eq "$(running)" "$REPO@$D2"
+	# A damaged record fails closed instead of turning the check off.
+	install_robot --auto-update yes
+	chmod u+w "$DIR/update-state/seq" 2>/dev/null
+	echo "13x" >"$DIR/update-state/seq"
+	release "$D3" 11
+	upd cron && r=0 || r=$?
+	check "damaged seq record: refused" eq "$r" 1
+	check "damaged seq record: stays" eq "$(running)" "$REPO@$D6"
+	check "damaged seq record: says so" contains "$DIR/update-state/status" "seq is not a number"
 }
 
 t_lock() {
