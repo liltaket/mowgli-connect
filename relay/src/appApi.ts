@@ -470,10 +470,10 @@ export async function handleAppApi(request: Request, env: Env, url: URL): Promis
   if (!body || typeof body.code !== "string") return json({ error: "bad_request" }, 400);
   const label = cleanLabel(body.label);
   if (body.step === "preview") {
-    const prev = await previewClaim(env, user.id, body.code.slice(0, 64));
-    if (!prev.ok) return json({ error: prev.status === 429 ? "rate_limited" : "invalid_code", message: prev.message }, prev.status);
     const full = await reachedLimit(env, user.id);
     if (full !== null) return json({ error: "robot_limit", message: limitMessage(full) }, 403);
+    const prev = await previewClaim(env, user.id, body.code.slice(0, 64));
+    if (!prev.ok) return json({ error: prev.status === 429 ? "rate_limited" : "invalid_code", message: prev.message }, prev.status);
     const plan = await planAddress(env, createProvisioner(env), prev.robotId, label ?? prev.name);
     return json({ robotId: prev.robotId, name: prev.name, hostname: plan?.hostname ?? null, taken: plan?.taken ?? null });
   }

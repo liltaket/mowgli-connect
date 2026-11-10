@@ -400,10 +400,11 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
         const norm = normalizePairingCode(raw);
         return redirect(norm ? `/?code=${formatPairingCode(norm)}` : "/");
       }
-      const prev = await previewClaim(env, user.id, raw);
-      if (!prev.ok) return claimError(env, user, prev.message, prev.status);
+      // The limit first: someone who cannot add a robot (a guest) gets no pairing-code lookups.
       const full = await reachedLimit(env, user.id);
       if (full !== null) return claimError(env, user, limitMessage(full), 403);
+      const prev = await previewClaim(env, user.id, raw);
+      if (!prev.ok) return claimError(env, user, prev.message, prev.status);
       return claimConfirm(env, user, normalizePairingCode(raw) ?? "", prev.robotId, prev.name, null);
     }
     if (method === "POST") {
@@ -412,10 +413,10 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
       if (!form) return claimError(env, user, "The form was not filled in correctly.", 400);
       // Step 1 (or a changed name in step 2): show the robot and the address it would get.
       if (form.step === "preview" || (form.step === "confirm" && form.shownLabel !== form.label)) {
-        const prev = await previewClaim(env, user.id, form.code);
-        if (!prev.ok) return claimError(env, user, prev.message, prev.status, form.code);
         const full = await reachedLimit(env, user.id);
         if (full !== null) return claimError(env, user, limitMessage(full), 403);
+        const prev = await previewClaim(env, user.id, form.code);
+        if (!prev.ok) return claimError(env, user, prev.message, prev.status, form.code);
         return claimConfirm(env, user, normalizePairingCode(form.code) ?? "", prev.robotId, prev.name, form.label, form.step === "confirm");
       }
       const res = await claimRobot(env, createProvisioner(env), user.id, form.code, form.label);

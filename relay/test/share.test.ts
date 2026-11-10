@@ -494,6 +494,12 @@ describe("guests", () => {
       expect(await res.text()).toContain("cannot add robots");
     }
     expect((await testEnv.DB.prepare("SELECT status FROM robots WHERE robot_id = ?").bind(other.robotId).first())!.status).toBe("unclaimed");
+    // Not even a pairing-code guess is spent or made: a guest cannot probe codes.
+    expect((await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM claim_failures WHERE user_id = ?").bind(guest.id).first<{ n: number }>())!.n).toBe(0);
+    for (const bad of ["clover-hedgehog-dew", pairingCode]) {
+      const res = await post("/claim", guest, { code: bad, step: "preview" });
+      expect(await res.text()).not.toContain(other.robotId);
+    }
     // The robot's real owner can still add it with the same code.
     expect((await post("/claim", owner, { code: pairingCode })).status).toBe(303);
   });
