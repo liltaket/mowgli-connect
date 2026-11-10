@@ -1,23 +1,31 @@
 # Sharing a robot
 
 Status: implemented 2026-11-10 (relay migration 0009, agent with the `operator` role). Wire
-contract: [protocol.md](protocol.md). Not yet reviewed by an independent security review.
+contract: [protocol.md](protocol.md). Independent code and security reviews on 2026-11-10; their
+verified findings are fixed and tested, but the fixes have not been reviewed again.
 
 A robot's owner can let another person open it, so nobody has to hand out their GitHub login. The
 person signs in with their own GitHub account and gets one of two roles:
 
 | | Owner | Can control (`operator`) | View only (`viewer`) |
 |---|---|---|---|
-| See status, live map, schedules, system info, weather | yes | yes | yes |
+| See status, live map and the robot's position, schedules, system info, weather | yes | yes | yes |
 | Start or continue, pause or stop mowing, send to dock, mow one area, "start fresh" | yes | yes | no |
 | Engage the emergency stop | yes | yes | no |
-| Release the emergency stop, clear a dig hold | yes | no | no |
+| End a dig hold by sending the robot to its dock | yes | yes | no |
+| Release the emergency stop, clear a dig hold in place (`clear_dig_escalation`) | yes | no | no |
 | Settings, configuration, parameters, maps, schedules, containers, updates, reboot, firmware, calibration, tuning, diagnostics, rosbag, fleet, remote access | yes | no | no |
 | Remote joystick (also needs `MC_ALLOW_TELEOP` on the robot) | yes | no | no |
 | Share, unlink, sign everyone out; see the robot's Manage details (id, hostname, joystick, updates) | yes | no | no |
 
 "Can control" means control of mowing, not of the robot: give it to someone you would hand the
-remote to. They can start the mower at any time, from anywhere.
+remote to. They can start the mower at any time, from anywhere. Sending the robot to its dock
+(HighLevelControl command 2, HOME) also recovers it from a dig hold, the stop after it dug into
+the lawn, so an operator can end a dig hold that way, though not clear it in place. This is kept
+on purpose (the dock is the safe place to go) and the share page says so.
+
+Everyone the robot is shared with, View only included, sees where it is: the live map and the
+telemetry sockets carry its position (GPS and pose topics).
 
 ## How it works
 
@@ -56,8 +64,11 @@ whoever it leaked to.
 - **Access follows the owner.** A share only counts while the robot is claimed and its owner may
   still own robots. If the admin removes the owner, the robot's member list (`/v1/robots/self`)
   becomes empty, so nobody can open it, guests included; otherwise a removed user could keep
-  using their robot through a second account they shared it with. Removing someone on the admin
-  page also deletes the shares others gave them.
+  using their robot through a second account they shared it with. Such an owner also cannot
+  manage the shares of their robots (the share page answers 404), even while signed in as
+  someone else's guest. Removing someone on the admin page also deletes the shares others gave
+  them, unless `ALLOWED_GITHUB_LOGINS` still lets them in (then nothing is taken and the page
+  says so).
 - **Operator is an allow list, checked on the robot.** The agent is the security boundary, so the
   role is enforced there, not in the relay. In the `mowgli` profile an operator gets exactly the
   viewer allow list plus `POST` to four exact paths:
@@ -65,12 +76,28 @@ whoever it leaked to.
   `/coverage_clear_resume`. The first two are also checked by body, because the argument decides
   what happens: `high_level_control` only with command 1 (start/continue), 2 (dock) or 8
   (pause/stop), never 3–7 (area recording, manual mowing), 254 (reset emergency) or 255 (delete
-  maps); `emergency` only with 1 (engage). The body must be a single JSON object with exactly one
+  maps); `emergency` only with 1 (engage). Command 2 also ends a dig hold (see above). The body must be a single JSON object with exactly one
   member, spelled as the GUI's field tag or as its web app sends it (`command`/`Command`,
   `emergency`/`Emergency`, `area`/`Area`), whose value is a plain integer from 0 to 255, at most
   1 KB. With one unambiguous member no JSON parser can read a different value or a default zero
   (for `emergency`, zero would release the stop); duplicate keys, other casings, floats, strings
   and trailing data are refused. The gateway passes the checked bytes on unchanged.
+- **Two reads for viewers and operators, also checked on the robot.** Map tiles: the GUI's tile
+  proxy (`/tiles/*`) forwards path, query and headers to the tile server the owner configured on
+  the robot's network, so shared users get only `GET /tiles/<z>/<x>/<y>` with numeric parts and an
+  optional `.png`, `.jpg`, `.jpeg`, `.webp`, `.pbf` or `.mvt`, no query and no escapes. Config
+  reads: `POST /api/config/keys/get` only for the map page's display settings
+  (`gui.map.offset.x`, `gui.map.offset.y`, `gui.map.display.bearing`,
+  `gui.map.display.rotation_locked`) and its obstacle outlines (`map.obstacleOriginals`): one JSON
+  object of distinct keys from that set, each with the value `""`, as the web app sends it.
+  Settings (`/api/settings*`) and every other config key stay owner-only: they hold credentials.
+- **What a shared user sees in the GUI** (from the GUI source, not tried on a running GUI or a
+  real robot): every page loads the settings through `GET /api/settings`, `GET /api/settings/yaml`
+  and a config read of all `system.*` keys (the HomeKit PIN among them), which the agent refuses
+  with `403`; the GUI shows "failed to load" error toasts for them, and values it takes from
+  settings fall back to its defaults. The map page gets its offset, bearing and obstacle outlines.
+  It does not get the tile layer: the GUI learns the tile address from `GET /api/config/envs`,
+  which stays owner-only, and its default address (`/tiles/vt/lyrs=…`) is not the z/x/y shape.
 - **Where the names come from.** The command names and values were read from the MowgliNext
   source at commit `8d78819` (2026-11-03): `gui/pkg/api/mowglinext.go` (`ServiceRoute`, the
   `/call/:command` switch), `gui/pkg/msgs/mowgli/services_generated.go` (request structs and
@@ -80,8 +107,8 @@ whoever it leaked to.
   `components/MowerActions.tsx` ("Start fresh") and `hooks/useDigObstructionAck.ts`. Nothing was
   guessed; anything not in that list stays owner-only.
 - **Left out on purpose** (owner-only, open to change): releasing the emergency stop and clearing
-  a dig hold (`clear_dig_escalation`), because both override a safety latch for someone who
-  cannot see the robot; manual blade control (`blade_control`, `mow_enabled`) and manual mowing;
+  a dig hold in place (`clear_dig_escalation`), because both override a safety latch for someone
+  who cannot see the robot (sending it to the dock, which also ends a dig hold, stays allowed); manual blade control (`blade_control`, `mow_enabled`) and manual mowing;
   schedule edits (persistent: they start the mower later, unattended); the teleop socket, which
   is now owner-only in addition to `MC_ALLOW_TELEOP`.
 - **The generic profile** (any other app) cannot tell controls from settings, so there an
@@ -108,8 +135,14 @@ sessions of people no longer listed:
 - A grant minted just before the removal (it lives 60 seconds) can still be redeemed until the
   sync; the session it creates ends at the sync.
 - On the relay the change is immediate: no new grants, the share page and list update at once.
-  When a guest loses their last share, their relay sessions, app devices and pending app sign-ins
-  are deleted, and every session lookup re-checks `canSignIn` anyway.
+  When a guest loses their last share (removed, left, or the robot unlinked by its owner or the
+  admin), their relay sessions, app devices and pending app sign-ins are deleted, so a later share
+  does not bring them back, and every session lookup re-checks `canSignIn` anyway. An account
+  made for a share that the person never used is deleted with its last share (and by the cron).
+- Signing an app device out signs everyone out of the robots the person owns, not of robots
+  shared with them (that would sign their owner out too); the relay says so and points to the
+  owner. A lost phone's sessions on a shared robot end when the owner removes the share or signs
+  everyone out, or after their 12 hours.
 - Upgrades work at once: a grant with a higher role than the member list makes the agent sync
   first (at most every 10 seconds). Without that sync the session is capped at the listed role.
 - To end someone's access on the robot immediately, the owner can also use **Sign everyone out**.
@@ -125,8 +158,9 @@ sessions of people no longer listed:
 
 Budgets are reserved atomically (one `INSERT … SELECT … WHERE count < limit`), and the share itself
 is one transaction that re-checks ownership, the robot's status and both limits as it writes. Only
-owners reach a lookup: everyone else gets the robot-not-found page first. Records live an hour
-(`share_events`, cleaned by the cron).
+owners who may still own robots reach a lookup: everyone else gets the robot-not-found page first.
+A refused lookup says which budget ran out. Records live an hour (`share_events`, cleaned by the
+cron).
 
 D1 cost: nothing is written on the robot's poll (`/v1/robots/self`); its member filter is now one
 access check per poll instead of one per member. A share writes about seven rows, a lookup two.
@@ -152,7 +186,9 @@ access check per poll instead of one per member. A share writes about seven rows
 | A path spelling that a router normalizes into an allowed call | The gateway rejects non-canonical paths (dot segments, double or encoded slashes) before the policy, and operator calls match exact paths; tested, and fuzzed with the existing path fuzzer. |
 | An agent that does not know `operator` | It ranks the role 0 and grants nothing (fail closed). |
 | Injected HTML in GitHub names or robot names | Every value goes through the `html` template's escaping; tested with a hostile name. |
-| What a guest learns | The robot's display name (the owner's label), its online state, the owner's GitHub login and their own role. The robot id is in the Open link and the hostname in the address bar once it is open; the tunnel, joystick and update details stay owner-only. The owner sees each guest's GitHub login and name. |
+| What a guest learns | On the relay: the robot's display name (the owner's label), its online state, the owner's GitHub login and their own role. The robot id is in the Open link and the hostname in the address bar once it is open; the tunnel, joystick and update details stay owner-only. On the robot, View only included: everything the telemetry sockets carry, **including where the robot is** (GPS and pose topics, live), the map and its obstacles, schedules, system info and versions, and the map page's display settings. The owner sees each guest's GitHub login and name. |
+| A guest uses the tile proxy to reach other things on the robot's network | Only the z/x/y tile shape without a query or escapes reaches the GUI's tile proxy (table-driven tests); the tile server itself is the owner's choice. |
+| A guest reads credentials from the config store | Only five named map display keys, by strict body check (table-driven tests); settings and every other key stay owner-only. |
 | Relay or Cloudflare account compromised | Unchanged: they are the root of trust ([SECURITY.md](../SECURITY.md)). |
 
 ## What is not verified
@@ -161,8 +197,11 @@ access check per poll instead of one per member. A share writes about seven rows
   `8d78819`, not against a real robot or a running GUI. There is no hardware test. A GUI update
   can rename or add commands; anything new stays owner-only until added here. The GUI shows
   operators and viewers buttons they cannot use; those requests get `403` from the agent.
-- The viewer allow list is unchanged and still not validated against the real GUI (see the
-  architecture notes).
+- The viewer allow list (now with plain tiles and the map page's config keys) is still not
+  validated against a running GUI: what a shared user sees, error toasts included, is read from
+  the source (see "What a shared user sees in the GUI").
+- That sending the robot to its dock also ends a dig hold comes from the review of the GUI and
+  ROS source, not from a run on a robot.
 - The `members` rebuild in migration 0009 was tested in the local D1 emulator (Miniflare's SQLite),
   including a replay on a table with rows, not on the production database.
 - GitHub's rate limit for the app-credential lookups was not measured.
@@ -170,11 +209,17 @@ access check per poll instead of one per member. A share writes about seven rows
 ## Open questions for the maintainer
 
 1. Should Can control include schedule edits (they start the mower later, unattended)?
-2. Should operators be able to release the emergency stop or clear a dig hold?
-3. Should an admin be able to block a person from being shared with at all? Today admin removal
-   deletes their shares, but any owner can share again.
+2. Should operators be able to release the emergency stop or clear a dig hold in place? (They
+   can end a dig hold by sending the robot to its dock.)
+3. Should an admin be able to block a person from being shared with at all? Today an admin cannot
+   block guests: admin removal deletes their shares, but any owner can share again.
 4. Should the shared person be told (there is no email or other channel today)?
 5. Sharing management in the app?
 6. Faster revocation than the poll interval (push, or a shorter poll for robots that are shared)?
 7. A guest who signs out a lost phone does not end its robot sessions on shared robots (that would
    sign the owner out too); the owner can remove the share or sign everyone out. Good enough?
+8. An owner the admin removed can come back as a guest when someone shares a robot with them.
+   They open only that robot; their own robots stay closed to everyone and they cannot manage
+   them. Good enough, or should admin removal block that too (see 3)?
+9. Should shared users get the tile layer and settings-derived values (an owner-safe subset of
+   `/api/config/envs` and the settings), instead of the error toasts?
