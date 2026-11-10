@@ -25,7 +25,7 @@ curl -fsSL https://bronc.app/install.sh -o install.sh && less install.sh && sh i
 This downloads the installer, shows it to you in `less` so you can read it (press `q` to leave and
 continue), and then runs it.
 
-### What the installer does
+### What the installer does on first installation
 
 1. Asks for a name for the robot.
 2. Asks whether to allow the remote joystick. The default is no, and no is recommended (see below).
@@ -39,6 +39,10 @@ continue), and then runs it.
 
 Without questions (for scripts and coding agents):
 `sh install.sh --name hedgehog --teleop no --auto-update yes --yes`. All options: `sh install.sh --help`.
+
+Reruns keep the saved name, joystick and automatic-update choices without asking
+again. Change them explicitly with `--name NAME`, `--teleop yes|no` or
+`--auto-update yes|no`.
 
 ### Pair and open
 
@@ -65,8 +69,9 @@ The installer asks whether to allow remote joystick driving. It is **off by defa
   where you can watch the mower, and only drive with the mower in sight.
 - The choice is the agent's `MC_ALLOW_TELEOP` setting (see the
   [configuration table](../README.md#agent-configuration)), stored in `~/mowgli-connect/.env`. To
-  change it later, run the installer again on the robot (it keeps the robot's identity and
-  pairing), or edit `MC_ALLOW_TELEOP` in that file and run `docker compose up -d` in
+  change it later, run `sh install.sh --teleop yes` or `sh install.sh --teleop no` on the
+  robot (it keeps the robot's identity and pairing), or edit `MC_ALLOW_TELEOP` in that
+  file and run `docker compose up -d` in
   `~/mowgli-connect`. The relay shows the current setting as "Remote joystick on/off".
 
 ## Update
@@ -94,11 +99,23 @@ again.
 ## Uninstall
 
 ```sh
-cd ~/mowgli-connect && docker compose down -v
+sh install.sh --uninstall --dir "$HOME/mowgli-connect"
 ```
 
-`-v` removes the data volume, including the robot's key. Then unlink the robot on
-<https://connect.bronc.app> so the address stops working. You can delete `~/mowgli-connect` after that.
+Use the same downloaded installer (or download and inspect a fresh copy). This removes
+only this installation's automatic-update cron job and stops/removes its Compose services.
+Configuration and the data volume, including the robot key and pairing, are kept.
+
+To deliberately delete the identity volume as well:
+
+```sh
+sh install.sh --uninstall --purge --dir "$HOME/mowgli-connect"
+```
+
+Then unlink the robot on <https://connect.bronc.app> so the address stops working.
+You can delete `~/mowgli-connect` after that. Re-running the installer preserves
+existing settings unless an option explicitly changes them. Disable the installer cron
+before transferring update ownership to an Extension Manager; do not run two updaters.
 
 ## Troubleshooting
 
