@@ -70,9 +70,21 @@ describe("readable hostname used elsewhere in the zone", () => {
 describe("agent info header", () => {
   it("parses only the exact format", async () => {
     const { parseAgentHeader } = await import("../src/robotApi");
-    expect(parseAgentHeader("version=a7030e0; teleop=off")).toEqual({ version: "a7030e0", teleop: 0 });
-    expect(parseAgentHeader("version=1.2.3+x; teleop=on")).toEqual({ version: "1.2.3+x", teleop: 1 });
-    for (const bad of [null, "", "version=<b>; teleop=on", "version=1; teleop=yes", "teleop=on", "version=1; teleop=on; x=1"]) {
+    expect(parseAgentHeader("version=a7030e0; teleop=off")).toEqual({ version: "a7030e0", teleop: 0, sim: 0 });
+    expect(parseAgentHeader("version=1.2.3+x; teleop=on")).toEqual({ version: "1.2.3+x", teleop: 1, sim: 0 });
+    expect(parseAgentHeader("version=main-abc; teleop=off; sim=1")).toEqual({ version: "main-abc", teleop: 0, sim: 1 });
+    for (const bad of [
+      null,
+      "",
+      "version=<b>; teleop=on",
+      "version=1; teleop=yes",
+      "teleop=on",
+      "version=1; teleop=on; x=1",
+      "version=1; teleop=on; sim=0",
+      "version=1; teleop=on; sim=yes",
+      "version=1; teleop=on; sim=1; x=1",
+      "version=1; sim=1; teleop=on",
+    ]) {
       expect(parseAgentHeader(bad)).toBeNull();
     }
   });
@@ -89,6 +101,43 @@ describe("agent info header", () => {
     expect(res.status).toBe(200);
     const dash = await (await call("/", { headers: { Cookie: user.cookie } })).text();
     expect(dash).toContain("Remote joystick on");
+  });
+
+  it("marks a robot that says it is a simulator, and stops when it no longer says so", async () => {
+    const { assertion, call } = await import("./helpers");
+    const agent = async (robot: Awaited<ReturnType<typeof newRobot>>, header: string) =>
+      (
+        await call("/v1/robots/self", {
+          headers: { Authorization: await assertion(robot, "GET", "/v1/robots/self"), "MC-Agent": header },
+        })
+      ).status;
+    const user = await newUser();
+    const sim = await newRobot();
+    const { pairingCode } = (await (await register(sim, "sim bot")).json()) as { pairingCode: string };
+    // Unclaimed: the claim preview already shows it, once the robot has synced.
+    expect(await agent(sim, "version=t1; teleop=off; sim=1")).toBe(200);
+    const preview = await (await call(`/claim?code=${pairingCode}`, { headers: { Cookie: user.cookie } })).text();
+    expect(preview).toContain('<span class="sim">Simulator</span>');
+    expect(preview).toContain("It says it is a simulator, not a real mower.");
+    expect((await post("/claim", user, { code: pairingCode })).status).toBe(303);
+    const real = await newRobot();
+    const reg = (await (await register(real, "real bot")).json()) as { pairingCode: string };
+    expect((await post("/claim", user, { code: reg.pairingCode })).status).toBe(303);
+    expect(await agent(real, "version=t1; teleop=off")).toBe(200);
+
+    const stored = (id: string) =>
+      testEnv.DB.prepare("SELECT simulator FROM robots WHERE robot_id = ?").bind(id).first<{ simulator: number }>();
+    expect(await stored(sim.robotId)).toEqual({ simulator: 1 });
+    expect(await stored(real.robotId)).toEqual({ simulator: 0 });
+    let dash = await (await call("/", { headers: { Cookie: user.cookie } })).text();
+    expect(dash).toContain('sim bot<span class="sim">Simulator</span>');
+    expect(dash.split('class="sim"').length - 1).toBe(1); // only the simulator
+
+    // Re-read on every sync: a robot that stops saying it loses the badge.
+    expect(await agent(sim, "version=t1; teleop=off")).toBe(200);
+    expect(await stored(sim.robotId)).toEqual({ simulator: 0 });
+    dash = await (await call("/", { headers: { Cookie: user.cookie } })).text();
+    expect(dash).not.toContain('class="sim"');
   });
 });
 

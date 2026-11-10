@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { b64urlEncode } from "../src/crypto";
 import type { Env } from "../src/env";
-import { call, decodeJws, newRobot, newUser, ORIGIN, register, testEnv, type TestUser } from "./helpers";
+import { assertion, call, decodeJws, newRobot, newUser, ORIGIN, register, testEnv, type TestUser } from "./helpers";
 import { nowSeconds, randomToken } from "../src/util";
 
 const APP_ID = "ABCDE12345.garden.mowgli.app";
@@ -121,6 +121,21 @@ describe("app API off by default", () => {
 });
 
 describe("app sign-in", () => {
+  it("reports robots that say they are simulators, in the claim preview and the robot list", async () => {
+    const { dev } = await signedIn();
+    const robot = await newRobot();
+    const { pairingCode } = (await (await register(robot, "Sim Bot")).json()) as { pairingCode: string };
+    const sync = await call("/v1/robots/self", {
+      headers: { Authorization: await assertion(robot, "GET", "/v1/robots/self"), "MC-Agent": "version=t1; teleop=off; sim=1" },
+    });
+    expect(sync.status).toBe(200);
+    const prev = await api(dev, "POST", "/v1/app/claim", { code: pairingCode, step: "preview" });
+    expect(await prev.json()).toMatchObject({ robotId: robot.robotId, simulator: true });
+    expect((await api(dev, "POST", "/v1/app/claim", { code: pairingCode, step: "confirm" })).status).toBe(200);
+    const list = (await (await api(dev, "GET", "/v1/app/robots")).json()) as { robots: { robotId: string; simulator: boolean }[] };
+    expect(list.robots).toEqual([expect.objectContaining({ robotId: robot.robotId, simulator: true })]);
+  });
+
   it("full flow: consent, code, device, robots, grant, claim and sign-out", async () => {
     const { user, dev } = await signedIn();
     const me = await api(dev, "GET", "/v1/app/me");
@@ -136,7 +151,7 @@ describe("app sign-in", () => {
     expect(await done.json()).toMatchObject({ robotId: robot.robotId, hostname: "app-bot.robots.test" });
 
     const list = (await (await api(dev, "GET", "/v1/app/robots")).json()) as { robots: { robotId: string; role: string; hostname: string }[] };
-    expect(list.robots).toEqual([expect.objectContaining({ robotId: robot.robotId, role: "owner", hostname: "app-bot.robots.test" })]);
+    expect(list.robots).toEqual([expect.objectContaining({ robotId: robot.robotId, role: "owner", hostname: "app-bot.robots.test", simulator: false })]);
 
     const g = (await (await api(dev, "POST", `/v1/app/robots/${robot.robotId}/grant`)).json()) as { grant: string; hostname: string };
     expect(g.hostname).toBe("app-bot.robots.test");
@@ -558,7 +573,7 @@ describe("robots shared with an app user", () => {
 
     const list = (await (await api(dev, "GET", "/v1/app/robots", undefined, genv)).json()) as { robots: Record<string, unknown>[] };
     expect(list.robots).toEqual([
-      { robotId: robot.robotId, name: "Back lawn", hostname: "back-lawn.robots.test", role: "operator", sharedBy: "app-owner", online: true, joystick: null, updateAvailable: null },
+      { robotId: robot.robotId, name: "Back lawn", hostname: "back-lawn.robots.test", role: "operator", sharedBy: "app-owner", online: true, joystick: null, updateAvailable: null, simulator: false },
     ]);
     const grant = (await (await api(dev, "POST", `/v1/app/robots/${robot.robotId}/grant`, undefined, genv)).json()) as { grant: string };
     expect(decodeJws(grant.grant).payload.role).toBe("operator");

@@ -185,7 +185,7 @@ entry, written in the same statement as the call limit and any per-action limit.
 | Call | Scope | Result |
 |---|---|---|
 | `GET /v1/delegate/self` | none | `{delegateId, name, userId, login, scopes, robots, expiresAt}` |
-| `GET /v1/delegate/robots` | `robots:read` | `{robots: [{robotId, name, hostname, role, online, joystick, updateAvailable, addedByDelegate}]}` |
+| `GET /v1/delegate/robots` | `robots:read` | `{robots: [{robotId, name, hostname, role, online, joystick, updateAvailable, addedByDelegate, simulator}]}`; `simulator` is the robot's own claim, for display only |
 | `POST /v1/delegate/claim` | `robots:claim` | body `{code, label?, step: "preview"\|"confirm"}`, as the app API |
 | `POST /v1/delegate/robots/{id}/label` | `robots:manage` | body `{label}` (empty clears it) |
 | `POST /v1/delegate/robots/{id}/unlink` | `robots:manage` | the robot is unlinked as from the robots page (owner only) |
