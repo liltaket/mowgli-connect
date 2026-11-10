@@ -63,13 +63,21 @@ Out of scope: vulnerabilities in MowgliNext itself, in Cloudflare or GitHub, and
   network. So the robot runs an image only after cosign has verified a Sigstore keyless signature
   on its digest from this repository's `agent-image.yml` workflow on `main` or an `agent-v*` tag
   (issuer GitHub Actions), checked against a policy on the robot that the container cannot reach.
-  It then runs that digest, never a tag, and rolls back a release that does not start. Pushing to
-  GHCR or moving `:latest` is therefore not enough. What remains trusted: control of this GitHub
-  repository and its workflow (whatever reaches `main` is signed), GitHub's OIDC issuer and
-  Sigstore (Fulcio, Rekor), the cosign image pinned in the installer, root on the robot, and the
-  relay and Cloudflare as above. It does not protect against a bad change merged to `main`, a
-  downgrade to a signed release the robot never ran, installs made before signed updates (run the
-  installer again) or `--insecure-skip-verify`. Details, repository settings and recovery:
+  It then runs that digest, never a tag, refuses a signed release number lower than one that
+  already ran there, and rolls back a release that does not start. Pushing to GHCR or moving
+  `:latest` is therefore not enough. What remains trusted: control of this GitHub repository and
+  its workflow (whatever reaches `main` or an `agent-v*` tag is signed; any token with `repo` or
+  `workflow` scope, including one on a developer machine or in a coding agent, is effectively a
+  release-signing key), the account and repository *names* (never rename or delete them), GitHub's
+  OIDC issuer and Sigstore (Fulcio, Rekor), the build images pinned in the workflow, the cosign
+  image pinned in each robot's `update.sh` until the installer is rerun there, root on the robot,
+  and the relay and Cloudflare as above. The repository settings that protect `main` and the tags
+  are not set up yet. It does not protect against a bad change merged to `main`, an old release
+  served to a robot that never ran a newer one (a first install takes whatever `:latest` is),
+  installs made before signed updates (run the installer again), `--insecure-skip-verify` (custom
+  images only), or a compromised agent that could use the MowgliNext GUI to change the host (not
+  verified either way). Not yet verified end to end: no signed agent image exists yet, and nothing
+  has run on a real Docker daemon or an arm64 robot. Details, repository settings and recovery:
   [docs/updates.md](docs/updates.md). If that trust is too much, install with `--auto-update no`
   and update by hand after reading the changes.
 - **The native app** (off until configured) signs in through a consent page and holds no bearer

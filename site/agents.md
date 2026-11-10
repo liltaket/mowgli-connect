@@ -63,7 +63,8 @@ to the user's crontab, checks whether the network's DNS is slow (then the contai
 resolvers first), checks the signature of `ghcr.io/liltaket/mowgli-connect-agent` with cosign,
 writes `update.sh` and `update-policy` for verified updates, starts a container named
 `mowgli-connect` and prints a pairing code. Then run it with the owner's answers. Never add
-`--insecure-skip-verify`; if the installer reports "no valid signature", stop and tell the owner:
+`--insecure-skip-verify` or `--allow-downgrade`; if the installer reports "no valid signature" or
+refuses an older release, stop and tell the owner:
 
 ```sh
 sh install.sh --name "ROBOT NAME" --teleop no --auto-update yes --yes

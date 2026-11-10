@@ -113,13 +113,20 @@ running agent stays as it is and `update.sh status` says why. From the nightly j
 also written to syslog (`journalctl -t mowgli-connect-update`) and mailed by cron if the robot can
 send mail.
 
+Each release carries a signed release number. A release with a lower number than one that already
+ran on the robot is refused, whether by the nightly job, by `sh update.sh` or by running the
+installer again (for example to change a setting): the robot does not move back unless you say so
+with `--allow-downgrade` or pin a digest (below). A release that failed its start-up check is not
+retried the same way.
+
 This still means trusting this repository: whatever is merged and built by its release workflow is
 signed. Turn automatic updates off if you would rather read each change first. Design, threat
 model and limits: [updates.md](updates.md).
 
 Custom or self-built images: `--image ghcr.io/you/agent:tag --signer you/your-fork` trusts your
-fork's `agent-image.yml` instead. `--insecure-skip-verify` runs an image without any check; it is
-meant for local development only, turns automatic updates off and says so in the status.
+fork's `agent-image.yml` instead. `--insecure-skip-verify` runs a custom image without any check
+(the installer refuses it for the official image); it is meant for local development only, turns
+automatic updates off and says so in the status.
 
 ## Uninstall
 
@@ -163,9 +170,16 @@ next release is installed as usual. Details are in `~/mowgli-connect/update-stat
 connection and DNS (it needs `ghcr.io` and Sigstore's `tuf-repo-cdn.sigstore.dev`). If those work,
 the published image is not signed: do not work around it, report it.
 
+**The installer stops with "not installing … older release" or "failed its start-up check".** The
+tag points at a release older than one the robot already ran, or one that failed there before. The
+agent that runs keeps running (restarted with your new settings). If the tag was moved back on
+purpose (a release was withdrawn), rerun with the same options plus `--allow-downgrade`; if you do
+not know why, report it.
+
 **Go back to a specific version by hand.** Pin a digest that is listed as good or in the log:
 `sh install.sh --image ghcr.io/liltaket/mowgli-connect-agent@sha256:… --auto-update no` (it is
-verified like any update). Run the installer again without `--image` to follow releases again.
+verified like any update), or follow the tag with `--allow-downgrade`. Run the installer again
+without `--image` to follow releases again; the robot then moves forward to the newest release.
 
 **Anything else.** Open an issue on GitHub with the output of `docker logs mowgli-connect`. For
 security problems, follow [SECURITY.md](../SECURITY.md) instead.
