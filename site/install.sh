@@ -274,6 +274,7 @@ tmo() { # tmo SECONDS COMMAND...: bounded, where timeout(1) exists
 pol() { sed -n "s/^$1=//p" "$POLICY" | tail -1; }
 listed() { [ -f "$2" ] && awk -v x="$1" '$1 == x { f = 1 } END { exit !f }' "$2"; } # listed IMAGE FILE
 current() { sed -n "s/^MC_IMAGE='\(.*\)'\$/\1/p" "$ENVF" | tail -1; }
+running() { "$DOCKER" inspect -f '{{.Config.Image}}' "$NAME" 2>/dev/null || true; }
 good() { cat "$STATE/good" 2>/dev/null || true; }
 set_good() {
 	echo "$1" >"$STATE/good.tmp"
@@ -402,8 +403,9 @@ healthy() {
 # A fresh container every time, so the health check sees only this start.
 up() { "$DOCKER" compose --project-directory "$DIR" up -d --force-recreate >/dev/null 2>"$STATE/up.err"; }
 
-# rollback IMAGE WHY: IMAGE did not work; start the last good version again. IMAGE is not tried
-# again only if the last good version works, otherwise the robot or its network is the problem.
+# rollback IMAGE WHY BLAME: IMAGE did not work; start the last good version again. IMAGE is not
+# tried again only if its own container ran (BLAME=yes) and the last good version works;
+# otherwise the robot or its network is the problem.
 rollback() {
 	last=$(good)
 	if [ -z "$last" ] || [ "$last" = "$1" ]; then
@@ -413,6 +415,8 @@ rollback() {
 	set_image "$last"
 	if ! up; then
 		HEALTH_ERR="docker compose up failed: $(tail -1 "$STATE/up.err")"
+	elif [ "$3" != yes ] && healthy "$last"; then
+		fail "${1##*@} did not start ($2); ${last##*@} runs again and ${1##*@} is tried again next time" rolled-back
 	elif healthy "$last"; then
 		echo "$1 $(now) $(oneline "$2")" >>"$STATE/failed"
 		fail "${1##*@} did not start properly ($2); ${last##*@} runs again and ${1##*@} will not be tried again" rolled-back
@@ -429,10 +433,11 @@ activate() {
 	fi
 	set_image "$1"
 	log "starting ${1##*@}"
+	# Not blamed when compose could not start it at all (its container never ran).
 	if ! up; then
-		rollback "$1" "docker compose up failed: $(tail -1 "$STATE/up.err")"
+		rollback "$1" "docker compose up failed: $(tail -1 "$STATE/up.err")" no
 	fi
-	healthy "$1" || rollback "$1" "$HEALTH_ERR"
+	healthy "$1" || rollback "$1" "$HEALTH_ERR" yes
 	set_good "$1"
 	PENDING=""
 	set_status updated "running ${1##*@} (verified, healthy)"
@@ -481,9 +486,15 @@ log "signature verified: $new"
 
 if [ "$MODE" != install ] && [ "$new" = "$cur" ]; then
 	# Up to date. If this version was never confirmed (first install without a working
-	# connection, or an update cut short), check it now and go back if it does not work.
+	# connection, or an update cut short), check it now and go back if it does not work. Cut
+	# short before its container was started (the container still runs another image): start it
+	# now; a release is only blamed for a container that ran it.
 	if [ "$(good)" != "$cur" ]; then
-		healthy "$cur" || rollback "$cur" "$HEALTH_ERR"
+		if [ "$(running)" != "$cur" ]; then
+			activate "$cur"
+			exit 0
+		fi
+		healthy "$cur" || rollback "$cur" "$HEALTH_ERR" yes
 		set_good "$cur"
 	fi
 	set_status up-to-date "running ${cur##*@}, the newest signed release"

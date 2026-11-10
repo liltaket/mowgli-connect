@@ -369,11 +369,76 @@ t_rollback() {
 	publish "$D2"
 	sign "$D2" "$SAN_MAIN"
 	behave "$D2" silent
-	# An update cut short (power loss) after .env moved to D2: the next run checks and recovers.
+	# An update cut short (power loss) after D2 was started: the next run checks and recovers.
 	sed -i "s|^MC_IMAGE=.*|MC_IMAGE='$REPO@$D2'|" "$DIR/.env"
 	echo "$REPO@$D2" >"$FAKE/running"
 	upd cron || true
 	check "interrupted update: recovered to last good" eq "$(running)" "$REPO@$D1"
+	check "interrupted update: the release that ran is blamed" contains "$DIR/update-state/failed" "^$REPO@$D2 "
+
+	installed interrupted-before-start
+	publish "$D2"
+	sign "$D2" "$SAN_MAIN"
+	# Cut short after .env moved to D2 but before its container was created: D1 still runs.
+	sed -i "s|^MC_IMAGE=.*|MC_IMAGE='$REPO@$D2'|" "$DIR/.env"
+	upd cron
+	check "cut short before the restart: the next run starts D2" eq "$(running)" "$REPO@$D2"
+	check "cut short before the restart: D2 confirmed" eq "$(cat "$DIR/update-state/good")" "$REPO@$D2"
+	check "cut short before the restart: D2 not blamed" fails test -s "$DIR/update-state/failed"
+	check "cut short before the restart: not held" eq "$(result)" updated
+	upd cron
+	check "cut short before the restart: then up to date" eq "$(result)" up-to-date
+
+	installed up-fails
+	publish "$D2"
+	sign "$D2" "$SAN_MAIN"
+	touch "$FAKE/upfail.$D2"
+	upd cron && r=0 || r=$?
+	check "compose up fails: run reports failure" eq "$r" 1
+	check "compose up fails: back on last good" eq "$(running)" "$REPO@$D1"
+	check "compose up fails: .env back on last good" eq "$(configured)" "$REPO@$D1"
+	check "compose up fails: not blamed (its container never ran)" fails test -s "$DIR/update-state/failed"
+	check "compose up fails: reason" contains "$DIR/update-state/status" "docker compose up failed"
+	rm "$FAKE/upfail.$D2"
+	upd cron
+	check "compose up fails: tried again next time" eq "$(running)" "$REPO@$D2"
+
+	installed exited
+	publish "$D2"
+	sign "$D2" "$SAN_MAIN"
+	behave "$D2" exited
+	upd cron || true
+	check "exited container: rolled back" eq "$(running)" "$REPO@$D1"
+	check "exited container: remembered" contains "$DIR/update-state/failed" "^$REPO@$D2 "
+	check "exited container: reason" contains "$DIR/update-state/status" "stopped or restarted ($REPO@$D2 false 0)"
+}
+
+# The health check waits MC_UPDATE_HEALTH_SETTLE seconds after the first sign of life.
+t_settle() {
+	installed settle
+	publish "$D2"
+	sign "$D2" "$SAN_MAIN"
+	behave "$D2" late # connects, then restarts after two checks
+	MC_UPDATE_HEALTH_SETTLE=0 upd cron
+	check "settle 0: a late crash is not seen" eq "$(running)" "$REPO@$D2"
+
+	installed settle-late
+	publish "$D2"
+	sign "$D2" "$SAN_MAIN"
+	behave "$D2" late
+	MC_UPDATE_HEALTH_SETTLE=2 MC_UPDATE_HEALTH_TIMEOUT=10 upd cron || true
+	check "settle 2: a restart after connecting is rolled back" eq "$(running)" "$REPO@$D1"
+	check "settle 2: and remembered" contains "$DIR/update-state/failed" "^$REPO@$D2 "
+
+	installed settle-ok
+	publish "$D2"
+	sign "$D2" "$SAN_MAIN"
+	t0=$(date +%s)
+	MC_UPDATE_HEALTH_SETTLE=2 MC_UPDATE_HEALTH_TIMEOUT=10 upd cron
+	t1=$(date +%s)
+	check "settle 2: a healthy release is taken" eq "$(running)" "$REPO@$D2"
+	check "settle 2: after waiting at least 2 s" test $((t1 - t0)) -ge 2
+	check "settle 2: well before the timeout" test $((t1 - t0)) -lt 10
 }
 
 t_downgrade() {
@@ -531,6 +596,7 @@ all)
 	t_update_ok
 	t_update_refused
 	t_rollback
+	t_settle
 	t_downgrade
 	t_lock
 	t_options

@@ -2,6 +2,8 @@
 # Fake docker for test/installer/run.sh. State lives in $FAKE:
 #   tag.<tag>          digest the registry serves for that tag
 #   behavior.<digest>  healthy (logs a pairing code) | silent (never connects) | crash (restarts)
+#                      | exited (stopped, not restarted) | late (healthy, restarts after 2 checks)
+#   upfail.<digest>    "compose up" fails for that image (nothing is started)
 #   registry-down      every registry access fails
 #   pullfail.<digest>  pulling that digest fails (the registry serves content with another digest)
 #   running            image of the mowgli-connect container (absent: no container)
@@ -43,10 +45,12 @@ compose)
 		echo "$img" >>"$FAKE/pulled"
 		;;
 	up)
+		[ ! -f "$FAKE/upfail.$(digest_of "$img")" ] || { echo "Error response from daemon: driver failed programming external connectivity" >&2; exit 1; }
 		# Compose pulls a missing image itself; the tests check that never happens unverified.
 		grep -qxF "$img" "$FAKE/pulled" 2>/dev/null || echo "$img" >>"$FAKE/compose-pulled"
 		echo "$img" >"$FAKE/running"
 		echo "$img" >>"$FAKE/started"
+		rm -f "$FAKE/inspects"
 		;;
 	down) rm -f "$FAKE/running" ;;
 	esac
@@ -79,8 +83,16 @@ inspect)
 	img=$(cat "$FAKE/running")
 	case $3 in
 	*RestartCount*)
-		if [ "$(behavior "$img")" = crash ]; then echo "$img true 3"; else echo "$img true 0"; fi
+		n=$(($(cat "$FAKE/inspects" 2>/dev/null || echo 0) + 1))
+		echo "$n" >"$FAKE/inspects"
+		case $(behavior "$img") in
+		crash) echo "$img true 3" ;;
+		exited) echo "$img false 0" ;;
+		late) if [ "$n" -gt 2 ]; then echo "$img true 1"; else echo "$img true 0"; fi ;;
+		*) echo "$img true 0" ;;
+		esac
 		;;
+	'{{.Config.Image}}') echo "$img" ;;
 	*) echo "$img (running)" ;;
 	esac
 	;;
@@ -88,7 +100,7 @@ logs)
 	[ -f "$FAKE/running" ] || exit 1
 	img=$(cat "$FAKE/running")
 	echo "time=x level=INFO msg=\"mowgli connect agent\" version=test"
-	if [ "$(behavior "$img")" = healthy ]; then
+	if [ "$(behavior "$img")" = healthy ] || [ "$(behavior "$img")" = late ]; then
 		printf '  Code:    word-word-word   (valid for 15 min)\n' >&2
 	fi
 	;;
