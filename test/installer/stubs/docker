@@ -7,6 +7,7 @@
 #   registry-down      every registry access fails
 #   pullfail.<digest>  pulling that digest fails (the registry serves content with another digest)
 #   running            image of the mowgli-connect container (absent: no container)
+#   repodigests        RepoDigests of the image a container runs by tag (images present locally)
 #   calls              every invocation, one per line
 # "docker run <cosign image> verify ..." runs $FAKE_COSIGN (or $MC_TEST_COSIGN, a real cosign).
 set -eu
@@ -47,7 +48,7 @@ compose)
 	up)
 		[ ! -f "$FAKE/upfail.$(digest_of "$img")" ] || { echo "Error response from daemon: driver failed programming external connectivity" >&2; exit 1; }
 		# Compose pulls a missing image itself; the tests check that never happens unverified.
-		grep -qxF "$img" "$FAKE/pulled" 2>/dev/null || echo "$img" >>"$FAKE/compose-pulled"
+		grep -qxF "$img" "$FAKE/pulled" "$FAKE/repodigests" 2>/dev/null || echo "$img" >>"$FAKE/compose-pulled"
 		echo "$img" >"$FAKE/running"
 		echo "$img" >>"$FAKE/started"
 		rm -f "$FAKE/inspects"
@@ -93,7 +94,15 @@ inspect)
 		esac
 		;;
 	'{{.Config.Image}}') echo "$img" ;;
+	'{{.Image}}') echo "sha256:$(printf '%s' "$img" | cksum | cut -d' ' -f1)" ;;
 	*) echo "$img (running)" ;;
+	esac
+	;;
+image) # image inspect -f FORMAT ID: the RepoDigests of what runs
+	case $(cat "$FAKE/running" 2>/dev/null) in
+	*@sha256:*) cat "$FAKE/running" ;;
+	?*) cat "$FAKE/repodigests" 2>/dev/null || true ;;
+	*) exit 1 ;;
 	esac
 	;;
 logs)

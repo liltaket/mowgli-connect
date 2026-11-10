@@ -686,6 +686,45 @@ t_legacy_migration() {
 	sign "$D1" "$SAN_MAIN"
 	upd cron
 	check "legacy: first signed release is taken" eq "$(running)" "$REPO@$D1"
+
+	# The first signed release does not start: back to exactly the image that ran before.
+	legacy=sha256:$(printf '%064d' 9)
+	setup legacy-broken-first
+	mkdir -p "$DIR"
+	printf "MC_RELAY_URL='https://connect.bronc.app'\nMC_ROBOT_NAME='test'\nMC_ALLOW_TELEOP=false\nMC_IMAGE='%s:latest'\n" "$REPO" >"$DIR/.env"
+	echo "$REPO:latest" >"$FAKE/running"
+	printf 'ghcr.io/other/image@%s\n%s@%s\n' "$D3" "$REPO" "$legacy" >"$FAKE/repodigests"
+	publish "$D1"
+	sign "$D1" "$SAN_MAIN"
+	behave "$D1" crash
+	install_robot --auto-update yes && r=0 || r=$?
+	check "legacy, first release broken: install reports failure" differs "$r" 0
+	check "legacy, first release broken: back on the old agent, by digest" eq "$(running)" "$REPO@$legacy"
+	check "legacy, first release broken: .env names that digest" eq "$(configured)" "$REPO@$legacy"
+	check "legacy, first release broken: release remembered as failed" contains "$DIR/update-state/failed" "^$REPO@$D1 "
+	check "legacy, first release broken: says it is not verified" contains "$DIR/update-state/status" "before signed updates, not verified"
+	check "legacy, first release broken: nothing pulled unverified" no_unverified_pull
+	check "legacy, first release broken: not recorded as good" fails test -s "$DIR/update-state/good"
+	upd status
+	check "legacy, first release broken: status shows the way back" contains "$T/update.out" "way back:    $REPO@$legacy (ran here before signed updates, NOT verified"
+	upd cron
+	check "legacy, first release broken: held next night" eq "$(result)" held
+	release "$D2" 5
+	upd cron
+	check "legacy, then a working release: taken" eq "$(running)" "$REPO@$D2"
+	check "legacy, then a working release: way back forgotten" fails test -e "$DIR/update-state/previous"
+
+	# Without a digest of the old image there is no way back (documented).
+	setup legacy-no-digest
+	mkdir -p "$DIR"
+	printf "MC_RELAY_URL='https://connect.bronc.app'\nMC_ROBOT_NAME='test'\nMC_ALLOW_TELEOP=false\nMC_IMAGE='%s:latest'\n" "$REPO" >"$DIR/.env"
+	echo "$REPO:latest" >"$FAKE/running"
+	publish "$D1"
+	sign "$D1" "$SAN_MAIN"
+	behave "$D1" crash
+	install_robot --auto-update yes && r=0 || r=$?
+	check "legacy without digest, first release broken: install reports failure" differs "$r" 0
+	check "legacy without digest: says there is no way back" contains "$DIR/update-state/status" "no earlier version to return to"
 }
 
 # Real cosign (network): the exact command line update.sh uses, against real registries.

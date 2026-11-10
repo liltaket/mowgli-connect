@@ -288,6 +288,7 @@ listed() { [ -f "$2" ] && awk -v x="$1" '$1 == x { f = 1 } END { exit !f }' "$2"
 current() { sed -n "s/^MC_IMAGE='\(.*\)'\$/\1/p" "$ENVF" | tail -1; }
 running() { "$DOCKER" inspect -f '{{.Config.Image}}' "$NAME" 2>/dev/null || true; }
 good() { cat "$STATE/good" 2>/dev/null || true; }
+previous() { cat "$STATE/previous" 2>/dev/null || true; }
 top_seq() { # the highest release number that ran well here (empty: none yet)
 	sq=$(cat "$STATE/seq" 2>/dev/null || true)
 	case $sq in *[!0-9]*) fail "$STATE/seq is not a number: fix it or remove it" ;; esac
@@ -305,6 +306,7 @@ before() { # before A B: A first ran well here before B did
 }
 set_good() { # set_good IMAGE [SEQ]
 	record_seq "${2:-}"
+	rm -f "$STATE/previous"
 	echo "$1" >"$STATE/good.tmp"
 	mv -f "$STATE/good.tmp" "$STATE/good"
 	listed "$1" "$STATE/history" || echo "$1" >>"$STATE/history"
@@ -361,6 +363,7 @@ show_status() {
 	echo "  configured:  $(current)"
 	echo "  running:     $("$DOCKER" inspect -f '{{.Config.Image}} ({{.State.Status}})' "$NAME" 2>/dev/null || echo "no container")"
 	echo "  last good:   $(good)"
+	[ ! -s "$STATE/previous" ] || echo "  way back:    $(previous) (ran here before signed updates, NOT verified: used only if the first verified release does not start)"
 	echo "  release no.: $(top_seq) (highest signed release number that ran here; lower ones are refused)"
 	echo "  pending:     $(st pending)"
 	echo "  last check:  $(st checked) $(st result): $(st message)"
@@ -440,25 +443,45 @@ healthy() {
 # A fresh container every time, so the health check sees only this start.
 up() { "$DOCKER" compose --project-directory "$DIR" up -d --force-recreate >/dev/null 2>"$STATE/up.err"; }
 
+# An agent installed before signed updates (.env names a tag, and no verified release has run here
+# yet) is remembered by the digest it runs: the way back if the first verified release does not
+# start. That image is not verified; it is the one this robot already ran, by content digest, so
+# going back to it adds nothing new. It is forgotten once a verified release has run well.
+remember_previous() {
+	[ -z "$(good)" ] && [ ! -s "$STATE/previous" ] || return 0
+	case $(current) in "" | *@sha256:*) return 0 ;; esac
+	id=$("$DOCKER" inspect -f '{{.Image}}' "$NAME" 2>/dev/null) || return 0
+	p=$("$DOCKER" image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$id" 2>/dev/null |
+		awk -v r="$REPO@" 'index($0, r) == 1 { print; exit }') || return 0
+	is_digest "${p#"$REPO@"}" || return 0
+	echo "$p" >"$STATE/previous"
+	log "remembered the agent from before signed updates, the way back: $p (not verified)"
+}
+
 # rollback IMAGE WHY BLAME: IMAGE did not work; start the last good version again. IMAGE is not
 # tried again only if its own container ran (BLAME=yes) and the last good version works;
 # otherwise the robot or its network is the problem.
 rollback() {
 	last=$(good)
-	if [ -z "$last" ] || [ "$last" = "$1" ]; then
-		fail "${1##*@} did not start properly ($2) and there is no earlier verified version to return to; see docker logs $NAME"
+	was=""
+	if [ -z "$last" ]; then
+		last=$(previous)
+		was=" (the agent from before signed updates, not verified)"
 	fi
-	log "${1##*@} did not start properly ($2); returning to ${last##*@}"
+	if [ -z "$last" ] || [ "$last" = "$1" ]; then
+		fail "${1##*@} did not start properly ($2) and there is no earlier version to return to; see docker logs $NAME"
+	fi
+	log "${1##*@} did not start properly ($2); returning to ${last##*@}$was"
 	set_image "$last"
 	if ! up; then
 		HEALTH_ERR="docker compose up failed: $(tail -1 "$STATE/up.err")"
 	elif [ "$3" != yes ] && healthy "$last"; then
-		fail "${1##*@} did not start ($2); ${last##*@} runs again and ${1##*@} is tried again next time" rolled-back
+		fail "${1##*@} did not start ($2); ${last##*@}$was runs again and ${1##*@} is tried again next time" rolled-back
 	elif healthy "$last"; then
 		echo "$1 $(now) $(oneline "$2")" >>"$STATE/failed"
-		fail "${1##*@} did not start properly ($2); ${last##*@} runs again and ${1##*@} will not be tried again" rolled-back
+		fail "${1##*@} did not start properly ($2); ${last##*@}$was runs again and ${1##*@} will not be tried again" rolled-back
 	fi
-	fail "${1##*@} did not start properly ($2); went back to ${last##*@}, which does not work either ($HEALTH_ERR): probably a network or robot problem, so ${1##*@} is tried again next time" rolled-back
+	fail "${1##*@} did not start properly ($2); went back to ${last##*@}$was, which does not work either ($HEALTH_ERR): probably a network or robot problem, so ${1##*@} is tried again next time" rolled-back
 }
 
 # activate IMAGE [SEQ]: download it, point .env at it, start it and check it.
@@ -553,6 +576,7 @@ verify "$TARGET" || fail "$VERIFY_ERR"
 new=$REPO@$VERIFIED
 cur=$(current)
 log "signature verified: $new (release number ${SEQ:-none})"
+remember_previous
 
 if [ "$MODE" != install ] && [ "$new" = "$cur" ]; then
 	# Up to date. If this version was never confirmed (first install without a working
