@@ -386,8 +386,21 @@ describe("review fixes", () => {
     await setup({ ALLOWED_GITHUB_LOGINS: "gh:7901" });
     stubGithub([{ id: 7901, login: "dave" }]);
     await invite("dave", 7901);
+    // Someone shared a robot with dave as well.
+    const owner = await newUser();
+    await testEnv.DB.prepare("INSERT INTO invites (user_id, login, invited_by, created_at) VALUES (?, 'dave-owner', ?, 0)").bind(owner.id, admin.id).run();
+    const robot = await newRobot();
+    const { pairingCode } = (await (await register(robot, "daves-friend")).json()) as { pairingCode: string };
+    expect((await post("/claim", owner, { code: pairingCode })).status).toBe(303);
+    const now = Math.floor(Date.now() / 1000);
+    await testEnv.DB.batch([
+      testEnv.DB.prepare("INSERT INTO users (id, login, name, created_at, last_login_at) VALUES ('gh:7901', 'dave', NULL, ?, ?)").bind(now, now),
+      testEnv.DB.prepare("INSERT INTO members (robot_id, user_id, role, created_at) VALUES (?, 'gh:7901', 'viewer', ?)").bind(robot.robotId, now),
+    ]);
     const res = await post("/admin/people/gh:7901/remove", admin, {});
     expect(res.headers.get("Location")).toBe("/admin?notice=removed_config");
+    // They keep the share: nothing was taken from someone who can still sign in.
+    expect(await testEnv.DB.prepare("SELECT role FROM members WHERE robot_id = ? AND user_id = 'gh:7901'").bind(robot.robotId).first()).toEqual({ role: "viewer" });
     expect(await (await get("/admin?notice=removed_config", admin)).text()).toContain("ALLOWED_GITHUB_LOGINS");
   });
 
