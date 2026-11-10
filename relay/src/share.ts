@@ -35,7 +35,8 @@ export function roleLabel(role: string): string {
 
 const ROLE_HELP: Record<SharedRole, string> = {
   viewer: "They see the robot's status, its live map and its schedules.",
-  operator: "They also start, pause and stop mowing, send the robot to its dock and press the emergency stop.",
+  operator:
+    "They also start, pause and stop mowing, send the robot to its dock and engage the emergency stop. Sending it to the dock also takes it out of a dig hold, the stop after it dug into the lawn.",
 };
 
 const NOT_ALLOWED =
@@ -96,7 +97,7 @@ const IS_OWNER = (owner: string) =>
  * so concurrent requests cannot all pass one count. Failed lookups count too: the form must not
  * work as a way to test which accounts exist.
  */
-async function reserveLookup(env: Env, userId: string): Promise<boolean> {
+async function reserveLookup(env: Env, userId: string): Promise<"ok" | "person" | "relay"> {
   const now = nowSeconds();
   const r = await env.DB.prepare(
     `INSERT INTO share_events (user_id, kind, at) SELECT ?1, 'lookup', ?2
@@ -105,13 +106,18 @@ async function reserveLookup(env: Env, userId: string): Promise<boolean> {
   )
     .bind(userId, now, now - 3600, LOOKUPS_PER_PERSON_PER_HOUR, LOOKUPS_PER_HOUR)
     .run();
-  return r.meta.changes === 1;
+  if (r.meta.changes === 1) return "ok";
+  // Refused; say which budget, so nobody waits on their own when the whole relay is busy.
+  const mine = await env.DB.prepare("SELECT COUNT(*) AS n FROM share_events WHERE user_id = ? AND kind = 'lookup' AND at > ?")
+    .bind(userId, now - 3600)
+    .first<{ n: number }>();
+  return (mine?.n ?? 0) >= LOOKUPS_PER_PERSON_PER_HOUR ? "person" : "relay";
 }
 
 async function lookup(env: Env, userId: string, by: { login: string } | { id: number }): Promise<{ ok: true; user: GithubProfile } | { ok: false; message: string; status: number }> {
-  if (!(await reserveLookup(env, userId))) {
-    return { ok: false, status: 429, message: "You looked up many GitHub accounts in the last hour. Try again later." };
-  }
+  const budget = await reserveLookup(env, userId);
+  if (budget === "person") return { ok: false, status: 429, message: "You looked up many GitHub accounts in the last hour. Try again later." };
+  if (budget === "relay") return { ok: false, status: 429, message: "Mowgli Connect looked up many GitHub accounts for everyone in the last hour. Try again later." };
   const res = await lookupGithubUser(env, by);
   if (!res.ok) return { ok: false, status: res.reason === "unavailable" ? 502 : 400, message: lookupError(res.reason, "login" in by ? by.login : undefined) };
   return res;

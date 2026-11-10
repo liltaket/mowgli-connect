@@ -34,9 +34,14 @@ function allowedByConfig(env: Env, userId: string, login: string): boolean {
  * (fail closed). Everyone who may own robots may sign in.
  */
 export async function canOwn(env: Env, userId: string, login: string): Promise<boolean> {
-  if (isAdmin(env, userId) || allowedByConfig(env, userId, login)) return true;
+  if (ownsByConfig(env, userId, login)) return true;
   const row = await env.DB.prepare("SELECT 1 AS ok FROM invites WHERE user_id = ?").bind(userId).first();
   return row !== null;
+}
+
+/** canOwn without the invitation: admins and ALLOWED_GITHUB_LOGINS. */
+function ownsByConfig(env: Env, userId: string, login: string): boolean {
+  return isAdmin(env, userId) || allowedByConfig(env, userId, login);
 }
 
 /**
@@ -49,21 +54,22 @@ export async function canSignIn(env: Env, userId: string, login: string): Promis
   return (await canOwn(env, userId, login)) || (await hasLiveShare(env, userId));
 }
 
-/** Whether a robot is shared with this person by an owner who may still own robots. */
-export async function hasLiveShare(env: Env, userId: string): Promise<boolean> {
+/**
+ * Whether a robot is shared with this person by an owner who may still own robots: canOwn for
+ * every distinct owner, with their invitation looked up in the same query.
+ */
+async function hasLiveShare(env: Env, userId: string): Promise<boolean> {
   const owners = await env.DB.prepare(
-    `SELECT DISTINCT o.user_id, u.login FROM members m
+    `SELECT DISTINCT o.user_id, u.login, EXISTS (SELECT 1 FROM invites i WHERE i.user_id = o.user_id) AS invited
+     FROM members m
        JOIN robots r ON r.robot_id = m.robot_id AND r.status = 'claimed'
        JOIN members o ON o.robot_id = m.robot_id AND o.role = 'owner'
        JOIN users u ON u.id = o.user_id
-     WHERE m.user_id = ? AND m.role != 'owner' LIMIT 20`,
+     WHERE m.user_id = ? AND m.role != 'owner'`,
   )
     .bind(userId)
-    .all<{ user_id: string; login: string }>();
-  for (const o of owners.results) {
-    if (await canOwn(env, o.user_id, o.login)) return true;
-  }
-  return false;
+    .all<{ user_id: string; login: string; invited: number }>();
+  return owners.results.some((o) => o.invited === 1 || ownsByConfig(env, o.user_id, o.login));
 }
 
 /**

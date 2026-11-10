@@ -497,6 +497,7 @@ describe("sharing limits", () => {
     accounts.push({ id: nextId(), login: "real-one" });
     const res = await post(`/robots/${robot.robotId}/share`, owner, { login: "real-one", role: "viewer" });
     expect(res.status).toBe(429);
+    expect(await res.text()).toContain("You looked up many GitHub accounts");
     expect(lookups.length).toBe(before); // GitHub was not asked
   });
 
@@ -510,7 +511,9 @@ describe("sharing limits", () => {
       .bind(LOOKUPS_PER_HOUR, nowSeconds())
       .run();
     const before = lookups.length;
-    expect((await post(`/robots/${robot.robotId}/share`, owner, { login: "anyone", role: "viewer" })).status).toBe(429);
+    const res = await post(`/robots/${robot.robotId}/share`, owner, { login: "anyone", role: "viewer" });
+    expect(res.status).toBe(429);
+    expect(await res.text()).toContain("for everyone"); // not their own budget: they made no lookup
     expect(lookups.length).toBe(before);
     await testEnv.DB.prepare("DELETE FROM share_events WHERE user_id GLOB 'gh:9?????'").run();
   });
@@ -627,6 +630,27 @@ describe("guests", () => {
     expect(await count("users", orphan, "id")).toBe(0);
     expect(await count("users", kept, "id")).toBe(1);
     expect(await count("users", signedIn.id, "id")).toBe(1);
+  });
+
+  it("sign in through a live share however many of their other shares lost their owner", async () => {
+    const gh = { id: nextId(), login: "many-shares" };
+    const guestId = `gh:${gh.id}`;
+    const now = nowSeconds();
+    const steps = [testEnv.DB.prepare("INSERT INTO users (id, login, created_at, last_login_at) VALUES (?, ?, 0, 0)").bind(guestId, gh.login)];
+    for (let i = 0; i < 25; i++) {
+      const gone = await newUser(); // never invited: may not own robots
+      const rid = `x${String(gh.id).padStart(9, "0")}${String(i).padStart(6, "0")}`;
+      steps.push(
+        testEnv.DB.prepare("INSERT INTO robots (robot_id, public_key, status, created_at, updated_at, last_seen_at) VALUES (?, ?, 'claimed', ?, ?, ?)").bind(rid, `pk-${rid}`, now, now, now),
+        testEnv.DB.prepare("INSERT INTO members (robot_id, user_id, role, created_at) VALUES (?, ?, 'owner', ?), (?, ?, 'viewer', ?)").bind(rid, gone.id, now, rid, guestId, now),
+      );
+    }
+    await testEnv.DB.batch(steps);
+    expect(await signIn(gh)).toBeNull();
+    const owner = await invitedUser();
+    const robot = await ownedRobot(owner);
+    await testEnv.DB.prepare("INSERT INTO members (robot_id, user_id, role, created_at) VALUES (?, ?, 'viewer', ?)").bind(robot.robotId, guestId, now).run();
+    expect(await signIn(gh)).not.toBeNull();
   });
 
   it("an admin removing an invited person also removes the robots shared with them", async () => {

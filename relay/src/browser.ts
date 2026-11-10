@@ -159,8 +159,8 @@ ${
 }
 <form method="post" action="/robots/${r.robot_id}/unlink"><button class="danger">Unlink robot</button><p>Removes the robot from your account and deletes its tunnel. You will need a new pairing code to add it again.</p></form>
 </div></details>`
-    : html`<details><summary>Shared with you</summary><div class="manage">
-<p>${r.role === "operator" ? "You can watch the robot and use its mowing controls: start, pause, stop, dock and emergency stop." : "You can watch the robot: its status, live map and schedules."} Only its owner can change its settings or share it.</p>
+    : html`<details><summary>Details and Leave</summary><div class="manage">
+<p>${r.role === "operator" ? "You can watch the robot and use its mowing controls: start, pause, stop, send to dock (which also ends a dig hold) and engage the emergency stop." : "You can watch the robot: its status, live map and schedules."} Only its owner can change its settings or share it.</p>
 <form method="post" action="/robots/${r.robot_id}/leave"><button class="danger">Leave</button><p>Removes the robot from your list. Its owner can share it with you again.</p></form>
 </div></details>`
 }
