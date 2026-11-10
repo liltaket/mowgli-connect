@@ -154,7 +154,8 @@ cat >"$DIR/compose.yaml" <<'EOF'
 name: mowgli-connect
 services:
   mowgli-connect:
-    image: ${MC_IMAGE:?no verified agent image yet: run sh update.sh install}
+    # Quoted: a plain YAML scalar may not contain ": ".
+    image: "${MC_IMAGE:?no verified agent image yet - run sh update.sh install}"
     container_name: mowgli-connect
     restart: unless-stopped
     # Own network namespace: the container locks its egress so cloudflared can reach only the

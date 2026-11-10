@@ -4,7 +4,10 @@
 # rollback; cosign's cryptography itself is not modelled (see docs/updates.md).
 #
 #   sh test/installer/run.sh              all tests, with the shell "sh"
-#   TEST_SH=bash sh test/installer/run.sh     (busybox sh cannot: its applets shadow the stubs)
+#   TEST_SH=bash sh test/installer/run.sh     (also TEST_SH="bash --posix"; busybox sh cannot: its
+#                                              applets shadow the stubs)
+#   MC_TEST_REQUIRE_COMPOSE=1 ...         fail instead of skipping when no "docker compose" CLI is
+#                                         there to check the generated compose.yaml and .env (CI)
 #   MC_TEST_COSIGN=/path/to/cosign sh test/installer/run.sh real
 #       real cosign v3 against real registries (network): unsigned and foreign-signed images
 #       are refused, and a correctly signed image passes the same command line.
@@ -17,6 +20,10 @@ TEST_SH=${TEST_SH:-sh}
 # Absolute, because the tests put their own "sh" (running TEST_SH) first on PATH.
 sh_bin=$(command -v "${TEST_SH%% *}") || { echo "no shell ${TEST_SH%% *}" >&2; exit 2; }
 SHELLCHECK=$(command -v shellcheck || true)
+# The real Docker Compose CLI, if any, checks the generated files ("config" needs no daemon);
+# everything else runs against the fake docker.
+COMPOSE=$(command -v docker || true)
+[ -n "$COMPOSE" ] && "$COMPOSE" compose version >/dev/null 2>&1 || COMPOSE=""
 case $TEST_SH in *" "*) TEST_SH="$sh_bin ${TEST_SH#* }" ;; *) TEST_SH=$sh_bin ;; esac
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
@@ -41,7 +48,7 @@ setup() {
 	DIR=$HOME/mowgli-connect
 	FAKE=$T/fake
 	# The shell under test runs update.sh too ("sh update.sh" from install.sh).
-	printf '#!/bin/sh\nexec %s "$@"\n' $TEST_SH >"$T/bin/sh"
+	printf '#!/bin/sh\nexec %s "$@"\n' "$TEST_SH" >"$T/bin/sh"
 	chmod +x "$T/bin/sh"
 	export HOME FAKE
 	export FAKE_COSIGN=$STUBS/fake-cosign
@@ -140,6 +147,48 @@ refused_install() { # refused_install NAME DESCRIPTION [INSTALL OPTIONS]
 	check "$what: no digest pulled" lacks "$FAKE/calls" "docker pull"
 	check "$what: refused by the signature check" contains "$T/install.out" "no valid signature for\|did not report exactly one verified digest"
 }
+# The generated compose.yaml and .env as Docker Compose reads them (the fake docker does not parse
+# them): valid YAML, the values from .env, and the intended error while no image is verified.
+compose_config() { (cd "$1" && "$COMPOSE" compose config --format json); } # compose_config DIR
+t_compose_file() {
+	for dns in system public; do
+		setup compose-$dns
+		publish "$D1"
+		sign "$D1" "$SAN_MAIN"
+		install_robot --name "Hedge hog" --dns $dns
+		check "compose ($dns): install succeeds" eq "$(running)" "$REPO@$D1"
+		if [ -n "$COMPOSE" ]; then
+			compose_config "$DIR" >"$T/config.json" 2>"$T/config.err"
+			check "compose ($dns): the generated project is valid" eq "$?" 0
+			check "compose ($dns): image from .env" contains "$T/config.json" "\"image\": \"$REPO@$D1\""
+			check "compose ($dns): quoted name from .env" contains "$T/config.json" '"MC_ROBOT_NAME": "Hedge hog"'
+			check "compose ($dns): relay from .env" contains "$T/config.json" '"MC_RELAY_URL": "https://connect.bronc.app"'
+			check "compose ($dns): teleop from .env" contains "$T/config.json" '"MC_ALLOW_TELEOP": "false"'
+			if [ $dns = public ]; then
+				check "compose (public): public resolvers" contains "$T/config.json" '"1.1.1.1"'
+			else
+				check "compose (system): Docker's own DNS" lacks "$T/config.json" '"dns"'
+			fi
+			mkdir "$T/empty"
+			cp "$DIR/compose.yaml" "$T/empty/"
+			sed "s/^MC_IMAGE=.*/MC_IMAGE=''/" "$DIR/.env" >"$T/empty/.env"
+			compose_config "$T/empty" >/dev/null 2>"$T/config.err" && r=0 || r=$?
+			check "compose ($dns): no verified image yet is refused" differs "$r" 0
+			check "compose ($dns): with the intended message" contains "$T/config.err" "no verified agent image yet"
+		elif python3 -c 'import yaml' 2>/dev/null; then
+			check "compose ($dns): compose.yaml is valid YAML" python3 -I -c \
+				'import sys, yaml; s = yaml.safe_load(open(sys.argv[1]))["services"]["mowgli-connect"]; sys.exit(not s["image"].startswith("${MC_IMAGE:?"))' \
+				"$DIR/compose.yaml"
+			echo "note: no docker compose CLI: compose.yaml parsed with PyYAML only, .env not checked" >&2
+		else
+			echo "note: neither docker compose nor PyYAML: compose.yaml not checked" >&2
+		fi
+		if [ -z "$COMPOSE" ] && [ "${MC_TEST_REQUIRE_COMPOSE:-}" = 1 ]; then
+			check "compose ($dns): docker compose CLI available (MC_TEST_REQUIRE_COMPOSE=1)" false
+		fi
+	done
+}
+
 t_refused_installs() {
 	setup unsigned
 	publish "$D1"
@@ -465,6 +514,7 @@ real) t_real ;;
 all)
 	t_syntax
 	t_fresh_install
+	t_compose_file
 	t_refused_installs
 	t_release_tag_accepted
 	t_update_ok

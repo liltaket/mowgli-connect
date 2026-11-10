@@ -1,7 +1,8 @@
 name: Installer
 
 # The robot installer and the verified updater it writes (site/install.sh), tested with fake
-# docker, cosign and crontab (test/installer). No network, no Docker daemon.
+# docker, cosign and crontab (test/installer). No network, no Docker daemon; the runner's Docker
+# Compose CLI checks the generated compose.yaml and .env (docker compose config).
 on:
   push:
     branches: [main]
@@ -22,6 +23,6 @@ jobs:
       - name: shellcheck
         run: shellcheck --version && shellcheck -s sh -S warning site/install.sh test/installer/run.sh test/installer/stubs/*
       - name: tests (dash)
-        run: sh test/installer/run.sh
+        run: docker compose version && MC_TEST_REQUIRE_COMPOSE=1 sh test/installer/run.sh
       - name: tests (bash)
-        run: TEST_SH=bash sh test/installer/run.sh
+        run: MC_TEST_REQUIRE_COMPOSE=1 TEST_SH=bash sh test/installer/run.sh
