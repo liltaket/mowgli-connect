@@ -95,12 +95,14 @@ SSL does not cover deeper names. Put the relay on a **different registrable doma
   forbids extra restrictions and there is no CLA. Connect is a separate program talking HTTP, kept
   in its own repo, MIT-compatible, with no MowgliNext code copied. Get maintainer/legal clarity
   before any commercial launch. Talk to MowgliNext maintainers anyway: this is new public exposure.
-- **Revocation latency:** member removal and "sign everyone out" reach the robot on its next poll
+- **Revocation latency:** member removal, a downgraded share and "sign everyone out" reach the robot on its next poll
   (every 3 min by default, `MC_POLL_INTERVAL`). Unlink is immediate (tunnel deleted). If the relay is unreachable for longer than
   `MC_MAX_STALE` (10 min), the agent fails closed: remote sessions stop until it syncs again. Local
   LAN access to the GUI never depends on the cloud. Push-based revocation can come later.
-- **Viewer role:** implemented as a deny-by-default policy in the agent but not validated against
-  the real GUI UI. Prototype is owner-only.
+- **Sharing:** an owner can share a robot by GitHub account as "View only" (`viewer`) or "Can
+  control" (`operator`: mowing controls, no settings), see [sharing.md](sharing.md). Both are
+  deny-by-default allow lists in the agent, checked against the GUI's source, not against a real
+  GUI or robot.
 - **Fleet peers** use plain `ws://` between robots and must stay on the LAN; Connect does not and
   should not tunnel them.
 - **No hardware test yet.** See "Validation" in the README.

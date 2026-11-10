@@ -56,15 +56,27 @@ Minted by the relay for one user → one robot, delivered to the browser as a UR
 | `aud` | `mc-robot:<robotId>` |
 | `sub` | relay user id (string) |
 | `name` | display name (informational) |
-| `role` | `owner` or `viewer` |
+| `role` | `owner`, `operator` or `viewer` (see Roles) |
 | `epoch` | robot `sessionEpoch` at mint time |
 | `iat`, `exp` | `exp - iat <= 60` |
 | `jti` | ≥128-bit random, single use (agent stores until `exp`) |
 
 Agent verification: signature by a key from the latest `relayKeys` (match `kid`), exact `iss`
 (configured relay origin), exact `aud`, `exp`/`iat` window, `iat >= agentStartTime - skew`
-(replay protection across restarts), `jti` unused, `sub` currently a member with that `role` or
-higher, `epoch == sessionEpoch`.
+(replay protection across restarts), `jti` unused, `sub` currently a member, `epoch ==
+sessionEpoch`. The session gets the lower of the grant's role and the member list's.
+
+### Roles
+
+`owner` > `operator` > `viewer`. A robot has exactly one `owner`, who claimed it; `operator`
+("Can control") and `viewer` ("View only") are people the owner shared it with
+([sharing.md](sharing.md)). A role an agent does not know MUST rank below every role and
+authorize nothing, in a grant or in the member list, so a newer relay can add roles without
+older agents guessing (agents before `operator` deny it). Every request is authorized with the
+lower of the session's role and the role the current member list gives `sub`, so a downgrade or
+removal takes effect at the agent's next sync without an epoch bump. What each role may do on
+the robot is the agent's policy (`agent/internal/gateway/policy.go`); the relay only stores and
+signs the role.
 
 ## Relay HTTP API (robot-facing, JSON)
 
@@ -100,16 +112,20 @@ Assertion auth. Response `200`:
   "tunnelToken": "<cloudflared connector token>" | null,
   "relayKeys": [{"kid":"k1","publicKey":"<b64url>"}],
   "sessionEpoch": 1,
-  "members": [{"userId":"gh:123","role":"owner"}]
+  "members": [{"userId":"gh:123","role":"owner"}, {"userId":"gh:456","role":"operator"}]
 }
 ```
+`members` lists everyone who may open the robot now, with their role: the owner and the people it
+is shared with, by GitHub id. It is empty unless the robot is `claimed`, and also while the owner
+may no longer own robots (removed by the admin): access to a robot follows its owner's.
 `tunnelToken` and `hostname` only when `claimed`. If no `/self` call has succeeded within
 `MC_MAX_STALE` (default 10 min), the agent rejects all sessions and grants until the next success. The relay runs on Workers
 Free, whose 100,000 requests/day are shared by the whole Cloudflare account, so the agent polls
 rarely: every `MC_POLL_INTERVAL` (default 3 min, 480 requests/day) while claimed; while unclaimed
 every 5 s during the first 30 min after start, then every 60 s. When a correctly signed grant names
-a newer epoch or a user the agent does not know yet, it syncs at once (at most every 10 s) before
-deciding, so new members do not wait for the next poll. It applies changes: new epoch → drop all sessions; member removed or
+a newer epoch, a user the agent does not know yet, or a higher role than the member list gives
+that user, it syncs at once (at most every 10 s) before deciding, so new members and upgraded
+shares do not wait for the next poll. It applies changes: new epoch → drop all sessions; member removed or
 downgraded → drop/adjust their sessions; `revoked` → drop sessions, stop cloudflared.
 
 ## Relay HTTP API (browser-facing)
@@ -132,7 +148,16 @@ Secure; SameSite=Lax; Path=/`.
   Unauthenticated → login, then back here.
 - `POST /robots/:robotId/unlink` (owner) → status `revoked`, bump epoch, delete tunnel + DNS.
 - `POST /robots/:robotId/sessions/revoke` (owner) → bump epoch (logs everyone out of that robot).
-- Members/sharing (`viewer`) — schema supports it; UI may come later.
+- Sharing ([sharing.md](sharing.md)), all owner-only except leave; anyone else gets the same `404`
+  as for an unknown robot. Roles in forms are exactly `viewer` or `operator`.
+  - `GET /robots/:robotId/share` — who has access, change role, remove, add form.
+  - `POST /robots/:robotId/share` `{login, role}` → looks the GitHub account up and shows it (no
+    write); `{id, role}` → looks it up again by id and adds the member `gh:<id>`. Limits: 10 per
+    robot, 10 new shares per owner per hour, 20 lookups per person and 300 per relay per hour.
+  - `POST /robots/:robotId/members/:userId/role` `{role}` and `.../remove` — never the owner's row.
+  - `POST /robots/:robotId/leave` — a member who is not the owner removes themselves.
+  A person a robot is shared with may sign in without an invitation (a guest) while the robot is
+  claimed and its owner may still own robots; a guest's robot limit is 0.
 
 ## Agent routes (served on the robot hostname)
 
@@ -185,7 +210,9 @@ Everything else:
 - Consumed grant ids are persisted with the sessions until they expire, so a grant cannot be
   redeemed again after an agent restart.
 - Role policy (`viewer`: the app plus an explicit allow list of read-only API endpoints and the
-  multiplex socket; everything else denied), then remote policy (e.g. teleop disabled unless
+  multiplex socket; `operator`: the same plus the mowing-control service calls, checked by exact
+  path and, where the argument matters, by body ([sharing.md](sharing.md)); everything else denied;
+  `owner`: everything), then remote policy (e.g. teleop disabled unless
   `MC_ALLOW_TELEOP=true`).
 - Proxy to upstream with `Host` and `Origin` preserved (the GUI's WS check compares them),
   `__Host-mc_session` stripped from `Cookie`, fresh `X-Forwarded-For/Proto/Host`, streaming

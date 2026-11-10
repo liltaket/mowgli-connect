@@ -22,8 +22,10 @@ grant and the same session on the robot as a browser does.
 3. **Nothing is issued without the person seeing it.** Every sign-in shows a consent page naming
    the device, and every device is listed under "Devices" on connect.bronc.app with a Sign out
    button.
-4. **Same rules as the web.** Invitations, robot limits, owner/viewer roles, admin removal and
-   "Sign everyone out" apply to the app exactly as to the browser.
+4. **Same rules as the web.** Invitations, guests (people a robot is shared with), robot limits,
+   the owner/operator/viewer roles, admin removal and "Sign everyone out" apply to the app
+   exactly as to the browser. Sharing itself (adding people, changing roles, removing, leaving),
+   like unlinking, is web-only: the app has no call for it.
 
 ## Flow
 
@@ -101,9 +103,9 @@ owner still has access.
 
 | Call | Result |
 |---|---|
-| `GET /v1/app/me` | `{login, name, robotLimit, robots}` |
-| `GET /v1/app/robots` | `{robots: [{robotId, name, hostname, role, online, joystick, updateAvailable}]}` |
-| `POST /v1/app/robots/{robotId}/grant` | `{grant, hostname, expiresAt}`; `503 {"error":"robot_offline"}` if its tunnel is down |
+| `GET /v1/app/me` | `{login, name, robotLimit, robots}`; `robotLimit` is `0` for a guest (someone who can only open robots shared with them) |
+| `GET /v1/app/robots` | `{robots: [{robotId, name, hostname, role, sharedBy, online, joystick, updateAvailable}]}`: robots the person owns and robots shared with them. `role` is `owner`, `operator` ("Can control") or `viewer` ("View only"); `sharedBy` is the owner's GitHub login for a shared robot, `null` for one's own; `joystick` and `updateAvailable` are `null` unless `owner` |
+| `POST /v1/app/robots/{robotId}/grant` | `{grant, hostname, expiresAt}`, with the role stored for this person on the relay at this moment; `503 {"error":"robot_offline"}` if its tunnel is down |
 | `POST /v1/app/claim` | body `{code, label?, step: "preview"\|"confirm"}`: preview `{robotId, name, hostname}`, confirm `{robotId, hostname}`; same limits and guess budget as the web |
 | `POST /v1/app/sign-out` | deletes this device and, in the same transaction, signs everyone out of the robots its owner owns (their session epoch goes up, so robot sessions and unused grants from before stop working at the robot's next successful sync: normally within `MC_POLL_INTERVAL`, 3 minutes, and at the latest after `MC_MAX_STALE`, 10 minutes, when the robot stops accepting anything until it syncs); pending sign-ins of that key are cancelled; robots the person only views are not touched. A second call answers 401 `unknown_device` |
 
@@ -147,7 +149,7 @@ signature (method and URL are); TLS protects them, and a signed request works on
 | A lost or sold phone | Sign it out under Devices on another device. That also signs everyone out of the robots its owner owns, which ends the robot sessions the app still had at each robot's next sync (within 3, at most 10 minutes; otherwise they would last up to 12 hours), cancels pending app sign-ins, and signs the person out of Mowgli Connect in every other browser, so the phone's own browser cannot sign the app in again. On robots the person only views, the owner can sign everyone out. A grant requested while the sign-out happens gets the old epoch or nothing, never the new one. Keys can also require Face ID or the passcode (app side). An admin removing the person deletes all their devices, and their robots drop them at the next sync. |
 | Replay of a signed request | Single-use `jti`, 60-second lifetime, method and URL bound. |
 | A copy of the relay database | Devices hold only public keys and names; codes are stored as hashes and expire in 60 s. |
-| Abuse of the endpoints | Sign-in needs an invited account; at most 10 devices and 5 open codes per person, both enforced in single statements; a wrong or made-up code writes nothing and does not use up the real one; the existing per-IP WAF rule covers the relay. |
+| Abuse of the endpoints | Sign-in needs an invited account or a robot shared with it (a guest, who cannot add robots); at most 10 devices and 5 open codes per person, both enforced in single statements; a wrong or made-up code writes nothing and does not use up the real one; the existing per-IP WAF rule covers the relay. |
 | Relay or Cloudflare account compromised | Unchanged: they are the root of trust (SECURITY.md). |
 
 What this adds to the attack surface: `/app/authorize` (behind the browser session),

@@ -51,6 +51,9 @@ Requirements: a MowgliNext robot with Docker and Docker Compose v2, internet acc
    same steps, asks you the same questions and hands you the pairing code.
 2. **Pair.** Go to <https://connect.bronc.app>, sign in with GitHub and enter the code.
 3. **Open.** Press Open next to your robot.
+4. **Share (optional).** Under Manage → Share, add someone by GitHub username as "View only" or
+   "Can control" (mowing controls, no settings). They sign in with their own GitHub account; see
+   [docs/sharing.md](docs/sharing.md).
 
 See the pairing code again: `docker logs mowgli-connect`.
 

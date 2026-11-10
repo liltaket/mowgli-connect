@@ -56,8 +56,14 @@ Out of scope: vulnerabilities in MowgliNext itself, in Cloudflare or GitHub, and
   cookies, against such pages. Robot hostnames are never cached by Cloudflare, and a released name
   rests for 90 days before another robot can take it.
 - Who may sign in is decided by GitHub **id**, never by login: the admin (`ADMIN_GITHUB_IDS`) and
-  the people they invite from the relay's admin page. Removing someone ends their relay sessions at
-  once; their robots stop accepting them at the next sync, within a few minutes.
+  the people they invite from the relay's admin page, who may own robots, and guests, who may only
+  open robots their owners shared with them. Removing someone ends their relay sessions at once;
+  their robots stop accepting them at the next sync, within a few minutes.
+- **Sharing** gives another GitHub account "View only" or "Can control" on one robot. "Can control"
+  means mowing: start, pause, stop, dock and engaging the emergency stop, enforced by the agent on
+  the robot. It does not include settings, maps, schedules, containers, updates, the joystick or
+  releasing an emergency stop. Removing someone reaches the robot at its next sync (3 minutes by
+  default). Design, threat model and what is not verified: [docs/sharing.md](docs/sharing.md).
 - **Updates are a root of trust too.** The robot runs the image `ghcr.io/liltaket/mowgli-connect-agent`
   it pulls, and automatic updates (on by default) pull `:latest` every night. Whoever can publish
   that image (the GitHub account, this repository's Actions, or GHCR) could ship one that skips the
