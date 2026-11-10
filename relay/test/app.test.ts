@@ -576,6 +576,18 @@ describe("robots shared with an app user", () => {
     const mine = (await (await api(ownerDev, "GET", "/v1/app/robots", undefined, genv)).json()) as { robots: Record<string, unknown>[] };
     expect(mine.robots[0]).toMatchObject({ role: "owner", sharedBy: null });
 
+    // Signing the guest's app out from the robots page cannot end sessions on the owner's robot,
+    // and says so.
+    const page = await (await call("/", { headers: { Cookie: guestUser.cookie } }, genv)).text();
+    expect(page).toContain("Not of robots shared with you");
+    const second = (await signedIn(guestUser, genv)).dev;
+    const out = await call(`/devices/${second.thumbprint}/revoke`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: ORIGIN, Cookie: guestUser.cookie }, body: "", redirect: "manual" }, genv);
+    expect(out.headers.get("Location")).toBe("/?notice=device_signed_out_shared");
+    expect(await (await call("/?notice=device_signed_out_shared", { headers: { Cookie: guestUser.cookie } }, genv)).text()).toContain("Robots shared with you are not covered");
+    // The owner, who has no robots shared with them, gets the plain notice.
+    const ownerOut = await call(`/devices/${ownerDev.thumbprint}/revoke`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: ORIGIN, Cookie: owner.cookie }, body: "", redirect: "manual" }, genv);
+    expect(ownerOut.headers.get("Location")).toBe("/?notice=device_signed_out");
+
     // Removing the share signs the guest's app out (their last way in).
     const rm = await call(`/robots/${robot.robotId}/members/${guestUser.id}/remove`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: ORIGIN, Cookie: owner.cookie }, body: "", redirect: "manual" }, genv);
     expect(rm.status).toBe(303);

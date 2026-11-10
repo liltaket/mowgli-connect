@@ -27,6 +27,9 @@ const NOTICES: Record<string, string> = {
   left: "You left that robot. It is no longer in your list.",
   device_signed_out:
     "The app on that device is signed out. Everyone was signed out of the robots you own (its robot sessions end within a few minutes), and you were signed out of Mowgli Connect in every other browser. Open your robots again from here.",
+  // Signing a device out cannot sign everyone out of a robot someone else owns.
+  device_signed_out_shared:
+    "The app on that device is signed out, and you were signed out of Mowgli Connect in every other browser. Everyone was signed out of any robots you own. Robots shared with you are not covered: a session the app has open on one can last up to 12 hours. If the device is lost, ask each robot's owner to remove your share or to sign everyone out.",
 };
 
 const GITHUB_ICON = html`<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>`;
@@ -109,7 +112,7 @@ async function dashboard(env: Env, user: SessionUser, url: URL): Promise<Respons
   const owned = await ownedRobots(env, user.id);
   const full = limit !== null && owned >= limit;
   const guest = !(await canOwn(env, user.id, user.login));
-  const devicesSection = await devicesHtml(env, user);
+  const devicesSection = await devicesHtml(env, user, rows.results.some((r) => r.role !== "owner"));
   return page(
     "Robots",
     html`
@@ -200,7 +203,7 @@ interface DeviceListRow {
 }
 
 /** The person's signed-in app devices, each with Sign out. Nothing when the app API is off. */
-async function devicesHtml(env: Env, user: SessionUser): Promise<SafeHtml | string> {
+async function devicesHtml(env: Env, user: SessionUser, shared: boolean): Promise<SafeHtml | string> {
   if (!appEnabled(env)) return "";
   const rows = await env.DB.prepare("SELECT device_id, name, created_at, last_used_at FROM devices WHERE user_id = ? ORDER BY created_at")
     .bind(user.id)
@@ -213,7 +216,7 @@ ${
     : html`<ul class="people">${rows.results.map(
         (d) => html`<li class="person"><span class="avatar" aria-hidden="true">${d.name.charAt(0).toUpperCase()}</span>
 <div class="person-main"><span class="person-name">${d.name}</span><span class="meta"><span>Signed in ${day(d.created_at)}</span><span>Last used ${day(d.last_used_at)}</span></span></div>
-<form class="orphan-unlink" method="post" action="/devices/${d.device_id}/revoke"><button class="danger">Sign out this device</button><p class="muted">Also signs everyone out of the robots you own, so a lost phone loses its open robot sessions too.</p></form></li>`,
+<form class="orphan-unlink" method="post" action="/devices/${d.device_id}/revoke"><button class="danger">Sign out this device</button><p class="muted">Also signs everyone out of the robots you own, so a lost phone loses its open robot sessions too.${shared ? " Not of robots shared with you: their owner can remove your share or sign everyone out." : ""}</p></form></li>`,
       )}</ul>`
 }`;
 }
@@ -378,9 +381,16 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
     if (!user) return redirect("/login", 303);
     // Also ends the robot sessions the app still had (robots this person owns), pending app
     // sign-ins, and the person's relay sessions in every other browser (a lost phone's included).
+    // Not on robots shared with them: the notice says so when there are any.
     const token = parseCookies(request.headers.get("Cookie"))[SESSION_COOKIE];
     const keep = token ? await sha256Hex(token) : null;
-    return (await signOutDevice(env, dev[1]!, user.id, { lostDevice: { keepSessionHash: keep } })) ? redirect("/?notice=device_signed_out", 303) : notFound();
+    if (!(await signOutDevice(env, dev[1]!, user.id, { lostDevice: { keepSessionHash: keep } }))) return notFound();
+    const shared = await env.DB.prepare(
+      "SELECT 1 AS ok FROM members m JOIN robots r ON r.robot_id = m.robot_id WHERE m.user_id = ? AND m.role != 'owner' AND r.status = 'claimed' LIMIT 1",
+    )
+      .bind(user.id)
+      .first();
+    return redirect(shared ? "/?notice=device_signed_out_shared" : "/?notice=device_signed_out", 303);
   }
 
   if (pathname === "/logout" && method === "POST") {
