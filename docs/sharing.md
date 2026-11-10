@@ -20,8 +20,8 @@ person signs in with their own GitHub account and gets one of two roles:
 
 "Can control" means control of mowing, not of the robot: give it to someone you would hand the
 remote to. They can start the mower at any time, from anywhere. Sending the robot to its dock
-(HighLevelControl command 2, HOME) also recovers it from a dig hold, the stop after it dug into
-the lawn, so an operator can end a dig hold that way, though not clear it in place. This is kept
+(HighLevelControl command 2, HOME) also recovers it from a dig hold (mowing stopped after its
+wheels dug in repeatedly; the GUI itself offers "send it back to the station" there), so an operator can end a dig hold that way, though not clear it in place. This is kept
 on purpose (the dock is the safe place to go) and the share page says so.
 
 Everyone the robot is shared with, View only included, sees where it is: the live map and the

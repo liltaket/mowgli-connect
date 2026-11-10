@@ -36,7 +36,7 @@ export function roleLabel(role: string): string {
 const ROLE_HELP: Record<SharedRole, string> = {
   viewer: "They see the robot's status, its live map and its schedules.",
   operator:
-    "They also start, pause and stop mowing, send the robot to its dock and engage the emergency stop. Sending it to the dock also takes it out of a dig hold, the stop after it dug into the lawn.",
+    "They also start, pause and stop mowing, send the robot to its dock and engage the emergency stop. Sending it to the dock also ends a dig hold (the stop after its wheels dug in repeatedly).",
 };
 
 const NOT_ALLOWED =
