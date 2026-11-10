@@ -1,6 +1,6 @@
-import { canOwn, defaultRobotLimit, GITHUB_USER_ID, isAdmin, MAX_ROBOT_LIMIT, parseRobotLimit } from "./access";
+import { afterSharesEnded, canOwn, defaultRobotLimit, GITHUB_USER_ID, isAdmin, MAX_ROBOT_LIMIT, parseRobotLimit } from "./access";
 import type { Env } from "./env";
-import { unlinkRobot } from "./claim";
+import { revokeRobot, unlinkRobot } from "./claim";
 import { GITHUB_LOGIN, lookupGithubUser } from "./github";
 import { html, page } from "./html";
 import type { SessionUser } from "./session";
@@ -279,7 +279,11 @@ export async function handleAdmin(request: Request, env: Env, url: URL, user: Se
       .bind(target)
       .all<{ robot_id: string }>();
     const prov = createProvisioner(env);
-    for (const r of owned.results) await unlinkRobot(env, prov, r.robot_id, { onlyIfOwnerNotInvited: true });
+    // Every tunnel first, then the guests of all of them at once: a constant number of D1 calls
+    // for the guests, however many robots and shares.
+    const guests: string[] = [];
+    for (const r of owned.results) guests.push(...((await revokeRobot(env, prov, r.robot_id, { onlyIfOwnerNotInvited: true })) ?? []));
+    await afterSharesEnded(env, guests);
     console.log("admin: unlinked", owned.results.length, "robots of", target, "by", user.id);
     return redirect("/admin?notice=removed_unlinked");
   }

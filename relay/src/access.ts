@@ -36,7 +36,7 @@ function allowedByConfig(env: Env, userId: string, login: string): boolean {
 export async function canOwn(env: Env, userId: string, login: string): Promise<boolean> {
   if (ownsByConfig(env, userId, login)) return true;
   const row = await env.DB.prepare("SELECT 1 AS ok FROM invites WHERE user_id = ?").bind(userId).first();
-  return row !== null;
+  return mayOwn(env, userId, login, row !== null);
 }
 
 /** canOwn without the invitation: admins and ALLOWED_GITHUB_LOGINS. */
@@ -44,32 +44,75 @@ function ownsByConfig(env: Env, userId: string, login: string): boolean {
   return isAdmin(env, userId) || allowedByConfig(env, userId, login);
 }
 
+/** canOwn once the invitation is known; the one definition, for owners and for the people they share with. */
+function mayOwn(env: Env, userId: string, login: string, invited: boolean): boolean {
+  return invited || ownsByConfig(env, userId, login);
+}
+
+/** canSignIn once the facts are known. */
+function maySignIn(env: Env, userId: string, login: string, s: Standing): boolean {
+  return mayOwn(env, userId, login, s.invited) || s.liveShare;
+}
+
 /**
  * Who may sign in: everyone who may own robots, and guests. A guest is someone a robot is shared
  * with (by GitHub id) whose owner may still own robots; they can open the robots shared with them
  * and nothing more: no robots of their own (their robot limit is 0), and they are not on the
  * admin page. Checked on every request, so a guest's last share ending signs them out at once.
+ * `login` is the caller's: OAuth passes the one GitHub just returned, not the stored one.
  */
 export async function canSignIn(env: Env, userId: string, login: string): Promise<boolean> {
-  return (await canOwn(env, userId, login)) || (await hasLiveShare(env, userId));
+  if (ownsByConfig(env, userId, login)) return true;
+  return maySignIn(env, userId, login, (await standings(env, [userId])).get(userId)!);
+}
+
+/** D1 binds at most 100 parameters per statement. */
+const MAX_PARAMS = 100;
+
+function chunks<T>(items: T[]): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += MAX_PARAMS) out.push(items.slice(i, i + MAX_PARAMS));
+  return out;
+}
+
+const placeholders = (n: number) => Array.from({ length: n }, (_, i) => `?${i + 1}`).join(", ");
+
+interface Standing {
+  login: string | null; // null: no users row
+  invited: boolean;
+  liveShare: boolean;
 }
 
 /**
- * Whether a robot is shared with this person by an owner who may still own robots: canOwn for
- * every distinct owner, with their invitation looked up in the same query.
+ * The sign-in rule's facts for many people, one query per 100: their stored login, whether they
+ * are invited, and whether a robot is shared with them by an owner who may still own robots
+ * (canOwn for every distinct owner, with their invitation looked up in the same query).
  */
-async function hasLiveShare(env: Env, userId: string): Promise<boolean> {
-  const owners = await env.DB.prepare(
-    `SELECT DISTINCT o.user_id, u.login, EXISTS (SELECT 1 FROM invites i WHERE i.user_id = o.user_id) AS invited
-     FROM members m
-       JOIN robots r ON r.robot_id = m.robot_id AND r.status = 'claimed'
-       JOIN members o ON o.robot_id = m.robot_id AND o.role = 'owner'
-       JOIN users u ON u.id = o.user_id
-     WHERE m.user_id = ? AND m.role != 'owner'`,
-  )
-    .bind(userId)
-    .all<{ user_id: string; login: string; invited: number }>();
-  return owners.results.some((o) => o.invited === 1 || ownsByConfig(env, o.user_id, o.login));
+async function standings(env: Env, userIds: string[]): Promise<Map<string, Standing>> {
+  const out = new Map<string, Standing>();
+  for (const ids of chunks([...new Set(userIds)])) {
+    const rows = await env.DB.prepare(
+      `WITH ids(id) AS (VALUES ${ids.map((_, i) => `(?${i + 1})`).join(", ")})
+       SELECT ids.id AS user_id, (SELECT login FROM users WHERE id = ids.id) AS login,
+              EXISTS (SELECT 1 FROM invites i WHERE i.user_id = ids.id) AS invited,
+              NULL AS owner_id, NULL AS owner_login, 0 AS owner_invited
+       FROM ids
+       UNION ALL
+       SELECT DISTINCT m.user_id, NULL, 0, o.user_id, u.login, EXISTS (SELECT 1 FROM invites i WHERE i.user_id = o.user_id)
+       FROM members m
+         JOIN robots r ON r.robot_id = m.robot_id AND r.status = 'claimed'
+         JOIN members o ON o.robot_id = m.robot_id AND o.role = 'owner'
+         JOIN users u ON u.id = o.user_id
+       WHERE m.user_id IN (SELECT id FROM ids) AND m.role != 'owner'`,
+    )
+      .bind(...ids)
+      .all<{ user_id: string; login: string | null; invited: number; owner_id: string | null; owner_login: string; owner_invited: number }>();
+    for (const r of rows.results) if (r.owner_id === null) out.set(r.user_id, { login: r.login, invited: r.invited === 1, liveShare: false });
+    for (const r of rows.results) {
+      if (r.owner_id !== null && mayOwn(env, r.owner_id, r.owner_login, r.owner_invited === 1)) out.get(r.user_id)!.liveShare = true;
+    }
+  }
+  return out;
 }
 
 /**
@@ -78,15 +121,30 @@ async function hasLiveShare(env: Env, userId: string): Promise<boolean> {
  * every request, so this is cleanup, not the gate. Someone who never signed in leaves no row.
  */
 export async function afterShareEnded(env: Env, userId: string): Promise<boolean> {
-  const u = await env.DB.prepare("SELECT login FROM users WHERE id = ?").bind(userId).first<{ login: string }>();
-  if (u && (await canSignIn(env, userId, u.login))) return false;
-  await env.DB.batch([
-    env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId),
-    env.DB.prepare("DELETE FROM devices WHERE user_id = ?").bind(userId),
-    env.DB.prepare("DELETE FROM app_codes WHERE user_id = ?").bind(userId),
-    env.DB.prepare("DELETE FROM users WHERE id = ?1 AND last_login_at = 0 AND NOT EXISTS (SELECT 1 FROM members WHERE user_id = ?1)").bind(userId),
-  ]);
-  return true;
+  return (await afterSharesEnded(env, [userId])).has(userId);
+}
+
+/**
+ * afterShareEnded for many people (the guests of an unlinked robot), in a number of D1 calls that
+ * does not grow with them below 100: one query for who can still sign in, one batch for the rest.
+ * Returns who was signed out. Someone without a users row cannot sign in and has nothing to end.
+ */
+export async function afterSharesEnded(env: Env, userIds: string[]): Promise<Set<string>> {
+  const gone = new Set<string>();
+  for (const [id, s] of await standings(env, userIds)) if (s.login === null || !maySignIn(env, id, s.login, s)) gone.add(id);
+  const steps = chunks([...gone]).flatMap((ids) => {
+    const in_ = placeholders(ids.length);
+    return [
+      env.DB.prepare(`DELETE FROM sessions WHERE user_id IN (${in_})`).bind(...ids),
+      env.DB.prepare(`DELETE FROM devices WHERE user_id IN (${in_})`).bind(...ids),
+      env.DB.prepare(`DELETE FROM app_codes WHERE user_id IN (${in_})`).bind(...ids),
+      env.DB.prepare(
+        `DELETE FROM users WHERE id IN (${in_}) AND last_login_at = 0 AND NOT EXISTS (SELECT 1 FROM members m WHERE m.user_id = users.id)`,
+      ).bind(...ids),
+    ];
+  });
+  if (steps.length > 0) await env.DB.batch(steps);
+  return gone;
 }
 
 export async function defaultRobotLimit(env: Env): Promise<number> {

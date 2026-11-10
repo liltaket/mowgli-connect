@@ -1,4 +1,4 @@
-import { afterShareEnded, canOwn, ownedRobots, robotLimit } from "./access";
+import { afterSharesEnded, canOwn, ownedRobots, robotLimit } from "./access";
 import { alert } from "./alerts";
 import type { Env } from "./env";
 import { sealToken, tokenKeyUsable } from "./tokenSeal";
@@ -269,11 +269,29 @@ export async function unlinkRobot(
   robotId: string,
   opts: { onlyIfOwnerNotInvited?: boolean } = {},
 ): Promise<boolean> {
+  const guests = await revokeRobot(env, provisioner, robotId, opts);
+  if (guests === null) return false;
+  // The people it was shared with lost that share like any other: for a guest's last one, end
+  // their relay sessions and app devices now, so they do not come back with a later share.
+  await afterSharesEnded(env, guests);
+  return true;
+}
+
+/**
+ * unlinkRobot without the guests' cleanup, for unlinking many robots at once: returns the people
+ * it was shared with (for afterSharesEnded), or null when it was not unlinked.
+ */
+export async function revokeRobot(
+  env: Env,
+  provisioner: TunnelProvisioner,
+  robotId: string,
+  opts: { onlyIfOwnerNotInvited?: boolean } = {},
+): Promise<string[] | null> {
   const now = nowSeconds();
   const before = await env.DB.prepare("SELECT hostname, tunnel_id, dns_record_id FROM robots WHERE robot_id = ? AND status = 'claimed'")
     .bind(robotId)
     .first<{ hostname: string | null; tunnel_id: string | null; dns_record_id: string | null }>();
-  if (!before) return false;
+  if (!before) return null;
   const [upd, del] = await env.DB.batch<{ user_id: string; role: string }>([
     env.DB.prepare(
       `UPDATE robots SET status = 'revoked', session_epoch = session_epoch + 1, tunnel_token = NULL, updated_at = ?1
@@ -284,12 +302,9 @@ export async function unlinkRobot(
     // In the same transaction, and only if the robot was just revoked.
     env.DB.prepare("DELETE FROM members WHERE robot_id = ? AND changes() > 0 RETURNING user_id, role").bind(robotId),
   ]);
-  if (upd?.meta.changes !== 1) return false;
-  // The people it was shared with lost that share like any other: for a guest's last one, end
-  // their relay sessions and app devices now, so they do not come back with a later share.
-  for (const m of del?.results ?? []) if (m.role !== "owner") await afterShareEnded(env, m.user_id);
+  if (upd?.meta.changes !== 1) return null;
   await cleanupRevoked(env, provisioner, robotId, { robotId, ...camel(before) });
-  return true;
+  return (del?.results ?? []).filter((m) => m.role !== "owner").map((m) => m.user_id);
 }
 
 function camel(r: { hostname: string | null; tunnel_id: string | null; dns_record_id: string | null }) {

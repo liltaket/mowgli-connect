@@ -618,6 +618,74 @@ describe("guests", () => {
     }
   });
 
+  it("are signed out in a constant number of D1 calls when a robot shared with many is unlinked", async () => {
+    /** Unlinks a robot shared with `n` guests whose last share it is; returns the D1 calls made. */
+    async function unlinkCounting(n: number) {
+      const owner = await invitedUser();
+      const robot = await ownedRobot(owner);
+      const other = await ownedRobot(await invitedUser());
+      const now = nowSeconds();
+      const last: string[] = [];
+      for (let i = 0; i < n; i++) {
+        if (i % 3 === 2) {
+          const id = `gh:${nextId()}`; // shared with, never signed in
+          await testEnv.DB.prepare("INSERT INTO users (id, login, created_at, last_login_at) VALUES (?, ?, 0, 0)").bind(id, `never-${id.slice(3)}`).run();
+          last.push(id);
+        } else {
+          const u = await newUser();
+          await addDevice(u.id);
+          last.push(u.id);
+        }
+      }
+      const elsewhere = await newUser(); // also shared another live robot
+      const invited = await invitedUser(); // may own robots anyway
+      const unrelated = await newUser();
+      const add = (rid: string, uid: string) =>
+        testEnv.DB.prepare("INSERT INTO members (robot_id, user_id, role, created_at) VALUES (?, ?, 'viewer', ?)").bind(rid, uid, now);
+      await testEnv.DB.batch([...[...last, elsewhere.id, invited.id].map((uid) => add(robot.robotId, uid)), add(other.robotId, elsewhere.id)]);
+
+      const calls = { prepare: 0, batch: 0 };
+      const db = new Proxy(testEnv.DB, {
+        get(t, k) {
+          const v = Reflect.get(t, k) as unknown;
+          if (typeof v !== "function") return v;
+          return (...a: unknown[]) => {
+            if (k === "prepare" || k === "batch") calls[k]++;
+            return (v as (...x: unknown[]) => unknown).apply(t, a);
+          };
+        },
+      });
+      expect((await post(`/robots/${robot.robotId}/unlink`, owner, {}, { Origin: ORIGIN }, { ...env, DB: db })).status).toBe(303);
+
+      for (const id of last) {
+        expect(await count("sessions", id)).toBe(0);
+        expect(await count("devices", id)).toBe(0);
+      }
+      // Signed-in accounts stay (their row is never deleted); the never-used ones made for the share go.
+      expect(await count("users", last[0]!, "id")).toBe(1);
+      if (n > 2) expect(await count("users", last[2]!, "id")).toBe(0);
+      for (const kept of [owner, elsewhere, invited]) expect(await signedOut(kept)).toBe(false);
+      for (const kept of [owner, elsewhere, invited, unrelated]) expect(await count("sessions", kept.id)).toBe(1);
+      return calls;
+    }
+    const one = await unlinkCounting(1);
+    const ten = await unlinkCounting(10);
+    expect(ten).toEqual(one);
+    expect(ten.prepare + ten.batch).toBeLessThanOrEqual(20);
+  });
+
+  it("are signed out in bulk past D1's 100 bound parameters, and only those with no other way in", async () => {
+    const { afterSharesEnded } = await import("../src/access");
+    const ids: string[] = [];
+    for (let i = 0; i < 150; i++) ids.push((await newUser()).id);
+    const invited = await invitedUser();
+    const gone = await afterSharesEnded(env, [...ids, invited.id, ids[0]!]);
+    expect(gone.size).toBe(150);
+    expect(gone.has(invited.id)).toBe(false);
+    for (const id of [ids[0]!, ids[99]!, ids[100]!, ids[149]!]) expect(await count("sessions", id)).toBe(0);
+    expect(await count("sessions", invited.id)).toBe(1);
+  });
+
   it("the cron forgets accounts made for a share once no share is left", async () => {
     const { runCleanup } = await import("../src/index");
     const owner = await invitedUser();
