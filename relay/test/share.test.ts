@@ -115,6 +115,16 @@ function grantRole(res: Response): string {
   return decodeJws(res.headers.get("Location")!.split("#grant=")[1]!).payload.role;
 }
 
+async function count(table: string, userId: string, column = "user_id"): Promise<number> {
+  return (await testEnv.DB.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE ${column} = ?`).bind(userId).first<{ n: number }>())!.n;
+}
+
+async function addDevice(userId: string): Promise<void> {
+  await testEnv.DB.prepare("INSERT INTO devices (device_id, user_id, name, public_jwk, created_at, last_used_at) VALUES (?, ?, 'Phone', '{}', ?, ?)")
+    .bind(crypto.randomUUID().replace(/-/g, "").padEnd(43, "x"), userId, nowSeconds(), nowSeconds())
+    .run();
+}
+
 async function signedOut(user: TestUser): Promise<boolean> {
   return (await (await get("/", user)).text()).includes("Sign in with GitHub");
 }
@@ -527,6 +537,60 @@ describe("guests", () => {
     const guest = (await signIn(gh))!;
     expect((await post(`/robots/${robot.robotId}/unlink`, owner, {})).status).toBe(303);
     expect(await signedOut(guest)).toBe(true);
+  });
+
+  it("lose their relay sessions and app devices when the robot is unlinked, so a later share does not revive them", async () => {
+    const owner = await invitedUser();
+    const robot = await ownedRobot(owner);
+    const gh = { id: nextId(), login: "unlinked-revive" };
+    const target = await share(owner, robot, gh, "operator");
+    const guest = (await signIn(gh))!;
+    await addDevice(target);
+    const never = await share(owner, robot, { id: nextId(), login: "unlinked-never" });
+    expect((await post(`/robots/${robot.robotId}/unlink`, owner, {})).status).toBe(303);
+    expect(await count("sessions", target)).toBe(0);
+    expect(await count("devices", target)).toBe(0);
+    expect(await count("users", never, "id")).toBe(0); // the account made for the share is gone too
+    // Shared with again later: the old browser session and app device stay signed out.
+    await share(owner, await ownedRobot(owner), gh);
+    expect(await signedOut(guest)).toBe(true);
+    expect(await count("devices", target)).toBe(0);
+  });
+
+  it("lose their relay sessions when the admin unlinks the robot of a removed owner", async () => {
+    const admin = await newUser("unlink-admin");
+    const aenv: Env = { ...env, ADMIN_GITHUB_IDS: admin.id };
+    for (const how of ["remove", "orphan"] as const) {
+      const owner = await invitedUser();
+      const robot = await ownedRobot(owner);
+      const gh = { id: nextId(), login: `admin-unlinked-${how}` };
+      const target = await share(owner, robot, gh);
+      await signIn(gh);
+      await addDevice(target);
+      if (how === "remove") {
+        expect((await post(`/admin/people/${owner.id}/remove`, admin, { unlink: "1" }, { Origin: ORIGIN }, aenv)).headers.get("Location")).toBe("/admin?notice=removed_unlinked");
+      } else {
+        await testEnv.DB.prepare("DELETE FROM invites WHERE user_id = ?").bind(owner.id).run();
+        expect((await post(`/admin/robots/${robot.robotId}/unlink`, admin, {}, { Origin: ORIGIN }, aenv)).headers.get("Location")).toBe("/admin?notice=unlinked");
+      }
+      expect((await testEnv.DB.prepare("SELECT status FROM robots WHERE robot_id = ?").bind(robot.robotId).first())!.status).toBe("revoked");
+      expect(await count("sessions", target)).toBe(0);
+      expect(await count("devices", target)).toBe(0);
+    }
+  });
+
+  it("the cron forgets accounts made for a share once no share is left", async () => {
+    const { runCleanup } = await import("../src/index");
+    const owner = await invitedUser();
+    const robot = await ownedRobot(owner);
+    const kept = await share(owner, robot, { id: nextId(), login: "cron-kept" });
+    const orphan = `gh:${nextId()}`;
+    await testEnv.DB.prepare("INSERT INTO users (id, login, created_at, last_login_at) VALUES (?, 'cron-orphan', 0, 0)").bind(orphan).run();
+    const signedIn = await newUser(); // no robots at all, but signed in: stays
+    await runCleanup(testEnv);
+    expect(await count("users", orphan, "id")).toBe(0);
+    expect(await count("users", kept, "id")).toBe(1);
+    expect(await count("users", signedIn.id, "id")).toBe(1);
   });
 
   it("an admin removing an invited person also removes the robots shared with them", async () => {

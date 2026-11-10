@@ -1,4 +1,4 @@
-import { canOwn, ownedRobots, robotLimit } from "./access";
+import { afterShareEnded, canOwn, ownedRobots, robotLimit } from "./access";
 import { alert } from "./alerts";
 import type { Env } from "./env";
 import { sealToken, tokenKeyUsable } from "./tokenSeal";
@@ -272,7 +272,7 @@ export async function unlinkRobot(
     .bind(robotId)
     .first<{ hostname: string | null; tunnel_id: string | null; dns_record_id: string | null }>();
   if (!before) return false;
-  const [upd] = await env.DB.batch([
+  const [upd, del] = await env.DB.batch<{ user_id: string; role: string }>([
     env.DB.prepare(
       `UPDATE robots SET status = 'revoked', session_epoch = session_epoch + 1, tunnel_token = NULL, updated_at = ?1
        WHERE robot_id = ?2 AND status = 'claimed'
@@ -280,9 +280,12 @@ export async function unlinkRobot(
                                     WHERE m.robot_id = ?2 AND m.role = 'owner'))`,
     ).bind(now, robotId, opts.onlyIfOwnerNotInvited ? 1 : 0),
     // In the same transaction, and only if the robot was just revoked.
-    env.DB.prepare("DELETE FROM members WHERE robot_id = ? AND changes() > 0").bind(robotId),
+    env.DB.prepare("DELETE FROM members WHERE robot_id = ? AND changes() > 0 RETURNING user_id, role").bind(robotId),
   ]);
   if (upd?.meta.changes !== 1) return false;
+  // The people it was shared with lost that share like any other: for a guest's last one, end
+  // their relay sessions and app devices now, so they do not come back with a later share.
+  for (const m of del?.results ?? []) if (m.role !== "owner") await afterShareEnded(env, m.user_id);
   await cleanupRevoked(env, provisioner, robotId, { robotId, ...camel(before) });
   return true;
 }

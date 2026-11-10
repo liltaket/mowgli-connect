@@ -1,4 +1,4 @@
-import { canSignIn, GITHUB_USER_ID } from "./access";
+import { afterShareEnded, GITHUB_USER_ID } from "./access";
 import { cleanGithubLogin, lookupError } from "./admin";
 import type { Env } from "./env";
 import type { GithubProfile } from "./github";
@@ -115,23 +115,6 @@ async function lookup(env: Env, userId: string, by: { login: string } | { id: nu
   const res = await lookupGithubUser(env, by);
   if (!res.ok) return { ok: false, status: res.reason === "unavailable" ? 502 : 400, message: lookupError(res.reason, "login" in by ? by.login : undefined) };
   return res;
-}
-
-/**
- * After someone lost a share: if they have no other way to sign in (a guest's last share), end
- * their relay sessions, app devices and pending app sign-ins at once. Sign-in is also checked on
- * every request, so this is cleanup, not the gate. Someone who never signed in leaves no row.
- */
-async function afterShareEnded(env: Env, userId: string): Promise<boolean> {
-  const u = await env.DB.prepare("SELECT login FROM users WHERE id = ?").bind(userId).first<{ login: string }>();
-  if (u && (await canSignIn(env, userId, u.login))) return false;
-  await env.DB.batch([
-    env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId),
-    env.DB.prepare("DELETE FROM devices WHERE user_id = ?").bind(userId),
-    env.DB.prepare("DELETE FROM app_codes WHERE user_id = ?").bind(userId),
-    env.DB.prepare("DELETE FROM users WHERE id = ?1 AND last_login_at = 0 AND NOT EXISTS (SELECT 1 FROM members WHERE user_id = ?1)").bind(userId),
-  ]);
-  return true;
 }
 
 interface ShareRow {
