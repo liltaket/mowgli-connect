@@ -269,6 +269,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
 		return
 	}
+	if bp, ok := g.cfg.Policy.(BodyPolicy); ok && !bp.AllowBody(role, r) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
 	if g.cfg.Guard != nil {
 		if reason := g.cfg.Guard.Deny(r); reason != "" {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": reason})
@@ -353,7 +357,8 @@ func (g *Gateway) redeemGrant(token string) (string, *session, error) {
 	case iat.Before(g.start.Add(-ClockSkew)) || (g.strictStart && !iat.After(g.start.Add(ClockSkew))):
 		return "", nil, grantError("issued before agent start")
 	}
-	if (c.Epoch > st.Epoch || st.Members[c.Sub] == "") && g.resync() {
+	// A grant with a higher role than the member list says is a share the owner just upgraded.
+	if (c.Epoch > st.Epoch || st.Members[c.Sub] == "" || roleRank(c.Role) > roleRank(st.Members[c.Sub])) && g.resync() {
 		g.mu.Lock()
 		st.Epoch, st.Members = g.state.Epoch, g.state.Members
 		g.mu.Unlock()

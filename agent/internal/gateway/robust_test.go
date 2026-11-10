@@ -20,7 +20,8 @@ import (
 // normalizing it, and the teleop prefix must stay blocked for every spelling of it.
 func FuzzCanonicalPathPolicy(f *testing.F) {
 	for _, s := range []string{"/", "/api/mowglinext/publish/x", "/api//mowglinext/publish/x", "/api/./mowglinext/publish/x",
-		"/api/x/../mowglinext/publish/x", "/api/mowglinext/publish/", "/api/mowglinext/publish", "/%2e%2e/api", "/a%2Fb", "/api/mowglinext/publish%2Fx"} {
+		"/api/x/../mowglinext/publish/x", "/api/mowglinext/publish/", "/api/mowglinext/publish", "/%2e%2e/api", "/a%2Fb", "/api/mowglinext/publish%2Fx",
+		"/api/mowglinext/call/high_level_control", "/api/mowglinext/call/high_level_control/", "/api/mowglinext/call/../call/emergency"} {
 		f.Add(s)
 	}
 	pol := MowgliPolicy{}
@@ -44,6 +45,12 @@ func FuzzCanonicalPathPolicy(f *testing.F) {
 		}
 		if pol.Allow(RoleViewer, "GET", u.Path, true) && !strings.HasPrefix(u.Path, "/api/mowglinext/multiplex") && !strings.HasPrefix(u.Path, "/api/mowglinext/subscribe/") {
 			t.Fatalf("viewer socket allowed for %q", u.Path)
+		}
+		if pol.Allow(RoleOperator, "GET", u.Path, true) != pol.Allow(RoleViewer, "GET", u.Path, true) {
+			t.Fatalf("operator and viewer sockets differ for %q", u.Path)
+		}
+		if pol.Allow(RoleOperator, "POST", u.Path, false) && !mowgliOperatorCalls[u.Path] {
+			t.Fatalf("operator POST allowed for %q", u.Path)
 		}
 	})
 }

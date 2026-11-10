@@ -66,9 +66,10 @@ func fakeGUI(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.SetCookie(w, &http.Cookie{Name: CookieName, Value: "planted"})
+		body, _ := io.ReadAll(r.Body)
 		json.NewEncoder(w).Encode(map[string]string{
 			"host": r.Host, "cookie": r.Header.Get("Cookie"), "path": r.URL.Path, "method": r.Method,
-			"xfp": r.Header.Get("X-Forwarded-Proto"),
+			"xfp": r.Header.Get("X-Forwarded-Proto"), "body": string(body),
 		})
 	})
 	srv := httptest.NewServer(mux)
@@ -94,7 +95,7 @@ func newFixture(t *testing.T, policy Policy) *fixture {
 		WSCompression: true, MaxStale: time.Hour, Now: func() time.Time { return f.now }})
 	f.state = State{Status: "claimed", Hostname: testHost, Epoch: 3,
 		RelayKeys: map[string]ed25519.PublicKey{"k1": pub},
-		Members:   map[string]string{"gh:1": RoleOwner, "gh:2": RoleViewer}}
+		Members:   map[string]string{"gh:1": RoleOwner, "gh:2": RoleViewer, "gh:3": RoleOperator}}
 	f.gw.UpdateState(f.state)
 	f.gw.MarkFresh()
 	f.srv = httptest.NewServer(f.gw)
