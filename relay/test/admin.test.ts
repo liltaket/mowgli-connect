@@ -318,8 +318,11 @@ describe("review fixes", () => {
       },
     };
     expect(await claimRobot(env, stub, "gh:7801", pairingCode, null)).toMatchObject({ ok: false, status: 403 });
-    expect(deprovisioned).toEqual([robot.robotId]);
-    expect(await testEnv.DB.prepare("SELECT status FROM robots WHERE robot_id = ?").bind(robot.robotId).first()).toEqual({ status: "revoked" });
+    // Someone who may not own robots has a robot limit of 0, so the claim itself fails and the
+    // robot is never theirs (it stays unclaimed and keeps its tunnel for the next attempt, as
+    // when two claims race for the last place on an account).
+    expect(deprovisioned).toEqual([]);
+    expect(await testEnv.DB.prepare("SELECT status FROM robots WHERE robot_id = ?").bind(robot.robotId).first()).toEqual({ status: "unclaimed" });
     expect(await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM members WHERE robot_id = ?").bind(robot.robotId).first()).toEqual({ n: 0 });
   });
 

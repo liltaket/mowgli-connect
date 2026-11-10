@@ -4,7 +4,7 @@ import { handleAdmin, isAdminPath } from "./admin";
 import { appEnabled, handleAppBrowser, signOutDevice } from "./appApi";
 import { claimRobot, limitMessage, planAddress, previewClaim, reachedLimit, unlinkRobot, type AddressPlan } from "./claim";
 import { HOMEPAGE, html, lawn, markSvg, page, type PageUser, type SafeHtml } from "./html";
-import { mintGrant } from "./grant";
+import { mintGrant, type Role } from "./grant";
 import { finishLogin, startLogin } from "./oauth";
 import { formatPairingCode, normalizePairingCode } from "./pairing";
 import { createProvisioner } from "./provisioner";
@@ -420,7 +420,7 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
         tunnel_id: string | null;
         claimed_at: number | null;
         first_online_at: number | null;
-        role: "owner" | "viewer";
+        role: Role;
       }>();
     if (!row) return notFound();
     // Only send the browser to the robot once its tunnel is up: otherwise it would get a

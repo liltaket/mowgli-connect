@@ -68,6 +68,7 @@ export async function runCleanup(env: Env): Promise<void> {
     env.DB.prepare("DELETE FROM oauth_states WHERE expires_at < ?").bind(now),
     env.DB.prepare("DELETE FROM pairing_codes WHERE expires_at < ?").bind(now),
     env.DB.prepare("DELETE FROM claim_failures WHERE at < ?").bind(now - 3600),
+    env.DB.prepare("DELETE FROM share_events WHERE at < ?").bind(now - 3600),
     env.DB.prepare("DELETE FROM released_hostnames WHERE released_at < ?").bind(now - NAME_QUARANTINE_SECONDS),
     env.DB.prepare("DELETE FROM app_codes WHERE expires_at < ?").bind(now),
     env.DB.prepare("DELETE FROM devices WHERE last_used_at < ?").bind(now - DEVICE_IDLE_SECONDS),

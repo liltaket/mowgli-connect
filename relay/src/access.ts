@@ -22,17 +22,48 @@ export function isAdmin(env: Env, userId: string): boolean {
   return list(env.ADMIN_GITHUB_IDS).some((id) => GITHUB_USER_ID.test(id) && id === userId.toLowerCase());
 }
 
-/**
- * Who may sign in: admins, people invited from the admin page (by id), and ALLOWED_GITHUB_LOGINS
- * (comma list of logins or `gh:<id>` entries; `*` = any GitHub account) for relays configured
- * by hand. Nothing configured = nobody (fail closed).
- */
-export async function isUserAllowed(env: Env, userId: string, login: string): Promise<boolean> {
-  if (isAdmin(env, userId)) return true;
+/** ALLOWED_GITHUB_LOGINS: logins or `gh:<id>` entries, `*` = any GitHub account. */
+function allowedByConfig(env: Env, userId: string, login: string): boolean {
   const allowed = list(env.ALLOWED_GITHUB_LOGINS);
-  if (allowed.includes("*") || allowed.includes(login.toLowerCase()) || allowed.includes(userId.toLowerCase())) return true;
+  return allowed.includes("*") || allowed.includes(login.toLowerCase()) || allowed.includes(userId.toLowerCase());
+}
+
+/**
+ * Who may own robots (claim them, with a robot limit): admins, people invited from the admin page
+ * (by id), and ALLOWED_GITHUB_LOGINS for relays configured by hand. Nothing configured = nobody
+ * (fail closed). Everyone who may own robots may sign in.
+ */
+export async function canOwn(env: Env, userId: string, login: string): Promise<boolean> {
+  if (isAdmin(env, userId) || allowedByConfig(env, userId, login)) return true;
   const row = await env.DB.prepare("SELECT 1 AS ok FROM invites WHERE user_id = ?").bind(userId).first();
   return row !== null;
+}
+
+/**
+ * Who may sign in: everyone who may own robots, and guests. A guest is someone a robot is shared
+ * with (by GitHub id) whose owner may still own robots; they can open the robots shared with them
+ * and nothing more: no robots of their own (their robot limit is 0), and they are not on the
+ * admin page. Checked on every request, so a guest's last share ending signs them out at once.
+ */
+export async function canSignIn(env: Env, userId: string, login: string): Promise<boolean> {
+  return (await canOwn(env, userId, login)) || (await hasLiveShare(env, userId));
+}
+
+/** Whether a robot is shared with this person by an owner who may still own robots. */
+export async function hasLiveShare(env: Env, userId: string): Promise<boolean> {
+  const owners = await env.DB.prepare(
+    `SELECT DISTINCT o.user_id, u.login FROM members m
+       JOIN robots r ON r.robot_id = m.robot_id AND r.status = 'claimed'
+       JOIN members o ON o.robot_id = m.robot_id AND o.role = 'owner'
+       JOIN users u ON u.id = o.user_id
+     WHERE m.user_id = ? AND m.role != 'owner' LIMIT 20`,
+  )
+    .bind(userId)
+    .all<{ user_id: string; login: string }>();
+  for (const o of owners.results) {
+    if (await canOwn(env, o.user_id, o.login)) return true;
+  }
+  return false;
 }
 
 export async function defaultRobotLimit(env: Env): Promise<number> {
@@ -41,11 +72,13 @@ export async function defaultRobotLimit(env: Env): Promise<number> {
   return Number.isInteger(n) && n >= 0 && n <= MAX_ROBOT_LIMIT ? n : DEFAULT_ROBOT_LIMIT;
 }
 
-/** How many robots this person may own; null = no limit (admins). */
+/** How many robots this person may own; null = no limit (admins), 0 for guests. */
 export async function robotLimit(env: Env, userId: string): Promise<number | null> {
   if (isAdmin(env, userId)) return null;
   const row = await env.DB.prepare("SELECT robot_limit FROM invites WHERE user_id = ?").bind(userId).first<{ robot_limit: number | null }>();
-  return row?.robot_limit ?? (await defaultRobotLimit(env));
+  if (row) return row.robot_limit ?? (await defaultRobotLimit(env));
+  const user = await env.DB.prepare("SELECT login FROM users WHERE id = ?").bind(userId).first<{ login: string }>();
+  return user && allowedByConfig(env, userId, user.login) ? await defaultRobotLimit(env) : 0;
 }
 
 export async function ownedRobots(env: Env, userId: string): Promise<number> {

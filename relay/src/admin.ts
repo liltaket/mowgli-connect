@@ -1,4 +1,4 @@
-import { defaultRobotLimit, GITHUB_USER_ID, isAdmin, isUserAllowed, MAX_ROBOT_LIMIT, parseRobotLimit } from "./access";
+import { canOwn, defaultRobotLimit, GITHUB_USER_ID, isAdmin, MAX_ROBOT_LIMIT, parseRobotLimit } from "./access";
 import type { Env } from "./env";
 import { unlinkRobot } from "./claim";
 import { GITHUB_LOGIN, lookupGithubUser } from "./github";
@@ -16,7 +16,7 @@ import { isRobotId, nowSeconds, readBodyText } from "./util";
 const NOTICES: Record<string, string> = {
   invited: "Invitation added. They can sign in now.",
   already: "That account was already invited.",
-  removed: "Access removed. Their sessions here have ended, and their robots stop accepting them within a few minutes.",
+  removed: "Access removed, including robots others shared with them. Their sessions here have ended, and their robots stop accepting them within a few minutes.",
   unlinked: "Robot unlinked. Its tunnel is being deleted.",
   removed_unlinked: "Access removed and their robots unlinked. Their sessions here have ended.",
   removed_config:
@@ -262,11 +262,13 @@ export async function handleAdmin(request: Request, env: Env, url: URL, user: Se
   await env.DB.batch([
     env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(target),
     env.DB.prepare("DELETE FROM devices WHERE user_id = ?").bind(target), // their app sign-ins too
+    // And the robots others shared with them, or they could go on signing in as a guest.
+    env.DB.prepare("DELETE FROM members WHERE user_id = ? AND role != 'owner'").bind(target),
   ]);
   console.log("admin: removed", target, "by", user.id);
   // Say so when the configuration still lets them in, instead of promising what did not happen.
   const login = await env.DB.prepare("SELECT login FROM users WHERE id = ?").bind(target).first<{ login: string }>();
-  const still = await isUserAllowed(env, target, login?.login ?? "");
+  const still = await canOwn(env, target, login?.login ?? "");
   if (still) return redirect("/admin?notice=removed_config");
   if (form.get("unlink") === "1") {
     const owned = await env.DB.prepare(
@@ -312,7 +314,7 @@ async function orphanedRobots(env: Env): Promise<OrphanRow[]> {
   ).all<OrphanRow>();
   const out: OrphanRow[] = [];
   for (const r of rows.results) {
-    if (!(await isUserAllowed(env, r.user_id, r.login ?? ""))) out.push(r);
+    if (!(await canOwn(env, r.user_id, r.login ?? ""))) out.push(r);
   }
   return out;
 }

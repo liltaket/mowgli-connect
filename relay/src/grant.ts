@@ -5,11 +5,14 @@ import { nowSeconds, randomToken } from "./util";
 
 export const GRANT_TTL_SECONDS = 60;
 
+/** A member's role on a robot (docs/protocol.md). The robot caps every grant by its member list. */
+export type Role = "owner" | "operator" | "viewer";
+
 export interface GrantInput {
   robotId: string;
   userId: string;
   name: string;
-  role: "owner" | "viewer";
+  role: Role;
   epoch: number;
 }
 

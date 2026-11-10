@@ -1,8 +1,8 @@
-import { isUserAllowed, ownedRobots, robotLimit } from "./access";
+import { canSignIn, ownedRobots, robotLimit } from "./access";
 import { claimRobot, planAddress, previewClaim, reachedLimit, limitMessage } from "./claim";
 import { DEVICE_ID, DeviceAuthError, jwkThumbprint, parseDeviceJwk, verifyDeviceAssertion, type DeviceJwk } from "./deviceAuth";
 import type { Env } from "./env";
-import { mintGrant } from "./grant";
+import { mintGrant, type Role } from "./grant";
 import { html, page, type PageUser } from "./html";
 import { createProvisioner } from "./provisioner";
 import { json } from "./robotApi";
@@ -274,7 +274,7 @@ async function token(request: Request, env: Env, url: URL): Promise<Response> {
   const pending = await env.DB.prepare(`SELECT user_id FROM app_codes WHERE ${MATCH}`).bind(...match).first<{ user_id: string }>();
   if (!pending) return json({ error: "invalid_grant" }, 400);
   const user = await env.DB.prepare("SELECT id, login, name FROM users WHERE id = ?").bind(pending.user_id).first<SessionUser>();
-  if (!user || !(await isUserAllowed(env, user.id, user.login))) return json({ error: "no_access" }, 403);
+  if (!user || !(await canSignIn(env, user.id, user.login))) return json({ error: "no_access" }, 403);
   if (!(await consumeJti(env, thumbprint, a.jti, a.exp))) return authFailure(new DeviceAuthError("replayed_jti"));
   // One transaction: the device is created from the code and the code used up together, so a
   // sign-out (which deletes pending codes and the device) is either before both or after both.
@@ -331,7 +331,7 @@ async function authenticate(request: Request, env: Env, url: URL): Promise<{ dev
   if (!d || nowSeconds() - d.last_used_at > DEVICE_IDLE_SECONDS) return authFailure(new DeviceAuthError("unknown_device"));
   if (!(await consumeJti(env, d.device_id, a.jti, a.exp))) return authFailure(new DeviceAuthError("replayed_jti"));
   const user = await env.DB.prepare("SELECT id, login, name FROM users WHERE id = ?").bind(d.user_id).first<SessionUser>();
-  if (!user || !(await isUserAllowed(env, user.id, user.login))) return json({ error: "no_access" }, 403);
+  if (!user || !(await canSignIn(env, user.id, user.login))) return json({ error: "no_access" }, 403);
   const now = nowSeconds();
   if (now - d.last_used_at > LAST_USED_REFRESH_SECONDS) {
     await env.DB.prepare("UPDATE devices SET last_used_at = ? WHERE device_id = ?").bind(now, d.device_id).run();
@@ -448,7 +448,7 @@ export async function handleAppApi(request: Request, env: Env, url: URL): Promis
       // The epoch is read together with proof that the device still exists: a grant minted while a
       // sign-out commits carries the old epoch (ended at the robot's next sync), never the new one.
       .bind(robotId, user.id, device.device_id)
-      .first<{ hostname: string | null; session_epoch: number; tunnel_id: string | null; first_online_at: number | null; role: "owner" | "viewer" }>();
+      .first<{ hostname: string | null; session_epoch: number; tunnel_id: string | null; first_online_at: number | null; role: Role }>();
     if (!row) return json({ error: "not_found" }, 404); // non-members, unknown robots, signed-out devices
     if (!row.hostname) return json({ error: "robot_starting" }, 503, { "Retry-After": "10" });
     const prov = createProvisioner(env);

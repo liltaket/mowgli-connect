@@ -1,4 +1,4 @@
-import { isUserAllowed, ownedRobots, robotLimit } from "./access";
+import { canOwn, ownedRobots, robotLimit } from "./access";
 import { alert } from "./alerts";
 import type { Env } from "./env";
 import { sealToken, tokenKeyUsable } from "./tokenSeal";
@@ -253,7 +253,7 @@ async function claimWithCode(
   }
   // Access removed while the robot was being added: do not leave it owned by nobody usable.
   const who = await env.DB.prepare("SELECT login FROM users WHERE id = ?").bind(userId).first<{ login: string }>();
-  if (!who || !(await isUserAllowed(env, userId, who.login))) {
+  if (!who || !(await canOwn(env, userId, who.login))) {
     await unlinkRobot(env, provisioner, robotId);
     return { ok: false, status: 403, message: "Your account no longer has access." };
   }
