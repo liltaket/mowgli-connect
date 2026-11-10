@@ -147,22 +147,22 @@ export async function previewClaim(
   userId: string,
   rawCode: string,
   budget: GuessBudget = { key: userId, perHour: CLAIM_FAILURES_PER_HOUR },
-): Promise<{ ok: true; robotId: string; name: string | null } | Failure> {
+): Promise<{ ok: true; robotId: string; name: string | null; simulator: boolean } | Failure> {
   return withAttempt(env, budget, () => lookupCode(env, rawCode));
 }
 
-async function lookupCode(env: Env, rawCode: string): Promise<{ ok: true; robotId: string; name: string | null } | Failure> {
+async function lookupCode(env: Env, rawCode: string): Promise<{ ok: true; robotId: string; name: string | null; simulator: boolean } | Failure> {
   const code = normalizePairingCode(rawCode);
   const row = code
     ? await env.DB.prepare(
-        `SELECT r.robot_id, r.name FROM pairing_codes p JOIN robots r ON r.robot_id = p.robot_id
+        `SELECT r.robot_id, r.name, r.simulator FROM pairing_codes p JOIN robots r ON r.robot_id = p.robot_id
          WHERE p.code_hash IN (?1, ?2) AND p.expires_at > ?3 AND r.status = 'unclaimed'`,
       )
         .bind(...(await pairingCodeHashes(env, code)), nowSeconds())
-        .first<{ robot_id: string; name: string | null }>()
+        .first<{ robot_id: string; name: string | null; simulator: number }>()
     : null;
   if (!row) return INVALID;
-  return { ok: true, robotId: row.robot_id, name: row.name };
+  return { ok: true, robotId: row.robot_id, name: row.name, simulator: row.simulator === 1 };
 }
 
 export async function claimRobot(

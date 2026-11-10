@@ -547,14 +547,14 @@ export async function handleAppApi(request: Request, env: Env, url: URL): Promis
 
   if (path === "/v1/app/robots") {
     const rows = await env.DB.prepare(
-      `SELECT r.robot_id, r.name, r.hostname, m.role, m.label, r.allow_teleop, r.tunnel_id, r.agent_version, r.first_online_at,
+      `SELECT r.robot_id, r.name, r.hostname, m.role, m.label, r.allow_teleop, r.tunnel_id, r.agent_version, r.first_online_at, r.simulator,
               ou.login AS owner_login, o.label AS owner_label
        FROM members m JOIN robots r ON r.robot_id = m.robot_id
        LEFT JOIN members o ON o.robot_id = r.robot_id AND o.role = 'owner' LEFT JOIN users ou ON ou.id = o.user_id
        WHERE m.user_id = ? AND r.status = 'claimed' ORDER BY m.created_at`,
     )
       .bind(user.id)
-      .all<{ robot_id: string; name: string | null; hostname: string | null; role: Role; label: string | null; allow_teleop: number | null; tunnel_id: string | null; agent_version: string | null; first_online_at: number | null; owner_login: string | null; owner_label: string | null }>();
+      .all<{ robot_id: string; name: string | null; hostname: string | null; role: Role; label: string | null; allow_teleop: number | null; tunnel_id: string | null; agent_version: string | null; first_online_at: number | null; owner_login: string | null; owner_label: string | null; simulator: number }>();
     const prov = createProvisioner(env);
     const latest = await latestAgentSha(env);
     const robots = await Promise.all(
@@ -572,6 +572,8 @@ export async function handleAppApi(request: Request, env: Env, url: URL): Promis
           // The robot's own configuration is the owner's business (only the owner can drive).
           joystick: !owner || r.allow_teleop === null ? null : r.allow_teleop === 1,
           updateAvailable: owner ? updateAvailable(r.agent_version, latest) : null,
+          // The robot's own claim (MC_SIMULATOR on the robot): display only, never for access.
+          simulator: r.simulator === 1,
         };
       }),
     );
@@ -612,7 +614,7 @@ export async function handleAppApi(request: Request, env: Env, url: URL): Promis
     const prev = await previewClaim(env, user.id, body.code.slice(0, 64));
     if (!prev.ok) return json({ error: prev.status === 429 ? "rate_limited" : "invalid_code", message: prev.message }, prev.status);
     const plan = await planAddress(env, createProvisioner(env), prev.robotId, label ?? prev.name);
-    return json({ robotId: prev.robotId, name: prev.name, hostname: plan?.hostname ?? null, taken: plan?.taken ?? null });
+    return json({ robotId: prev.robotId, name: prev.name, simulator: prev.simulator, hostname: plan?.hostname ?? null, taken: plan?.taken ?? null });
   }
   if (body.step !== "confirm") return json({ error: "bad_request" }, 400);
   const res = await claimRobot(env, createProvisioner(env), user.id, body.code.slice(0, 64), label);

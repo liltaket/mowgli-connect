@@ -34,10 +34,14 @@ Browser ──HTTPS──> relay (Worker, control plane only: login, pairing, gr
 ### Robot assertion (`typ: "mc-robot+jwt"`)
 
 Sent by the agent on every relay API call: `Authorization: MC-Robot <jws>`.
-It also sends `MC-Agent: version=<token>; teleop=on|off`. The relay stores it and only displays
-it (agent version, and whether remote joystick is allowed on the robot); it never changes
-authorization. The joystick setting is local to the robot (`MC_ALLOW_TELEOP`, asked by the
-installer) and cannot be changed from the relay.
+It also sends `MC-Agent: version=<token>; teleop=on|off`, followed by `; sim=1` when the robot
+declares itself a simulator (`MC_SIMULATOR=true`). The relay stores it and only displays it (agent
+version, whether remote joystick is allowed on the robot, and a Simulator badge); it never changes
+authorization. The simulator mark is the robot's own claim, like the rest of the header: it is not
+verified and must never be used to decide access. The joystick setting is local to the robot
+(`MC_ALLOW_TELEOP`, asked by the installer) and cannot be changed from the relay. Relays older than
+the `sim` field ignore a header that carries it, so update the relay before running simulators
+with a newer agent.
 
 | claim | value |
 |---|---|

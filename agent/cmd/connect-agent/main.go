@@ -35,7 +35,7 @@ type config struct {
 	relayURL, listen, upstream, dataDir, name, profile, cloudflared string
 	tunnelMode                                                      string
 	cloudflaredWrap                                                 []string
-	allowTeleop, wsCompression                                      bool
+	allowTeleop, wsCompression, simulator                           bool
 	maxBodyMB                                                       int64
 	maxStale, poll                                                  time.Duration
 	throttle                                                        map[string]time.Duration
@@ -97,6 +97,7 @@ func loadConfig() (config, error) {
 		tunnelMode:    env("MC_TUNNEL_MODE", "named"),
 		allowTeleop:   envBool("MC_ALLOW_TELEOP", false),
 		wsCompression: envBool("MC_WS_COMPRESSION", true),
+		simulator:     envBool("MC_SIMULATOR", false),
 	}
 	mb, err := strconv.ParseInt(env("MC_MAX_BODY_MB", "64"), 10, 64)
 	if err != nil || mb <= 0 {
@@ -291,12 +292,8 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	teleop := "off"
-	if cfg.allowTeleop {
-		teleop = "on"
-	}
 	client := &relay.Client{Origin: cfg.relayURL, Key: key, RobotID: robotID,
-		Agent: fmt.Sprintf("version=%s; teleop=%s", agentVersionToken(version), teleop)}
+		Agent: agentHeader(version, cfg.allowTeleop, cfg.simulator)}
 	if !quick && cfg.listen != "127.0.0.1:4007" {
 		log.Warn("named tunnels deliver to 127.0.0.1:4007 (the relay's AGENT_ORIGIN); with another MC_LISTEN they answer 502", "listen", cfg.listen)
 	}
@@ -429,6 +426,20 @@ func run() error {
 func pairingValidity(exp time.Time) string {
 	mins := int(time.Until(exp).Round(time.Minute).Minutes())
 	return fmt.Sprintf("valid for %d min, until %s", max(mins, 0), exp.Format("15:04 MST"))
+}
+
+// agentHeader is the MC-Agent value: "version=<token>; teleop=on|off", plus "; sim=1" when the
+// robot declares itself a simulator (MC_SIMULATOR). The relay only displays it.
+func agentHeader(v string, allowTeleop, simulator bool) string {
+	teleop := "off"
+	if allowTeleop {
+		teleop = "on"
+	}
+	h := fmt.Sprintf("version=%s; teleop=%s", agentVersionToken(v), teleop)
+	if simulator {
+		h += "; sim=1"
+	}
+	return h
 }
 
 // agentVersionToken keeps the version safe for a header token.

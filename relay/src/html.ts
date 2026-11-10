@@ -109,6 +109,14 @@ ${body}
 }
 
 /**
+ * The badge for a robot whose agent says it is a simulator (MC_SIMULATOR). The robot's own claim,
+ * shown so nobody mistakes a virtual robot for a real mower; it never affects access.
+ */
+export function simulatorBadge(simulator: number | null | undefined): SafeHtml {
+  return simulator ? html`<span class="sim">Simulator</span>` : html``;
+}
+
+/**
  * A small lawn with a mower working across it, stripe by stripe: the waiting animation. `parked`
  * draws it finished and still (robot offline).
  */
@@ -119,8 +127,8 @@ export function lawn(parked = false): SafeHtml {
 // Same visual system as the project site (site/assets/site.css): tinted paper, one grass-green
 // accent, the mowing-path mark. System fonts only, so the strict CSP needs no other origins.
 export const STYLE_CSS = `
-:root{color-scheme:light dark;--paper:#fbfcfa;--fog:#f1f5f0;--ink:#18211b;--muted:#5b675f;--line:#d9e0da;--line-strong:#b9c4bb;--grass:#2f7d4a;--grass-deep:#266640;--grass-wash:#e6f2e9;--grass-ink:#1f5a35;--on-grass:#fff;--amber:#b7791b;--danger:#b4322a;--danger-wash:#fbeeec;--focus:#1f5a35;--lawn:#d7eadc}
-@media (prefers-color-scheme:dark){:root{--paper:#111613;--fog:#181f1a;--ink:#e8ede8;--muted:#a3ada5;--line:#2b342d;--line-strong:#3f4b42;--grass:#6cc98a;--grass-deep:#5bb97a;--grass-wash:#1b2a1f;--grass-ink:#b2e3c0;--on-grass:#0f1a13;--amber:#e0a54a;--danger:#f08a80;--danger-wash:#2c1a18;--focus:#b2e3c0;--lawn:#1d3424}}
+:root{color-scheme:light dark;--paper:#fbfcfa;--fog:#f1f5f0;--ink:#18211b;--muted:#5b675f;--line:#d9e0da;--line-strong:#b9c4bb;--grass:#2f7d4a;--grass-deep:#266640;--grass-wash:#e6f2e9;--grass-ink:#1f5a35;--on-grass:#fff;--amber:#b7791b;--sim:#5b4fc4;--danger:#b4322a;--danger-wash:#fbeeec;--focus:#1f5a35;--lawn:#d7eadc}
+@media (prefers-color-scheme:dark){:root{--paper:#111613;--fog:#181f1a;--ink:#e8ede8;--muted:#a3ada5;--line:#2b342d;--line-strong:#3f4b42;--grass:#6cc98a;--grass-deep:#5bb97a;--grass-wash:#1b2a1f;--grass-ink:#b2e3c0;--on-grass:#0f1a13;--amber:#e0a54a;--sim:#aea6ff;--danger:#f08a80;--danger-wash:#2c1a18;--focus:#b2e3c0;--lawn:#1d3424}}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;min-height:100vh;display:flex;flex-direction:column;overflow-wrap:break-word}
@@ -247,6 +255,7 @@ input[type=number]{width:9rem;font:inherit;padding:.6rem .7rem;border:1px solid 
 .check{display:flex;align-items:center;gap:.5rem;font-weight:500;margin:0 0 .6rem}
 .check input{width:1.1rem;height:1.1rem;accent-color:var(--grass)}
 .update{color:var(--amber);font-weight:600}
+.sim{display:inline-block;margin-left:.45rem;padding:.05rem .5rem;border:1px solid currentColor;border-radius:999px;color:var(--sim);font-size:.75rem;font-weight:650;letter-spacing:.02em;vertical-align:.2em;white-space:nowrap}
 .manage code.cmdline{color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:.4rem .55rem;margin:.35rem 0;display:block}
 .orphan-unlink{grid-column:1/-1;margin-top:.4rem}
 .person>.actions{grid-column:1/-1;margin:.4rem 0 0}

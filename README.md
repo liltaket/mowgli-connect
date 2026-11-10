@@ -159,6 +159,7 @@ deployment between modes while robots are claimed.
 | `MC_TUNNEL_MODE` | `named` | `named` (token from relay) or `quick` (free trycloudflare.com) |
 | `MC_PROFILE` | `mowgli` | `mowgli` (GUI-aware policy) or `generic` (any app) |
 | `MC_ALLOW_TELEOP` | `false` | Allow the remote joystick socket |
+| `MC_SIMULATOR` | `false` | Mark this robot as a simulator (e.g. a virtual MowgliNext robot): the relay shows a Simulator badge. Display only, asserted by the robot itself, never used for access. |
 | `MC_WS_COMPRESSION` | `true` | Compress WebSocket messages to the browser (injects `/_connect/ws.js`, see [protocol](docs/protocol.md#remote-traffic-reduction-agent--browser-no-app-changes)) |
 | `MC_THROTTLE` | `mowProgress=2s,lidarMap=2s,lidar=200ms,diagnostics=1s,gnssStatus=1s` | Max rate per multiplex topic for remote viewers (`mowgli` profile; always delivers the latest frame); `off` disables |
 | `MC_POLL_INTERVAL` | `3m` | How often a claimed robot syncs with the relay (≤ half of `MC_MAX_STALE`). New members are admitted at once regardless. |

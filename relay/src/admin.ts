@@ -3,7 +3,7 @@ import type { Env } from "./env";
 import { revokeRobot, unlinkRobot } from "./claim";
 import { revokeAllStatements } from "./delegation";
 import { GITHUB_LOGIN, lookupGithubUser } from "./github";
-import { html, page } from "./html";
+import { html, page, simulatorBadge } from "./html";
 import { engageKillSwitch, killSwitchSince, releaseKillSwitch } from "./killSwitch";
 import type { SessionUser } from "./session";
 import { createProvisioner } from "./provisioner";
@@ -160,7 +160,7 @@ ${
 <p class="muted">Their owners no longer have access. Unlinking deletes the robot's tunnel; it needs a new pairing code to be added again.</p>
 <ul class="people">${orphans.map(
         (o) => html`<li class="person"><span class="avatar" aria-hidden="true">${initial(o.label ?? o.name ?? "?")}</span>
-<div class="person-main"><span class="person-name">${o.label ?? o.name ?? o.robot_id}</span>
+<div class="person-main"><span class="person-name">${o.label ?? o.name ?? o.robot_id}${simulatorBadge(o.simulator)}</span>
 <span class="meta"><span>${o.hostname ?? o.robot_id}</span><span>Owner @${o.login ?? o.user_id}</span></span></div>
 <form class="orphan-unlink" method="post" action="/admin/robots/${o.robot_id}/unlink"><button class="danger">Unlink</button></form></li>`,
       )}</ul>`
@@ -334,12 +334,13 @@ interface OrphanRow {
   label: string | null;
   user_id: string;
   login: string | null;
+  simulator: number;
 }
 
 /** Claimed robots whose owner can no longer sign in (removed from the invites, say). */
 async function orphanedRobots(env: Env): Promise<OrphanRow[]> {
   const rows = await env.DB.prepare(
-    `SELECT r.robot_id, r.name, r.hostname, m.label, m.user_id, u.login
+    `SELECT r.robot_id, r.name, r.hostname, m.label, m.user_id, u.login, r.simulator
      FROM members m JOIN robots r ON r.robot_id = m.robot_id LEFT JOIN users u ON u.id = m.user_id
      WHERE m.role = 'owner' AND r.status = 'claimed' AND m.user_id NOT IN (SELECT user_id FROM invites)
      ORDER BY r.robot_id`,

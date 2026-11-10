@@ -649,12 +649,13 @@ interface SetRobot {
   first_online_at: number | null;
   allow_teleop: number | null;
   agent_version: string | null;
+  simulator: number;
   role: "owner" | "operator" | "viewer";
   label: string | null;
   via: "consent" | "claim";
 }
 
-const SET_ROBOTS = `SELECT r.robot_id, r.name, r.hostname, r.session_epoch, r.tunnel_id, r.first_online_at, r.allow_teleop, r.agent_version, m.role, m.label, dr.via
+const SET_ROBOTS = `SELECT r.robot_id, r.name, r.hostname, r.session_epoch, r.tunnel_id, r.first_online_at, r.allow_teleop, r.agent_version, r.simulator, m.role, m.label, dr.via
   FROM delegation_robots dr JOIN robots r ON r.robot_id = dr.robot_id JOIN members m ON m.robot_id = dr.robot_id AND m.user_id = ?2
   WHERE dr.delegation_id = ?1 AND r.status = 'claimed'`;
 
@@ -754,6 +755,8 @@ export async function handleDelegateApi(request: Request, env: Env, url: URL): P
           joystick: r.role !== "owner" || r.allow_teleop === null ? null : r.allow_teleop === 1,
           updateAvailable: r.role === "owner" ? updateAvailable(r.agent_version, latest) : null,
           addedByDelegate: r.via === "claim",
+          // The robot's own claim (MC_SIMULATOR): display only, never for access.
+          simulator: r.simulator === 1,
         };
       }),
     );
@@ -883,7 +886,7 @@ async function claim(env: Env, a: Auth, request: Request): Promise<Response> {
     }
     const plan = await planAddress(env, createProvisioner(env), prev.robotId, label ?? prev.name);
     await finish(env, ev, "ok", prev.robotId);
-    return json({ robotId: prev.robotId, name: prev.name, hostname: plan?.hostname ?? null, taken: plan?.taken ?? null });
+    return json({ robotId: prev.robotId, name: prev.name, simulator: prev.simulator, hostname: plan?.hostname ?? null, taken: plan?.taken ?? null });
   }
 
   const ev = await record(env, a, "claim", null, "pending", label, CLAIM_GATE);

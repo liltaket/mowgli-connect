@@ -321,7 +321,7 @@ describe("the robot set", () => {
     const dl = await newDelegate();
     await approve(user, dl, ALL, [ticked.robotId]);
     const list = (await (await api(dl, "GET", "/v1/delegate/robots")).json()) as { robots: { robotId: string; addedByDelegate: boolean }[] };
-    expect(list.robots).toEqual([expect.objectContaining({ robotId: ticked.robotId, addedByDelegate: false, role: "owner" })]);
+    expect(list.robots).toEqual([expect.objectContaining({ robotId: ticked.robotId, addedByDelegate: false, role: "owner", simulator: false })]);
     for (const action of ["grant", "unlink", "label"]) {
       const res = await api(dl, "POST", `/v1/delegate/robots/${hidden.robotId}/${action}`, { label: "x" });
       expect(res.status).toBe(404);

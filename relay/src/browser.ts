@@ -4,7 +4,7 @@ import { handleAdmin, isAdminPath } from "./admin";
 import { appEnabled, handleAppBrowser, signOutDevice } from "./appApi";
 import { claimRobot, limitMessage, planAddress, previewClaim, reachedLimit, unlinkRobot, type AddressPlan } from "./claim";
 import { addedByDelegate, delegationsHtml, handleDelegationBrowser, isDelegationPath } from "./delegation";
-import { HOMEPAGE, html, lawn, markSvg, page, type PageUser, type SafeHtml } from "./html";
+import { HOMEPAGE, html, lawn, markSvg, page, simulatorBadge, type PageUser, type SafeHtml } from "./html";
 import { mintGrant, type Role } from "./grant";
 import { killSwitchSince } from "./killSwitch";
 import { finishLogin, startLogin } from "./oauth";
@@ -85,11 +85,12 @@ interface RobotListRow {
   owner_login: string | null;
   owner_label: string | null;
   shares: number;
+  simulator: number;
 }
 
 async function dashboard(env: Env, user: SessionUser, url: URL): Promise<Response> {
   const rows = await env.DB.prepare(
-    `SELECT r.robot_id, r.name, r.hostname, m.role, m.label, r.allow_teleop, r.tunnel_id, r.first_online_at, r.claimed_at, r.agent_version,
+    `SELECT r.robot_id, r.name, r.hostname, m.role, m.label, r.allow_teleop, r.tunnel_id, r.first_online_at, r.claimed_at, r.agent_version, r.simulator,
             ou.login AS owner_login, o.label AS owner_label,
             (SELECT COUNT(*) FROM members s WHERE s.robot_id = r.robot_id AND s.role != 'owner') AS shares
      FROM members m JOIN robots r ON r.robot_id = m.robot_id
@@ -130,7 +131,7 @@ ${
     : html`<ul class="robots">
 ${rows.results.map(
   (r) => html`<li class="robot">
-<span class="name">${r.label ?? (r.role === "owner" ? null : r.owner_label) ?? r.name ?? r.robot_id}</span>
+<span class="name">${r.label ?? (r.role === "owner" ? null : r.owner_label) ?? r.name ?? r.robot_id}${simulatorBadge(r.simulator)}</span>
 <a class="btn primary open" href="/open/${r.robot_id}">Open</a>
 <span class="meta">${
     !r.hostname
@@ -277,6 +278,7 @@ async function claimConfirm(
   code: string,
   robotId: string,
   robotName: string | null,
+  simulator: boolean,
   label: string | null,
   changed = false,
 ): Promise<Response> {
@@ -287,8 +289,8 @@ async function claimConfirm(
     "Add a robot",
     html`
 ${changed ? html`<p class="notice" role="status">The name changed, so the address may have too. Check it and press Add robot again.</p>` : ""}
-<h1>Add this robot?</h1>
-<p>${robotName ? html`The robot calls itself <strong>${robotName}</strong>.` : "The robot did not report a name."} Its id is <code>${robotId}</code>.</p>
+<h1>Add this robot?${simulatorBadge(simulator ? 1 : 0)}</h1>
+<p>${robotName ? html`The robot calls itself <strong>${robotName}</strong>.` : "The robot did not report a name."} Its id is <code>${robotId}</code>.${simulator ? " It says it is a simulator, not a real mower." : ""}</p>
 ${plan ? html`<div class="address"><span>Its address will be</span><strong>${plan.hostname}</strong><span>${addressNote(plan, robotId)}</span></div>` : ""}
 <form class="panel" method="post" action="/claim">
 <input type="hidden" name="code" value="${code}">
@@ -429,7 +431,7 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
       if (full !== null) return claimError(env, user, limitMessage(full), 403);
       const prev = await previewClaim(env, user.id, raw);
       if (!prev.ok) return claimError(env, user, prev.message, prev.status);
-      return claimConfirm(env, user, normalizePairingCode(raw) ?? "", prev.robotId, prev.name, null);
+      return claimConfirm(env, user, normalizePairingCode(raw) ?? "", prev.robotId, prev.name, prev.simulator, null);
     }
     if (method === "POST") {
       if (!user) return redirect("/login", 303);
@@ -441,7 +443,7 @@ export async function handleBrowser(request: Request, env: Env, url: URL): Promi
         if (full !== null) return claimError(env, user, limitMessage(full), 403);
         const prev = await previewClaim(env, user.id, form.code);
         if (!prev.ok) return claimError(env, user, prev.message, prev.status, form.code);
-        return claimConfirm(env, user, normalizePairingCode(form.code) ?? "", prev.robotId, prev.name, form.label, form.step === "confirm");
+        return claimConfirm(env, user, normalizePairingCode(form.code) ?? "", prev.robotId, prev.name, prev.simulator, form.label, form.step === "confirm");
       }
       const res = await claimRobot(env, createProvisioner(env), user.id, form.code, form.label);
       if (!res.ok) return claimError(env, user, res.message, res.status, form.code);

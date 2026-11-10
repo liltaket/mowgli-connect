@@ -30,6 +30,7 @@ interface RobotRow {
   last_seen_at: number;
   agent_version: string | null;
   allow_teleop: number | null;
+  simulator: number;
 }
 
 function verifyAssertion(
@@ -239,12 +240,13 @@ export async function robotSelf(env: Env, request: Request, url: URL): Promise<R
 
   const now = nowSeconds();
   const info = parseAgentHeader(request.headers.get("MC-Agent"));
-  const infoChanged = info && (info.version !== robot.agent_version || info.teleop !== robot.allow_teleop);
+  const infoChanged =
+    info && (info.version !== robot.agent_version || info.teleop !== robot.allow_teleop || info.sim !== robot.simulator);
   // last_seen_at only drives the 7-day cleanup of unclaimed robots, so refresh it every 15 minutes
   // rather than on every poll (D1 row writes are the Free plan's tightest limit).
   if (now - robot.last_seen_at > LAST_SEEN_REFRESH_SECONDS || infoChanged) {
-    await env.DB.prepare("UPDATE robots SET last_seen_at = ?, agent_version = ?, allow_teleop = ? WHERE robot_id = ?")
-      .bind(now, info?.version ?? robot.agent_version, info ? info.teleop : robot.allow_teleop, a.robotId)
+    await env.DB.prepare("UPDATE robots SET last_seen_at = ?, agent_version = ?, allow_teleop = ?, simulator = ? WHERE robot_id = ?")
+      .bind(now, info?.version ?? robot.agent_version, info ? info.teleop : robot.allow_teleop, info ? info.sim : robot.simulator, a.robotId)
       .run();
   }
   return selfResponse(env, a.robotId, robot);
@@ -252,15 +254,18 @@ export async function robotSelf(env: Env, request: Request, url: URL): Promise<R
 
 const LAST_SEEN_REFRESH_SECONDS = 15 * 60;
 
-/** `MC-Agent: version=1.2.3; teleop=on|off` (informational; set by the robot's own agent). */
-export function parseAgentHeader(h: string | null): { version: string; teleop: number } | null {
-  const m = /^version=([A-Za-z0-9._+-]{1,40}); teleop=(on|off)$/.exec(h ?? "");
-  return m ? { version: m[1]!, teleop: m[2] === "on" ? 1 : 0 } : null;
+/**
+ * `MC-Agent: version=1.2.3; teleop=on|off[; sim=1]` (informational; set by the robot's own agent).
+ * `sim=1` means the robot says it is a simulator: shown as a badge, never used for authorization.
+ */
+export function parseAgentHeader(h: string | null): { version: string; teleop: number; sim: number } | null {
+  const m = /^version=([A-Za-z0-9._+-]{1,40}); teleop=(on|off)(; sim=1)?$/.exec(h ?? "");
+  return m ? { version: m[1]!, teleop: m[2] === "on" ? 1 : 0, sim: m[3] ? 1 : 0 } : null;
 }
 
 function loadRobot(env: Env, robotId: string): Promise<RobotRow | null> {
   return env.DB.prepare(
-    "SELECT robot_id, status, session_epoch, hostname, tunnel_token, last_seen_at, agent_version, allow_teleop FROM robots WHERE robot_id = ?",
+    "SELECT robot_id, status, session_epoch, hostname, tunnel_token, last_seen_at, agent_version, allow_teleop, simulator FROM robots WHERE robot_id = ?",
   )
     .bind(robotId)
     .first<RobotRow>();

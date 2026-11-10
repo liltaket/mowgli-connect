@@ -159,9 +159,16 @@ describe("admin: robots of people without access", () => {
     const kept = await invited(e, admin);
     const { robot: fine } = await claimed(e, kept);
 
+    await call(
+      "/v1/robots/self",
+      { headers: { Authorization: await assertion(orphan, "GET", "/v1/robots/self"), "MC-Agent": "version=t1; teleop=off; sim=1" } },
+      e,
+    );
+
     const page = await (await call("/admin", { headers: { Cookie: admin.cookie } }, e)).text();
     expect(page).toContain("Robots nobody can use");
     expect(page).toContain(`/admin/robots/${orphan.robotId}/unlink`);
+    expect(page).toContain('sealed<span class="sim">Simulator</span>');
     expect(page).not.toContain(`/admin/robots/${fine.robotId}/unlink`);
 
     expect((await post(`/admin/robots/${fine.robotId}/unlink`, admin, {}, e)).status).toBe(404);

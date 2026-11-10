@@ -22,6 +22,7 @@ services:
       MC_PROFILE: mowgli
       # MC_TUNNEL_MODE: quick     # free *.trycloudflare.com address, no domain (relay PROVISIONER=quick)
       # MC_ALLOW_TELEOP: "true"   # remote joystick; off by default, validate latency first
+      # MC_SIMULATOR: "true"      # only for a simulated robot: shown with a Simulator badge on the relay
     volumes:
       - mowgli-connect-data:/data # robot.key + state.json (tunnel token). Back it up, keep it private.
     read_only: true
