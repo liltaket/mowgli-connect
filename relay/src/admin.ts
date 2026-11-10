@@ -1,6 +1,7 @@
 import { defaultRobotLimit, GITHUB_USER_ID, isAdmin, isUserAllowed, MAX_ROBOT_LIMIT, parseRobotLimit } from "./access";
 import type { Env } from "./env";
 import { unlinkRobot } from "./claim";
+import { revokeAllStatements } from "./delegation";
 import { GITHUB_LOGIN, lookupGithubUser } from "./github";
 import { html, page } from "./html";
 import type { SessionUser } from "./session";
@@ -262,6 +263,7 @@ export async function handleAdmin(request: Request, env: Env, url: URL, user: Se
   await env.DB.batch([
     env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(target),
     env.DB.prepare("DELETE FROM devices WHERE user_id = ?").bind(target), // their app sign-ins too
+    ...revokeAllStatements(env, target, nowSeconds()), // and their AI agents
   ]);
   console.log("admin: removed", target, "by", user.id);
   // Say so when the configuration still lets them in, instead of promising what did not happen.

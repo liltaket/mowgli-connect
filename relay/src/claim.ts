@@ -12,19 +12,28 @@ type Failure = { ok: false; status: number; message: string };
 export type ClaimResult = { ok: true; robotId: string } | Failure;
 
 /**
- * Reserves one guess from the person's hourly budget (CLAIM_FAILURES_PER_HOUR) in a single
+ * Whose hourly guess budget a claim attempt uses: the person's own by default. A delegate has its
+ * own, smaller one (docs/agent-delegation.md), so a misbehaving agent cannot lock its person out.
+ */
+export interface GuessBudget {
+  key: string;
+  perHour: number;
+}
+
+/**
+ * Reserves one guess from an hourly budget (CLAIM_FAILURES_PER_HOUR for a person) in a single
  * statement, so concurrent requests cannot all pass one count. The row stays as a failure unless
  * the attempt is released (a valid code, or a failure that was not a wrong guess). Returns null
  * when the budget is used up.
  */
-async function reserveAttempt(env: Env, userId: string): Promise<number | null> {
+async function reserveAttempt(env: Env, budget: GuessBudget): Promise<number | null> {
   const now = nowSeconds();
   const row = await env.DB.prepare(
     `INSERT INTO claim_failures (user_id, at)
      SELECT ?1, ?2 WHERE (SELECT COUNT(*) FROM claim_failures WHERE user_id = ?1 AND at > ?3) < ?4
      RETURNING id`,
   )
-    .bind(userId, now, now - 3600, CLAIM_FAILURES_PER_HOUR)
+    .bind(budget.key, now, now - 3600, budget.perHour)
     .first<{ id: number }>();
   return row?.id ?? null;
 }
@@ -34,8 +43,8 @@ async function releaseAttempt(env: Env, id: number): Promise<void> {
 }
 
 /** Runs one pairing-code attempt against the budget; only a wrong or used code keeps counting. */
-async function withAttempt<T extends { ok: boolean }>(env: Env, userId: string, attempt: () => Promise<T | Failure>): Promise<T | Failure> {
-  const id = await reserveAttempt(env, userId);
+async function withAttempt<T extends { ok: boolean }>(env: Env, budget: GuessBudget, attempt: () => Promise<T | Failure>): Promise<T | Failure> {
+  const id = await reserveAttempt(env, budget);
   if (id === null) return RATE_LIMITED;
   const res = await attempt();
   if (res !== INVALID) await releaseAttempt(env, id);
@@ -137,8 +146,9 @@ export async function previewClaim(
   env: Env,
   userId: string,
   rawCode: string,
+  budget: GuessBudget = { key: userId, perHour: CLAIM_FAILURES_PER_HOUR },
 ): Promise<{ ok: true; robotId: string; name: string | null } | Failure> {
-  return withAttempt(env, userId, () => lookupCode(env, rawCode));
+  return withAttempt(env, budget, () => lookupCode(env, rawCode));
 }
 
 async function lookupCode(env: Env, rawCode: string): Promise<{ ok: true; robotId: string; name: string | null } | Failure> {
@@ -161,8 +171,9 @@ export async function claimRobot(
   userId: string,
   rawCode: string,
   label: string | null,
+  budget: GuessBudget = { key: userId, perHour: CLAIM_FAILURES_PER_HOUR },
 ): Promise<ClaimResult> {
-  return withAttempt(env, userId, () => claimWithCode(env, provisioner, userId, rawCode, label));
+  return withAttempt(env, budget, () => claimWithCode(env, provisioner, userId, rawCode, label));
 }
 
 async function claimWithCode(
@@ -281,6 +292,11 @@ export async function unlinkRobot(
     ).bind(now, robotId, opts.onlyIfOwnerNotInvited ? 1 : 0),
     // In the same transaction, and only if the robot was just revoked.
     env.DB.prepare("DELETE FROM members WHERE robot_id = ? AND changes() > 0").bind(robotId),
+    // No delegation keeps an unlinked robot in its robot set, so a robot added again later (by
+    // anyone) does not come back to an agent (docs/agent-delegation.md).
+    env.DB.prepare(
+      "DELETE FROM delegation_robots WHERE robot_id = ?1 AND EXISTS (SELECT 1 FROM robots WHERE robot_id = ?1 AND status = 'revoked')",
+    ).bind(robotId),
   ]);
   if (upd?.meta.changes !== 1) return false;
   await cleanupRevoked(env, provisioner, robotId, { robotId, ...camel(before) });
