@@ -1,7 +1,11 @@
 name: Agent image
 
 # Tests the agent, then builds the robot container (linux/amd64 + linux/arm64) and publishes it
-# to ghcr.io/liltaket/mowgli-connect-agent with provenance and an SBOM. Actions are pinned by
+# to ghcr.io/liltaket/mowgli-connect-agent with provenance and an SBOM. Pushed images are signed
+# by digest with cosign (Sigstore keyless, this workflow's GitHub OIDC identity) and get a signed
+# SLSA provenance attestation. Robots run only images whose signature names this workflow file
+# on main or an agent-v* tag (site/install.sh, update-policy), so this file, its triggers and
+# the refs it runs on are the release trust boundary: see docs/updates.md. Actions are pinned by
 # commit SHA.
 on:
   push:
@@ -15,9 +19,10 @@ on:
 permissions:
   contents: read
 
+# A release run is never cancelled between pushing and signing: robots refuse an unsigned image.
 concurrency:
   group: agent-image-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -39,6 +44,7 @@ jobs:
   image:
     needs: test
     runs-on: ubuntu-latest
+    # The only job with an OIDC token (id-token): it signs what it pushed.
     permissions:
       contents: read
       packages: write
@@ -76,3 +82,19 @@ jobs:
           build-args: VERSION=${{ github.ref_name }}-${{ github.sha }}
           provenance: mode=max
           sbom: true
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        if: github.event_name != 'pull_request'
+        with:
+          cosign-release: v3.1.4 # the version robots verify with (update.sh)
+      - name: Sign the image digest (keyless)
+        if: github.event_name != 'pull_request'
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/mowgli-connect-agent@${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "$IMAGE"
+      - name: Attest build provenance
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/mowgli-connect-agent
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
