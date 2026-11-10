@@ -172,8 +172,9 @@ export async function claimRobot(
   rawCode: string,
   label: string | null,
   budget: GuessBudget = { key: userId, perHour: CLAIM_FAILURES_PER_HOUR },
+  delegationId: string | null = null,
 ): Promise<ClaimResult> {
-  return withAttempt(env, budget, () => claimWithCode(env, provisioner, userId, rawCode, label));
+  return withAttempt(env, budget, () => claimWithCode(env, provisioner, userId, rawCode, label, delegationId));
 }
 
 async function claimWithCode(
@@ -182,6 +183,7 @@ async function claimWithCode(
   userId: string,
   rawCode: string,
   label: string | null,
+  delegationId: string | null,
 ): Promise<ClaimResult> {
   const code = normalizePairingCode(rawCode);
   if (!code) return INVALID;
@@ -247,6 +249,12 @@ async function claimWithCode(
     env.DB.prepare(
       "INSERT INTO members (robot_id, user_id, role, label, created_at) SELECT ?, ?, 'owner', ?, ? WHERE changes() > 0",
     ).bind(robotId, userId, label, now),
+    // A delegate's claim puts the robot in its set in the same transaction, only if this claim won
+    // (changes() of the member insert), so a late write cannot bring back a robot that was
+    // unlinked and added again meanwhile (security review 14).
+    env.DB.prepare(
+      "INSERT OR REPLACE INTO delegation_robots (delegation_id, robot_id, via, added_at) SELECT ?1, ?2, 'claim', ?3 WHERE ?1 IS NOT NULL AND changes() > 0",
+    ).bind(delegationId, robotId, now),
     env.DB.prepare("DELETE FROM pairing_codes WHERE robot_id = ?").bind(robotId),
   ]);
   if (upd?.meta.changes !== 1) {
@@ -271,12 +279,23 @@ async function claimWithCode(
   return { ok: true, robotId };
 }
 
+/**
+ * What must still hold when the unlink commits, checked in the same statement: `ownerId` still
+ * owns the robot and, for a delegate, the delegation is active with robots:manage and still has the
+ * robot in its set. A request authorized earlier cannot unlink a robot that was unlinked and added
+ * again (by anyone) in the meantime (security review 14).
+ */
+export interface UnlinkGuard {
+  ownerId: string;
+  delegationId?: string;
+}
+
 /** Owner-only. Access is revoked in D1 first; Cloudflare cleanup failures are retried by the cron. */
 export async function unlinkRobot(
   env: Env,
   provisioner: TunnelProvisioner,
   robotId: string,
-  opts: { onlyIfOwnerNotInvited?: boolean } = {},
+  opts: { onlyIfOwnerNotInvited?: boolean; guard?: UnlinkGuard } = {},
 ): Promise<boolean> {
   const now = nowSeconds();
   const before = await env.DB.prepare("SELECT hostname, tunnel_id, dns_record_id FROM robots WHERE robot_id = ? AND status = 'claimed'")
@@ -288,8 +307,12 @@ export async function unlinkRobot(
       `UPDATE robots SET status = 'revoked', session_epoch = session_epoch + 1, tunnel_token = NULL, updated_at = ?1
        WHERE robot_id = ?2 AND status = 'claimed'
          AND (?3 = 0 OR NOT EXISTS (SELECT 1 FROM members m JOIN invites i ON i.user_id = m.user_id
-                                    WHERE m.robot_id = ?2 AND m.role = 'owner'))`,
-    ).bind(now, robotId, opts.onlyIfOwnerNotInvited ? 1 : 0),
+                                    WHERE m.robot_id = ?2 AND m.role = 'owner'))
+         AND (?4 IS NULL OR EXISTS (SELECT 1 FROM members WHERE robot_id = ?2 AND user_id = ?4 AND role = 'owner'))
+         AND (?5 IS NULL OR (EXISTS (SELECT 1 FROM delegation_robots WHERE delegation_id = ?5 AND robot_id = ?2)
+                             AND EXISTS (SELECT 1 FROM delegations WHERE delegation_id = ?5 AND user_id = ?4 AND revoked_at IS NULL
+                                           AND expires_at > ?1 AND (' ' || scopes || ' ') LIKE '% robots:manage %')))`,
+    ).bind(now, robotId, opts.onlyIfOwnerNotInvited ? 1 : 0, opts.guard?.ownerId ?? null, opts.guard?.delegationId ?? null),
     // In the same transaction, and only if the robot was just revoked.
     env.DB.prepare("DELETE FROM members WHERE robot_id = ? AND changes() > 0").bind(robotId),
     // No delegation keeps an unlinked robot in its robot set, so a robot added again later (by

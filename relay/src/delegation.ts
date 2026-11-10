@@ -9,7 +9,7 @@ import { createProvisioner } from "./provisioner";
 import { json } from "./robotApi";
 import type { SessionUser } from "./session";
 import { latestAgentSha, updateAvailable } from "./updates";
-import { cleanLabel, isRobotId, nowSeconds, readBodyText, SKEW_SECONDS } from "./util";
+import { cleanLabel, isRobotId, nowSeconds, readBodyBytes, readBodyText, SKEW_SECONDS } from "./util";
 
 /**
  * Delegations to AI agents and automations (docs/agent-delegation.md): approved by the person on
@@ -482,17 +482,24 @@ ${
 interface Auth {
   d: DelegationRow;
   user: SessionUser;
-  body: string;
+  /** The body as strict UTF-8 (no BOM), or null if it is not. */
+  body: string | null;
   now: number;
 }
+
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 function authFailure(e: DelegateAuthError): Response {
   return json({ error: "invalid_assertion", detail: e.code }, 401, { "WWW-Authenticate": 'MC-Delegate error="invalid_token"' });
 }
 
-/** Verifies the signed call (body included), the delegation, its person's access and the jti. */
-async function authenticate(request: Request, env: Env, url: URL): Promise<Auth | Response> {
-  const body = await readBodyText(request, 4096);
+/**
+ * Verifies the signed call (over the exact body bytes), the delegation, the hourly call limit
+ * (read only, so a delegation over its limit writes nothing more, its replay record included;
+ * security review 14), the jti and its person's access.
+ */
+async function authenticate(request: Request, env: Env, url: URL, opts: { skipLimit?: boolean } = {}): Promise<Auth | Response> {
+  const body = await readBodyBytes(request, 4096);
   if (body === null) return json({ error: "too_large" }, 413);
   let row: DelegationRow | null = null;
   let a;
@@ -518,6 +525,12 @@ async function authenticate(request: Request, env: Env, url: URL): Promise<Auth 
   const now = nowSeconds();
   if (d.revoked_at !== null) return json({ error: "delegation_revoked" }, 401);
   if (d.expires_at <= now) return json({ error: "delegation_expired" }, 401);
+  if (!opts.skipLimit) {
+    const calls = await env.DB.prepare("SELECT COUNT(*) AS n FROM delegation_events WHERE delegation_id = ? AND actor = 'agent' AND at > ?")
+      .bind(d.delegation_id, now - 3600)
+      .first<{ n: number }>();
+    if ((calls?.n ?? 0) >= CALLS_PER_HOUR) return RATE_LIMITED();
+  }
   const seen = await env.DB.prepare("INSERT OR IGNORE INTO jti_seen (robot_id, jti, expires_at) VALUES (?, ?, ?)")
     .bind(`dlg:${d.delegation_id}`, a.jti, a.exp + SKEW_SECONDS)
     .run();
@@ -527,7 +540,13 @@ async function authenticate(request: Request, env: Env, url: URL): Promise<Auth 
   if (d.last_used_at === null || now - d.last_used_at > LAST_USED_REFRESH_SECONDS) {
     await env.DB.prepare("UPDATE delegations SET last_used_at = ? WHERE delegation_id = ?").bind(now, d.delegation_id).run();
   }
-  return { d, user, body, now };
+  let text: string | null;
+  try {
+    text = STRICT_UTF8.decode(body);
+  } catch {
+    text = null;
+  }
+  return { d, user, body: text, now };
 }
 
 const CALL_GATE = `(SELECT COUNT(*) FROM delegation_events WHERE delegation_id = ?1 AND actor = 'agent' AND at > ?2 - 3600) < ${CALLS_PER_HOUR}`;
@@ -586,7 +605,7 @@ function setRobot(env: Env, a: Auth, robotId: string): Promise<SetRobot | null> 
 }
 
 async function readJson(a: Auth, request: Request): Promise<Record<string, unknown> | null> {
-  if (!(request.headers.get("Content-Type") ?? "").startsWith("application/json")) return null;
+  if (a.body === null || !(request.headers.get("Content-Type") ?? "").startsWith("application/json")) return null;
   try {
     const v: unknown = JSON.parse(a.body);
     return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
@@ -618,10 +637,19 @@ export async function handleDelegateApi(request: Request, env: Env, url: URL): P
   if (!route) return json({ error: "not_found" }, 404);
   if (request.method !== route.method) return json({ error: "method_not_allowed" }, 405, { Allow: route.method });
 
-  const a = await authenticate(request, env, url);
+  // Revoking itself works even over the call limit; afterwards the key can do nothing.
+  const a = await authenticate(request, env, url, { skipLimit: route.action === "revoke" });
   if (a instanceof Response) return a;
+  if (route.action === "revoke") {
+    await revokeDelegation(env, a.d.delegation_id, a.user.id, "agent");
+    return json({ ok: true });
+  }
+  // Every authenticated call below writes one activity entry, which is also what the call limit
+  // counts, so no answer (not even a 400) comes without being counted.
   const robotId = robotPath ? robotPath[1]! : null;
-  if (robotId !== null && !isRobotId(robotId)) return json({ error: "not_found" }, 404);
+  if (robotId !== null && !isRobotId(robotId)) {
+    return (await record(env, a, route.action, null, "not_found")) === null ? RATE_LIMITED() : json({ error: "not_found" }, 404);
+  }
 
   if (route.scope && !hasScope(a.d, route.scope)) {
     // Logged, so an agent trying what it may not do shows up in the activity.
@@ -641,11 +669,6 @@ export async function handleDelegateApi(request: Request, env: Env, url: URL): P
       robots: [...set.keys()],
       expiresAt: a.d.expires_at,
     });
-  }
-
-  if (route.action === "revoke") {
-    await revokeDelegation(env, a.d.delegation_id, a.user.id, "agent");
-    return json({ ok: true });
   }
 
   if (route.action === "list") {
@@ -682,7 +705,9 @@ export async function handleDelegateApi(request: Request, env: Env, url: URL): P
 
   if (route.action === "label") {
     const body = await readJson(a, request);
-    if (!body || (body.label !== null && typeof body.label !== "string")) return json({ error: "bad_request" }, 400);
+    if (!body || (body.label !== null && typeof body.label !== "string")) {
+      return (await record(env, a, "label", robot.robot_id, "bad_request")) === null ? RATE_LIMITED() : json({ error: "bad_request" }, 400);
+    }
     const label = cleanLabel(body.label);
     const ev = await record(env, a, "label", robot.robot_id, "pending", label ?? "(cleared)");
     if (ev === null) return RATE_LIMITED();
@@ -703,7 +728,8 @@ export async function handleDelegateApi(request: Request, env: Env, url: URL): P
     }
     const ev = await record(env, a, "unlink", robot.robot_id, "pending", robot.label ?? robot.name);
     if (ev === null) return RATE_LIMITED();
-    const ok = await unlinkRobot(env, createProvisioner(env), robot.robot_id);
+    // The guard re-checks owner, delegation and robot set in the unlink statement itself.
+    const ok = await unlinkRobot(env, createProvisioner(env), robot.robot_id, { guard: { ownerId: a.user.id, delegationId: a.d.delegation_id } });
     await finish(env, ev, ok ? "ok" : "failed");
     console.log("delegation: unlink", a.d.delegation_id, robot.robot_id, ok);
     return ok ? json({ ok: true }) : json({ error: "not_found" }, 404);
@@ -752,7 +778,9 @@ const CLAIM_GATE = `AND (SELECT COUNT(*) FROM delegation_events WHERE delegation
 
 async function claim(env: Env, a: Auth, request: Request): Promise<Response> {
   const body = await readJson(a, request);
-  if (!body || typeof body.code !== "string" || (body.step !== "preview" && body.step !== "confirm")) return json({ error: "bad_request" }, 400);
+  if (!body || typeof body.code !== "string" || (body.step !== "preview" && body.step !== "confirm")) {
+    return (await record(env, a, "claim", null, "bad_request")) === null ? RATE_LIMITED() : json({ error: "bad_request" }, 400);
+  }
   const code = body.code.slice(0, 64);
   const label = cleanLabel(body.label);
   const budget = { key: `dlg:${a.d.delegation_id}`, perHour: WRONG_CODES_PER_HOUR };
@@ -789,18 +817,12 @@ async function claim(env: Env, a: Auth, request: Request): Promise<Response> {
       { "Retry-After": "600" },
     );
   }
-  const res = await claimRobot(env, createProvisioner(env), a.user.id, code, label, budget);
+  // The robot joins this delegation's set in the claim's own transaction (the person owns it).
+  const res = await claimRobot(env, createProvisioner(env), a.user.id, code, label, budget, a.d.delegation_id);
   if (!res.ok) {
     await finish(env, ev, outcomeOf(res.status));
     return failed(res.status, res.message);
   }
-  // The robot joins this delegation's set (the person now owns it; see the threat model).
-  await env.DB.prepare(
-    `INSERT OR REPLACE INTO delegation_robots (delegation_id, robot_id, via, added_at)
-     SELECT ?1, ?2, 'claim', ?3 WHERE EXISTS (SELECT 1 FROM members WHERE robot_id = ?2 AND user_id = ?4 AND role = 'owner')`,
-  )
-    .bind(a.d.delegation_id, res.robotId, nowSeconds(), a.user.id)
-    .run();
   await finish(env, ev, "ok", res.robotId);
   console.log("delegation: claimed", a.d.delegation_id, res.robotId);
   const r = await env.DB.prepare("SELECT hostname FROM robots WHERE robot_id = ?").bind(res.robotId).first<{ hostname: string | null }>();

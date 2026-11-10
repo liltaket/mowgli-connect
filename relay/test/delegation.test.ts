@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { b64urlEncode, deriveRobotId, signJws } from "../src/crypto";
 import { b64urlDecode } from "../src/crypto";
 import { bodyHash, fingerprint, verifyDelegateAssertion } from "../src/delegateAuth";
+import { unlinkRobot } from "../src/claim";
 import { CALLS_PER_HOUR, MAX_ACTIVE_DELEGATIONS, MAX_CLAIMED_ROBOTS, WRONG_CODES_PER_HOUR } from "../src/delegation";
+import { createProvisioner } from "../src/provisioner";
 import type { Env } from "../src/env";
 import { nowSeconds, randomToken } from "../src/util";
 import { assertion, call, decodeJws, newRobot, newUser, ORIGIN, register, registerAndClaim, testEnv, type TestRobot, type TestUser } from "./helpers";
@@ -530,3 +532,119 @@ describe("the app can list and revoke delegations", () => {
     expect((await api(dl, "GET", "/v1/delegate/self")).status).toBe(401);
   });
 });
+
+/** The database, but `before` runs once just before the first statement whose SQL matches. */
+function pauseAt(match: (sql: string) => boolean, before: () => Promise<void>): D1Database {
+  let fired = false;
+  return new Proxy(db, {
+    get(target, prop) {
+      if (prop === "prepare") {
+        return (sql: string) => {
+          const st = target.prepare(sql);
+          if (fired || !match(sql)) return st;
+          fired = true;
+          return {
+            bind: (...args: unknown[]) => ({
+              first: async () => (await before(), st.bind(...args).first()),
+              run: async () => (await before(), st.bind(...args).run()),
+            }),
+          };
+        };
+      }
+      const v = Reflect.get(target, prop);
+      return typeof v === "function" ? v.bind(target) : v;
+    },
+  }) as D1Database;
+}
+
+/** Unlinks the robot and lets `who` add it again with a fresh pairing code. */
+async function unlinkAndReclaim(robot: TestRobot, who: TestUser): Promise<void> {
+  expect(await unlinkRobot(env, createProvisioner(env), robot.robotId)).toBe(true);
+  const { pairingCode } = (await (await register(robot)).json()) as { pairingCode: string };
+  expect((await postForm("/claim", who, new URLSearchParams({ code: pairingCode }))).status).toBe(303);
+}
+
+describe("security review 14", () => {
+  it("an unlink authorized before the robot was unlinked and added again by someone else does nothing", async () => {
+    const { dl, owned } = await delegated(["robots:manage"], 1);
+    const robot = owned[0]!;
+    const other = await newUser();
+    let fired = false;
+    const DB = pauseAt(
+      (sql) => sql.includes("INSERT INTO delegation_events") && sql.includes("RETURNING id"),
+      async () => {
+        fired = true;
+        await unlinkAndReclaim(robot, other);
+      },
+    );
+    const res = await api(dl, "POST", `/v1/delegate/robots/${robot.robotId}/unlink`, {}, { ...env, DB });
+    expect(fired).toBe(true);
+    expect(res.status).toBe(404);
+    expect(await db.prepare("SELECT status FROM robots WHERE robot_id = ?").bind(robot.robotId).first()).toEqual({ status: "claimed" });
+    expect(await db.prepare("SELECT user_id, role FROM members WHERE robot_id = ?").bind(robot.robotId).first()).toEqual({ user_id: other.id, role: "owner" });
+  });
+
+  it("a claim that finishes after its robot was unlinked and added again by hand does not bring it back to the agent", async () => {
+    const { user, dl } = await delegated(["robots:claim", "robots:read"]);
+    const robot = await newRobot();
+    const { pairingCode } = (await (await register(robot)).json()) as { pairingCode: string };
+    let fired = false;
+    const DB = pauseAt(
+      (sql) => sql.startsWith("UPDATE delegation_events SET outcome"),
+      async () => {
+        fired = true;
+        await unlinkAndReclaim(robot, user);
+      },
+    );
+    expect((await api(dl, "POST", "/v1/delegate/claim", { code: pairingCode, step: "confirm" }, { ...env, DB })).status).toBe(200);
+    expect(fired).toBe(true);
+    expect(await db.prepare("SELECT COUNT(*) AS n FROM delegation_robots WHERE delegation_id = ?").bind(dl.id).first()).toEqual({ n: 0 });
+  });
+
+  it("over the call limit, calls write nothing, not even a replay record; revoking itself still works", async () => {
+    const { dl } = await delegated(["robots:read"]);
+    const now = nowSeconds();
+    await db.batch(
+      Array.from({ length: CALLS_PER_HOUR }, () =>
+        db.prepare("INSERT INTO delegation_events (delegation_id, at, actor, action, outcome) VALUES (?, ?, 'agent', 'list', 'ok')").bind(dl.id, now - 60),
+      ),
+    );
+    for (let i = 0; i < 5; i++) expect((await api(dl, "GET", "/v1/delegate/self")).status).toBe(429);
+    expect(await db.prepare("SELECT COUNT(*) AS n FROM jti_seen WHERE robot_id = ?").bind(`dlg:${dl.id}`).first()).toEqual({ n: 0 });
+    expect((await api(dl, "POST", "/v1/delegate/revoke", {})).status).toBe(200);
+  });
+
+  it("every authenticated call counts, malformed ones included", async () => {
+    const { dl, owned } = await delegated(["robots:manage", "robots:claim"], 1);
+    const path = `/v1/delegate/robots/${owned[0]!.robotId}/label`;
+    const bad = "{not json";
+    const res = await call(path, { method: "POST", headers: { Authorization: await sign(dl, "POST", path, bad), "Content-Type": "application/json" }, body: bad }, env);
+    expect(res.status).toBe(400);
+    expect((await api(dl, "POST", "/v1/delegate/claim", { step: "confirm" })).status).toBe(400);
+    expect((await api(dl, "POST", "/v1/delegate/robots/NOT-A-ROBOT/grant", {})).status).toBe(404);
+    const outcomes = (await events(dl.id)).filter((e) => e.actor === "agent").map((e) => `${e.action}:${e.outcome}`);
+    expect(outcomes).toEqual(["label:bad_request", "claim:bad_request", "grant:not_found"]);
+  });
+
+  it("the body hash covers the exact bytes: a BOM or invalid UTF-8 does not pass", async () => {
+    const { dl, owned } = await delegated(["robots:manage"], 1);
+    const path = `/v1/delegate/robots/${owned[0]!.robotId}/label`;
+    const body = JSON.stringify({ label: "probe" });
+    const withBom = new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode(body)]);
+    const r1 = await call(path, { method: "POST", headers: { Authorization: await sign(dl, "POST", path, body), "Content-Type": "application/json" }, body: withBom }, env);
+    expect(await r1.json()).toMatchObject({ detail: "bad_bdh" });
+    const invalid = new Uint8Array([...new TextEncoder().encode('{"label":"'), 0xff, ...new TextEncoder().encode('"}')]);
+    const r2 = await call(path, { method: "POST", headers: { Authorization: await sign(dl, "POST", path, '{"label":"\ufffd"}'), "Content-Type": "application/json" }, body: invalid }, env);
+    expect(await r2.json()).toMatchObject({ detail: "bad_bdh" });
+    // Signed over those exact bytes, the signature is fine but the body is not UTF-8: refused.
+    const auth = await signBytes(dl, "POST", path, invalid);
+    const r3 = await call(path, { method: "POST", headers: { Authorization: auth, "Content-Type": "application/json" }, body: invalid }, env);
+    expect(r3.status).toBe(400);
+  });
+});
+
+async function signBytes(dl: Delegate, method: string, path: string, body: Uint8Array): Promise<string> {
+  const now = nowSeconds();
+  const claims = { iss: dl.id, aud: ORIGIN, htm: method, htu: `${ORIGIN}${path}`, bdh: await bodyHash(body), iat: now, exp: now + 60, jti: randomToken(16) };
+  return `MC-Delegate ${await signJws({ alg: "EdDSA", typ: "mc-delegate+jwt" }, claims, dl.key)}`;
+}
