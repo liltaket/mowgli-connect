@@ -13,12 +13,13 @@
 # Options: --dir DIR, --relay URL, --name NAME, --teleop yes|no, --auto-update yes|no,
 #          --dns auto|public|system, --image IMAGE, --signer OWNER/REPO (whose
 #          .github/workflows/agent-image.yml signs IMAGE), --yes,
-#          --insecure-skip-verify (custom images only: runs IMAGE unchecked, no auto-update)
+#          --insecure-skip-verify (only with a custom --image: runs it unchecked, no auto-update)
 set -eu
 
 DIR="$HOME/mowgli-connect"
 RELAY="https://connect.bronc.app"
-IMAGE="ghcr.io/liltaket/mowgli-connect-agent:latest"
+OFFICIAL_REPO=ghcr.io/liltaket/mowgli-connect-agent
+IMAGE="$OFFICIAL_REPO:latest"
 SIGNER="liltaket/mowgli-connect"
 SKIP_VERIFY=no
 NAME=""
@@ -86,6 +87,7 @@ case $dk in /*) ;; *) dk="" ;; esac
 case $dk in *[!A-Za-z0-9/._-]*) dk="" ;; esac
 [ -n "$dk" ] || die "docker is not at a plain absolute path, which the update job needs"
 if [ "$SKIP_VERIFY" = yes ]; then
+	[ "$IMAGE_REPO" != "$OFFICIAL_REPO" ] || die "--insecure-skip-verify is only for a custom --image: $OFFICIAL_REPO is always verified"
 	[ "$AUTOUPDATE" = yes ] && die "--insecure-skip-verify cannot be combined with --auto-update yes: an unverified image is never updated automatically"
 	AUTOUPDATE=no
 	echo "WARNING: --insecure-skip-verify: $IMAGE will run WITHOUT any signature check."

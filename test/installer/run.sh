@@ -420,6 +420,17 @@ t_options() {
 	upd status
 	check "skip-verify: status says unverified" contains "$T/update.out" "ANYTHING"
 
+	for img in "" "--image $REPO:dev" "--image $REPO@$D1"; do
+		setup skip-verify-official
+		publish "$D1"
+		# shellcheck disable=SC2086 # $img is zero or two words
+		install_robot --auto-update no --insecure-skip-verify $img && r=0 || r=$?
+		check "skip-verify with the official image${img:+ ($img)}: refused" differs "$r" 0
+		check "skip-verify with the official image${img:+ ($img)}: reason" contains "$T/install.out" "only for a custom --image"
+		check "skip-verify with the official image${img:+ ($img)}: nothing started" eq "$(running)" none
+		check "skip-verify with the official image${img:+ ($img)}: nothing pulled" fails test -s "$FAKE/pulled"
+	done
+
 	setup skip-verify-auto
 	install_robot --image ghcr.io/me/custom-agent:dev --insecure-skip-verify --auto-update yes && r=0 || r=$?
 	check "skip-verify with auto-update: refused" differs "$r" 0
