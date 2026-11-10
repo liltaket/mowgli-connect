@@ -322,7 +322,63 @@ describe("review fixes", () => {
     // robot is never theirs (it stays unclaimed and keeps its tunnel for the next attempt, as
     // when two claims race for the last place on an account).
     expect(deprovisioned).toEqual([]);
-    expect(await testEnv.DB.prepare("SELECT status FROM robots WHERE robot_id = ?").bind(robot.robotId).first()).toEqual({ status: "unclaimed" });
+    expect(await testEnv.DB.prepare("SELECT status, hostname FROM robots WHERE robot_id = ?").bind(robot.robotId).first()).toEqual({
+      status: "unclaimed",
+      hostname: "carols.robots.test", // the tunnel's name stays reserved for the robot
+    });
+    expect(await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM members WHERE robot_id = ?").bind(robot.robotId).first()).toEqual({ n: 0 });
+    // The code stays valid, and someone who may add robots reuses the same name and tunnel.
+    await invite("carol", 7801);
+    let reused: string | undefined;
+    stub.provision = async (robotId: string, label?: string) => {
+      reused = label;
+      return { hostname: robotHostname(label ?? robotId, "robots.test"), tunnelId: "t-c", dnsRecordId: "d", token: "tok" };
+    };
+    expect(await claimRobot(env, stub, "gh:7801", pairingCode, null)).toMatchObject({ ok: true });
+    expect(reused).toBe("carols");
+  });
+
+  it("unlinks a robot whose owner lost access just as it was added", async () => {
+    await setup();
+    stubGithub([{ id: 7811, login: "carl" }]);
+    await invite("carl", 7811);
+    const now = Math.floor(Date.now() / 1000);
+    await testEnv.DB.prepare("INSERT INTO users (id, login, name, created_at, last_login_at) VALUES ('gh:7811', 'carl', NULL, ?, ?)").bind(now, now).run();
+    const robot = await newRobot();
+    const { pairingCode } = (await (await register(robot, "carls")).json()) as { pairingCode: string };
+    const { claimRobot } = await import("../src/claim");
+    const { robotHostname } = await import("../src/provisioner");
+    const deprovisioned: string[] = [];
+    const stub = {
+      assignsHostnames: true,
+      async provision(robotId: string, label?: string) {
+        return { hostname: robotHostname(label ?? robotId, "robots.test"), tunnelId: "t-carl", dnsRecordId: "d", token: "tok" };
+      },
+      async deprovision(ref: { robotId: string }) {
+        deprovisioned.push(ref.robotId);
+      },
+    };
+    // The admin removes carl right after the claim commits (the first batch is the claim).
+    let fired = false;
+    const db = new Proxy(testEnv.DB, {
+      get(target, prop) {
+        if (prop === "batch") {
+          return async (stmts: D1PreparedStatement[]) => {
+            const r = await target.batch(stmts);
+            if (!fired) {
+              fired = true;
+              await target.prepare("DELETE FROM invites WHERE user_id = 'gh:7811'").run();
+            }
+            return r;
+          };
+        }
+        const v = Reflect.get(target, prop);
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    });
+    expect(await claimRobot({ ...env, DB: db }, stub, "gh:7811", pairingCode, null)).toMatchObject({ ok: false, status: 403, message: "Your account no longer has access." });
+    expect(deprovisioned).toEqual([robot.robotId]);
+    expect(await testEnv.DB.prepare("SELECT status, tunnel_id FROM robots WHERE robot_id = ?").bind(robot.robotId).first()).toEqual({ status: "revoked", tunnel_id: null });
     expect(await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM members WHERE robot_id = ?").bind(robot.robotId).first()).toEqual({ n: 0 });
   });
 

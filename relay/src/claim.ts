@@ -241,17 +241,19 @@ async function claimWithCode(
   if (upd?.meta.changes !== 1) {
     const still = await env.DB.prepare("SELECT status FROM robots WHERE robot_id = ?").bind(robotId).first<{ status: string }>();
     if (still?.status === "unclaimed") {
-      // Another robot was added to this account at the same moment and filled its limit. Keep the
-      // code valid. The tunnel and the reserved name stay with the robot and are reused when it is
-      // added again: deleting them here could race with somebody else claiming the same robot
-      // under a new code, and take down their tunnel.
+      // Another robot was added to this account at the same moment and filled its limit, or the
+      // person lost access while the tunnel was being made (their limit is now 0). Keep the code
+      // valid. The tunnel (named after the robot id) and the reserved name stay with the robot
+      // row and are reused when it is added again: deleting them here could race with somebody
+      // else claiming the same robot under a new code, and take down their tunnel.
       await restoreCode();
       return limitReached((await robotLimit(env, userId)) ?? 0);
     }
     // Lost a race; the tunnel (idempotent by name) now belongs to the winner, so leave it alone.
     return INVALID;
   }
-  // Access removed while the robot was being added: do not leave it owned by nobody usable.
+  // Access removed between reading the limit and here: do not leave the robot owned by nobody
+  // usable. Unlinking deletes its tunnel (retried by the cron).
   const who = await env.DB.prepare("SELECT login FROM users WHERE id = ?").bind(userId).first<{ login: string }>();
   if (!who || !(await canOwn(env, userId, who.login))) {
     await unlinkRobot(env, provisioner, robotId);
