@@ -164,6 +164,9 @@ cron).
 
 D1 cost: nothing is written on the robot's poll (`/v1/robots/self`); its member filter is now one
 access check per poll instead of one per member. A share writes about seven rows, a lookup two.
+Unlinking signs out the guests whose last share it was in two D1 calls however many there are (one
+query for who can still sign in, one batch for the rest; tested), which keeps an admin's
+"remove and unlink" inside the Workers Free limit of 50 subrequests per request for more robots.
 
 ## Threat model
 
@@ -187,7 +190,7 @@ access check per poll instead of one per member. A share writes about seven rows
 | An agent that does not know `operator` | It ranks the role 0 and grants nothing (fail closed). |
 | Injected HTML in GitHub names or robot names | Every value goes through the `html` template's escaping; tested with a hostile name. |
 | What a guest learns | On the relay: the robot's display name (the owner's label), its online state, the owner's GitHub login and their own role. The robot id is in the Open link and the hostname in the address bar once it is open; the tunnel, joystick and update details stay owner-only. On the robot, View only included: everything the telemetry sockets carry, **including where the robot is** (GPS and pose topics, live), the map and its obstacles, schedules, system info and versions, and the map page's display settings. The owner sees each guest's GitHub login and name. |
-| A guest uses the tile proxy to reach other things on the robot's network | Only the z/x/y tile shape without a query or escapes reaches the GUI's tile proxy (table-driven tests); the tile server itself is the owner's choice. |
+| A guest uses the tile proxy to reach other things on the robot's network | Only the z/x/y tile shape without a query or escapes reaches the GUI's tile proxy (table-driven tests, fuzzed); the tile server itself is the owner's choice. Residual: the agent restricts the path and query only; the GUI's proxy forwards the guest's other request headers to the tile server (any header they send, not only what the GUI sends: `Range`, `Accept`, their other cookies for the robot's hostname; the agent removes only its session cookie and sets the `X-Forwarded-*` headers). No concrete exploit is known; a tile server that acts on request headers is in the owner's hands. |
 | A guest reads credentials from the config store | Only five named map display keys, by strict body check (table-driven tests); settings and every other key stay owner-only. |
 | Relay or Cloudflare account compromised | Unchanged: they are the root of trust ([SECURITY.md](../SECURITY.md)). |
 
