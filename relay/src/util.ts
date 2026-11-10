@@ -57,12 +57,18 @@ export function cleanLabel(s: unknown, max = 64): string | null {
  * buffered.
  */
 export async function readBodyText(request: Request, max: number): Promise<string | null> {
+  const buf = await readBodyBytes(request, max);
+  return buf === null ? null : new TextDecoder().decode(buf);
+}
+
+/** Like readBodyText, but the exact bytes (for signatures over the body). */
+export async function readBodyBytes(request: Request, max: number): Promise<Uint8Array | null> {
   const declared = Number(request.headers.get("Content-Length") ?? "0");
   if (declared > max) {
     await request.body?.cancel().catch(() => {});
     return null;
   }
-  if (!request.body) return "";
+  if (!request.body) return new Uint8Array(0);
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -82,5 +88,5 @@ export async function readBodyText(request: Request, max: number): Promise<strin
     buf.set(c, off);
     off += c.byteLength;
   }
-  return new TextDecoder().decode(buf);
+  return buf;
 }

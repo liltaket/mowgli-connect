@@ -24,8 +24,10 @@ export function fingerprint(id: string): string {
   return id.match(/.{1,4}/g)!.join("-");
 }
 
-export async function bodyHash(body: string): Promise<string> {
-  return b64urlEncode(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body))));
+/** base64url SHA-256 of the exact body bytes (a string is hashed as its UTF-8 encoding). */
+export async function bodyHash(body: string | Uint8Array): Promise<string> {
+  const bytes = typeof body === "string" ? new TextEncoder().encode(body) : body;
+  return b64urlEncode(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
 }
 
 export interface VerifiedDelegateAssertion {
@@ -47,7 +49,8 @@ export async function verifyDelegateAssertion(o: {
   method: string;
   htu: string;
   aud: string;
-  body: string;
+  /** The exact request body bytes. */
+  body: string | Uint8Array;
   now: number;
   resolveKey: (iss: string) => Promise<Uint8Array | null>;
 }): Promise<VerifiedDelegateAssertion> {

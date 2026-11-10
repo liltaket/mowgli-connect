@@ -227,6 +227,14 @@ func TestKeyFiles(t *testing.T) {
 	if _, err := Create(filepath.Join(repo, "keys"), DefaultRelay); err == nil || !strings.Contains(err.Error(), "Git working tree") {
 		t.Fatalf("key inside a repository accepted: %v", err)
 	}
+	// Through a symbolic link that leads into the repository.
+	os.MkdirAll(filepath.Join(repo, "deep"), 0o755)
+	if err := os.Symlink(filepath.Join(repo, "deep"), filepath.Join(base, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Create(filepath.Join(base, "alias", "keys"), DefaultRelay); err == nil || !strings.Contains(err.Error(), "Git working tree") {
+		t.Fatalf("key reached through a symlink into a repository accepted: %v", err)
+	}
 	for _, bad := range []string{"http://connect.bronc.app", "https://connect.bronc.app/x", "https://a@b", "ftp://x"} {
 		if _, err := Create(filepath.Join(base, "r"+strings.NewReplacer("/", "", ":", "").Replace(bad)), bad); err == nil {
 			t.Errorf("relay %q accepted", bad)

@@ -67,8 +67,26 @@ func (p *Profile) Public() ed25519.PublicKey { return p.Key.Public().(ed25519.Pu
 func (p *Profile) ID() string                { return DelegateID(p.Public()) }
 func (p *Profile) PublicKeyB64() string      { return b64.EncodeToString(p.Public()) }
 
-// insideGitWorkTree reports whether dir is inside a Git working tree (a key there could be committed).
+// insideGitWorkTree reports whether dir is inside a Git working tree (a key there could be
+// committed), by its own path and by the path its symbolic links lead to (security review 14).
 func insideGitWorkTree(dir string) bool {
+	if lexicalInGit(dir) {
+		return true
+	}
+	// Resolve the deepest part that exists; the rest is created below it.
+	d, rest := dir, ""
+	for {
+		if real, err := filepath.EvalSymlinks(d); err == nil {
+			return lexicalInGit(filepath.Join(real, rest))
+		}
+		if filepath.Dir(d) == d {
+			return false
+		}
+		d, rest = filepath.Dir(d), filepath.Join(filepath.Base(d), rest)
+	}
+}
+
+func lexicalInGit(dir string) bool {
 	for d := dir; ; d = filepath.Dir(d) {
 		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
 			return true

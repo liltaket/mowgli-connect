@@ -495,7 +495,7 @@ ${help}${retry}</div>`,
       .first();
     if (!owner) return notFound();
     if (act[2] === "unlink") {
-      const ok = await unlinkRobot(env, createProvisioner(env), robotId);
+      const ok = await unlinkRobot(env, createProvisioner(env), robotId, { guard: { ownerId: user.id } });
       return ok ? redirect("/?notice=unlinked", 303) : notFound();
     }
     const res = await env.DB.prepare(
