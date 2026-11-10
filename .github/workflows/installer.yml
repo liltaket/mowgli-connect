@@ -7,8 +7,9 @@ on:
   push:
     branches: [main]
     paths: [site/install.sh, test/installer/**, .github/workflows/installer.yml]
+  # Every pull request: "Installer tests" is a required status check, and a workflow skipped by
+  # a path filter never reports it, which would block the merge.
   pull_request:
-    paths: [site/install.sh, test/installer/**, .github/workflows/installer.yml]
   workflow_dispatch:
 
 permissions:
@@ -16,6 +17,7 @@ permissions:
 
 jobs:
   test:
+    name: Installer tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
