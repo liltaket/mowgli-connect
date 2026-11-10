@@ -119,6 +119,11 @@ async function count(table: string, userId: string, column = "user_id"): Promise
   return (await testEnv.DB.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE ${column} = ?`).bind(userId).first<{ n: number }>())!.n;
 }
 
+/** The owner's rows in the hourly share budget. */
+async function shareRows(ownerId: string): Promise<number> {
+  return (await testEnv.DB.prepare("SELECT COUNT(*) AS n FROM share_events WHERE user_id = ? AND kind = 'share'").bind(ownerId).first<{ n: number }>())!.n;
+}
+
 async function addDevice(userId: string): Promise<void> {
   await testEnv.DB.prepare("INSERT INTO devices (device_id, user_id, name, public_jwk, created_at, last_used_at) VALUES (?, ?, 'Phone', '{}', ?, ?)")
     .bind(crypto.randomUUID().replace(/-/g, "").padEnd(43, "x"), userId, nowSeconds(), nowSeconds())
@@ -425,7 +430,9 @@ describe("sharing limits", () => {
     expect(await member(robot.robotId, owner.id)).toEqual({ role: "owner" });
 
     const gh = { id: nextId(), login: "already-in" };
+    expect(await shareRows(owner.id)).toBe(0);
     const target = await share(owner, robot, gh, "viewer");
+    expect(await shareRows(owner.id)).toBe(1); // a real share counts towards the hourly budget
     const again = await post(`/robots/${robot.robotId}/share`, owner, { login: "already-in", role: "operator" });
     expect(again.status).toBe(409);
     expect(await again.text()).toContain("already has access");
@@ -433,6 +440,7 @@ describe("sharing limits", () => {
     const direct = await post(`/robots/${robot.robotId}/share`, owner, { id: String(gh.id), role: "operator" });
     expect(direct.headers.get("Location")).toBe(`/robots/${robot.robotId}/share?notice=already`);
     expect(await member(robot.robotId, target)).toEqual({ role: "viewer" });
+    expect(await shareRows(owner.id)).toBe(1); // nothing was shared, nothing counted
   });
 
   it("refuses organizations, bots and accounts that do not exist", async () => {
@@ -457,6 +465,7 @@ describe("sharing limits", () => {
     const res = await post(`/robots/${robot.robotId}/share`, owner, { id: String(gh.id), role: "viewer" });
     expect(res.status).toBe(403);
     expect(await member(robot.robotId, `gh:${gh.id}`)).toBeNull();
+    expect(await shareRows(owner.id)).toBe(0);
   });
 
   it(`adds at most ${SHARES_PER_OWNER_PER_HOUR} shares per owner and hour`, async () => {
@@ -471,6 +480,7 @@ describe("sharing limits", () => {
     const res = await post(`/robots/${robot.robotId}/share`, owner, { id: String(gh.id), role: "viewer" });
     expect(res.status).toBe(429);
     expect(await member(robot.robotId, `gh:${gh.id}`)).toBeNull();
+    expect(await shareRows(owner.id)).toBe(SHARES_PER_OWNER_PER_HOUR); // the refusal adds none
     expect(await testEnv.DB.prepare("SELECT 1 FROM users WHERE id = ?").bind(`gh:${gh.id}`).first()).toBeNull(); // nothing left behind
     // An hour later it works again.
     await testEnv.DB.prepare("UPDATE share_events SET at = at - 3600 WHERE user_id = ?").bind(owner.id).run();
