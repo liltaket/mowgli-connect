@@ -1,0 +1,34 @@
+name: Delegate client
+
+# Tests the mc-delegate CLI and MCP server (delegate/, docs/agent-delegation.md). Actions are
+# pinned by commit SHA.
+on:
+  push:
+    branches: [main]
+    paths: [delegate/**, .github/workflows/delegate.yml]
+  pull_request:
+    paths: [delegate/**, .github/workflows/delegate.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: delegate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: delegate/go.mod
+          cache: false
+      - name: go vet and test
+        working-directory: delegate
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test -race ./...

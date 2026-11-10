@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { b64urlEncode, deriveRobotId, signJws } from "../src/crypto";
-import { bodyHash, fingerprint } from "../src/delegateAuth";
+import { b64urlDecode } from "../src/crypto";
+import { bodyHash, fingerprint, verifyDelegateAssertion } from "../src/delegateAuth";
 import { CALLS_PER_HOUR, MAX_ACTIVE_DELEGATIONS, MAX_CLAIMED_ROBOTS, WRONG_CODES_PER_HOUR } from "../src/delegation";
 import type { Env } from "../src/env";
 import { nowSeconds, randomToken } from "../src/util";
@@ -229,6 +230,26 @@ describe("signed delegate calls", () => {
       expect(res.status).toBe(401);
       expect(await res.json()).toMatchObject({ detail });
     }
+  });
+
+  it("accepts the Go client's signature (delegate/internal/client TestSignatureVector)", async () => {
+    // Seed 0x01..0x20; the same token is produced byte for byte by the Go client's test.
+    const pub = b64urlDecode("ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ");
+    const jws =
+      "eyJhbGciOiJFZERTQSIsInR5cCI6Im1jLWRlbGVnYXRlK2p3dCJ9.eyJhdWQiOiJodHRwczovL3JlbGF5LnRlc3QiLCJiZGgiOiJYY043NVRvaFNGTkNBN05rVUhRajRGT0MzeHU2djltY3gtbDJjRjBYQlJBIiwiZXhwIjoxNzk0MDAwMDYwLCJodG0iOiJQT1NUIiwiaHR1IjoiaHR0cHM6Ly9yZWxheS50ZXN0L3YxL2RlbGVnYXRlL2NsYWltIiwiaWF0IjoxNzk0MDAwMDAwLCJpc3MiOiJtdzNhbTQ2dzV3ZWV4NGE0IiwianRpIjoiQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIn0.w-ipKIO5uXifzX3LTYI72UuJkteJBvH70YH2Cs1jyLgxt1WwsLLgdddZJZWILPX4ttiv_fyIZbVVBiya5K7RDQ";
+    const verify = (body: string) =>
+      verifyDelegateAssertion({
+        authorization: `MC-Delegate ${jws}`,
+        method: "POST",
+        htu: `${ORIGIN}/v1/delegate/claim`,
+        aud: ORIGIN,
+        body,
+        now: 1794000010,
+        resolveKey: async (iss) => (iss === "mw3am46w5weex4a4" ? pub : null),
+      });
+    expect(await verify('{"code":"lemon-otter-crisp","step":"preview"}')).toMatchObject({ delegateId: "mw3am46w5weex4a4", exp: 1794000060 });
+    await expect(verify('{"code":"lemon-otter-crisp","step":"confirm"}')).rejects.toMatchObject({ code: "bad_bdh" });
+    expect(fingerprint("mw3am46w5weex4a4")).toBe("mw3a-m46w-5wee-x4a4");
   });
 
   it("an unknown or wrongly signed key writes nothing", async () => {
