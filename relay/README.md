@@ -166,6 +166,7 @@ touching Cloudflare.
 | `TUNNEL_TOKEN_KEY` | **secret** | recommended | 32 random bytes, base64url (`node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`). Tunnel tokens are then stored AES-256-GCM encrypted and bound to their robot id; plain rows from before are sealed by the cron. Keep a copy: without it robots cannot get their token (unlink and pair again to recover). |
 | `ALERT_NTFY_URL` | **secret** | no | e.g. `https://ntfy.sh/<topic>`: operator alerts (cleanup failing or stuck, tunnel creation failing, registration cap hit, token key missing), at most one per kind every 6 hours. No personal data. |
 | `APP_REDIRECT_URIS` | var | no | private-use scheme callbacks `<bundle id>:/<path>` for free Apple teams (weaker; see docs/app-api.md). |
+| `DELEGATION_USERS` | var | no | comma list of `gh:<id>` (or `*`) who may let AI agents act for them ([docs/agent-delegation.md](../docs/agent-delegation.md)). Unset = off (404). |
 | `APP_IOS_APP_IDS` | var | no | comma list of `<TeamID>.<bundle id>`: turns on the native app API and serves `/.well-known/apple-app-site-association` for them ([docs/app-api.md](../docs/app-api.md)). Unset = off (404). |
 | `AGENT_IMAGE_REPO` | var | no | `owner/repo` whose successful `agent-image.yml` builds on `main` define the latest agent (default `liltaket/mowgli-connect`); robots on an older build show "Update available". |
 | `PROVISIONER` | var | no | `cloudflare` (default), `quick` ([zero-cost mode](#zero-cost-quick-tunnel-mode)) or `fake` |

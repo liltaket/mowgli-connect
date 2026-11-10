@@ -97,7 +97,8 @@ short-lived sign-in records (hashed). It stores no mower data, maps, GPS or tele
 
 App traffic goes browser to Cloudflare to robot directly; the relay only handles login, pairing and
 short-lived grants. Design decisions, costs and open questions: [docs/architecture.md](docs/architecture.md).
-Agent and relay contract: [docs/protocol.md](docs/protocol.md); native app API: [docs/app-api.md](docs/app-api.md). Inspired by T3 Connect.
+Agent and relay contract: [docs/protocol.md](docs/protocol.md); native app API: [docs/app-api.md](docs/app-api.md);
+delegating to an AI agent: [docs/agent-delegation.md](docs/agent-delegation.md). Inspired by T3 Connect.
 
 ### Components
 
@@ -105,6 +106,7 @@ Agent and relay contract: [docs/protocol.md](docs/protocol.md); native app API: 
 |---|---|
 | [`agent/`](agent) | Go agent + cloudflared, one container on the robot. Authenticating reverse proxy in front of the GUI. |
 | [`relay/`](relay) | Cloudflare Worker + D1: GitHub login, pairing, grants, tunnel provisioning. See [relay/README.md](relay/README.md) to self-host. |
+| [`delegate/`](delegate) | `mc-delegate`, a CLI and MCP server that lets an AI agent act for you with limited, revocable rights ([docs/agent-delegation.md](docs/agent-delegation.md)). Off on the relay until `DELEGATION_USERS` is set. |
 | [`docs/`](docs) | [Install guide](docs/install.md), [architecture](docs/architecture.md), [protocol](docs/protocol.md), [test report](docs/test-report.md), and [research](docs/research) (T3 Connect analysis, GUI traffic, Cloudflare pricing, licensing, security reviews). |
 | [`sim/`](sim/README.md) | Test tools: fake Foxglove/ROS robot feeding the real GUI, WebSocket traffic meter. Not for production. **`sim/foxglove-sim` contains code and schemas copied from MowgliNext and stays under MowgliNext's license** (GPLv3 + its commercial clause, see `sim/foxglove-sim/LICENSE`); it is never shipped with the agent or relay. Move it to its own repo before any commercial use. |
 | [`site/`](site) | The project site, published to GitHub Pages by `.github/workflows/pages.yml`. Also hosts `install.sh`. |

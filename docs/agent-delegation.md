@@ -164,9 +164,10 @@ Every call carries `Authorization: MC-Delegate <jws>`: a compact JWS, header
 `bdh` binds the body: a signature copied from a log, before or after use, cannot carry a
 different pairing code or robot id. Bodies are at most 4 KB.
 
-Every call then checks, in this order: the signature and claims; that the delegation exists, is
-not revoked and has not expired; that the person still has access; the call's scope; the
-per-delegation rate limit (which also writes the activity log entry); and the jti (single use).
+Every call then checks, in this order: the signature and claims (an unknown key or a bad signature
+writes nothing); that the delegation is not revoked and has not expired; the jti (single use);
+that the person still has access and is still named in `DELEGATION_USERS`; the call's scope; and
+the per-delegation rate limit, in the same statement that writes the activity log entry.
 
 ### 4. API
 

@@ -106,6 +106,8 @@ owner still has access.
 | `POST /v1/app/robots/{robotId}/grant` | `{grant, hostname, expiresAt}`; `503 {"error":"robot_offline"}` if its tunnel is down |
 | `POST /v1/app/claim` | body `{code, label?, step: "preview"\|"confirm"}`: preview `{robotId, name, hostname}`, confirm `{robotId, hostname}`; same limits and guess budget as the web |
 | `POST /v1/app/sign-out` | deletes this device and, in the same transaction, signs everyone out of the robots its owner owns (their session epoch goes up, so robot sessions and unused grants from before stop working at the robot's next successful sync: normally within `MC_POLL_INTERVAL`, 3 minutes, and at the latest after `MC_MAX_STALE`, 10 minutes, when the robot stops accepting anything until it syncs); pending sign-ins of that key are cancelled; robots the person only views are not touched. A second call answers 401 `unknown_device` |
+| `GET /v1/app/delegations` | `{delegations: [{delegateId, name, scopes, expiresAt, revokedAt, lastUsedAt}]}`: the AI agents that may act for this person ([agent-delegation.md](agent-delegation.md)); empty when delegation is off for them |
+| `POST /v1/app/delegations/{delegateId}/revoke` | ends that delegation now (`{ok: true}`; 404 if it is not this person's or already revoked). The app can only list and revoke; approving and renewing happen in the browser |
 
 Errors are JSON `{"error": "<code>"}` with 400, 401 (`invalid_assertion` + `detail`), 403, 404,
 409, 429 or 503.
