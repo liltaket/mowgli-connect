@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,7 +22,9 @@ import (
 func FuzzCanonicalPathPolicy(f *testing.F) {
 	for _, s := range []string{"/", "/api/mowglinext/publish/x", "/api//mowglinext/publish/x", "/api/./mowglinext/publish/x",
 		"/api/x/../mowglinext/publish/x", "/api/mowglinext/publish/", "/api/mowglinext/publish", "/%2e%2e/api", "/a%2Fb", "/api/mowglinext/publish%2Fx",
-		"/api/mowglinext/call/high_level_control", "/api/mowglinext/call/high_level_control/", "/api/mowglinext/call/../call/emergency"} {
+		"/api/mowglinext/call/high_level_control", "/api/mowglinext/call/high_level_control/", "/api/mowglinext/call/../call/emergency",
+		"/api/settings", "/api/config/keys/get", "/api/config/keys/get/", "/api/config/keys/../keys/get", "/tiles", "/tiles/", "/tiles/1/2/3", "/tiles/1/2/3.png",
+		"/tiles/1/2/3.png?x=1", "/tiles/1/2/3.png?", "/tiles/1%2F2/3", "/tiles/1/2/%33.png", "/tiles/../api/settings", "/tiles/1/2/3.png/", "/tiles/a/b/c"} {
 		f.Add(s)
 	}
 	pol := MowgliPolicy{}
@@ -49,8 +52,58 @@ func FuzzCanonicalPathPolicy(f *testing.F) {
 		if pol.Allow(RoleOperator, "GET", u.Path, true) != pol.Allow(RoleViewer, "GET", u.Path, true) {
 			t.Fatalf("operator and viewer sockets differ for %q", u.Path)
 		}
-		if pol.Allow(RoleOperator, "POST", u.Path, false) && !mowgliOperatorCalls[u.Path] {
+		if pol.Allow(RoleOperator, "POST", u.Path, false) && !mowgliOperatorCalls[u.Path] && u.Path != configKeysGet {
 			t.Fatalf("operator POST allowed for %q", u.Path)
+		}
+		for _, role := range []string{RoleViewer, RoleOperator} {
+			if pol.Allow(role, "POST", u.Path, false) && !mowgliOperatorCalls[u.Path] {
+				// The config store's read, by body only: refused without one or with a key not on the list.
+				if role == RoleViewer && u.Path != configKeysGet {
+					t.Fatalf("viewer POST allowed for %q", u.Path)
+				}
+				for _, body := range []string{"", "{}", `{"system.homekit.pincode":""}`, `{"gui.map.offset.x":"","system.homekit.pincode":""}`} {
+					if pol.AllowRequest(role, httptest.NewRequest("POST", u.Path, strings.NewReader(body))) {
+						t.Fatalf("%s POST %q allowed with body %q", role, u.Path, body)
+					}
+				}
+				if !pol.AllowRequest(role, httptest.NewRequest("POST", u.Path, strings.NewReader(`{"gui.map.offset.x":""}`))) {
+					t.Fatalf("%s POST %q refused with a readable key", role, u.Path)
+				}
+			}
+			if pol.Allow(role, "GET", u.Path, false) && hasAnyPrefix(u.Path, []string{tilesPrefix}) {
+				if !tilePath.MatchString(u.Path) {
+					t.Fatalf("%s tile path allowed for %q", role, u.Path)
+				}
+				// What the tile server is sent, spelled as on the wire, is the same plain shape.
+				if pol.AllowRequest(role, &http.Request{Method: "GET", URL: u}) && !tilePath.MatchString(u.RequestURI()) {
+					t.Fatalf("%s tile request allowed for %q", role, u.RequestURI())
+				}
+			}
+		}
+	})
+}
+
+// Whatever POST /api/config/keys/get body a viewer gets through, the GUI's decoder reads from it
+// only readable keys, at least one, each with no value.
+func FuzzReadableConfigKeysBody(f *testing.F) {
+	for _, s := range []string{`{"gui.map.offset.x":""}`, `{"gui.map.offset.x":"","map.obstacleOriginals":""}`, `{"gui.map.offset.x":"","gui.map.offset.x":""}`,
+		`{"system.homekit.pincode":""}`, `{"gui.map.offset.x":"x"}`, `{"gui.map.offset.x":""}{}`, `{"gui.map.offset.x":"",}`, `{"GUI.MAP.OFFSET.X":""}`,
+		`{"gui.map.offset.x":"\u0000"}`, `{"gui.map.offset\u002ex":""}`, `{}`, ``, ` {"gui.map.offset.x":""} `} {
+		f.Add(s)
+	}
+	pol := MowgliPolicy{}
+	f.Fuzz(func(t *testing.T, body string) {
+		if !pol.AllowRequest(RoleViewer, httptest.NewRequest("POST", configKeysGet, strings.NewReader(body))) {
+			return
+		}
+		var keys map[string]string
+		if err := json.Unmarshal([]byte(body), &keys); err != nil || len(keys) == 0 {
+			t.Fatalf("allowed body %q decodes to %v (%v)", body, keys, err)
+		}
+		for k, v := range keys {
+			if !mowgliReadableKeys[k] || v != "" {
+				t.Fatalf("allowed body %q reads %q = %q", body, k, v)
+			}
 		}
 	})
 }
