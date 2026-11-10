@@ -94,11 +94,23 @@ again.
 ## Uninstall
 
 ```sh
-cd ~/mowgli-connect && docker compose down -v
+sh install.sh --uninstall --dir "$HOME/mowgli-connect"
 ```
 
-`-v` removes the data volume, including the robot's key. Then unlink the robot on
-<https://connect.bronc.app> so the address stops working. You can delete `~/mowgli-connect` after that.
+Use the same downloaded installer (or download and inspect a fresh copy). This removes
+only this installation's automatic-update cron job and stops/removes its Compose services.
+Configuration and the data volume, including the robot key and pairing, are kept.
+
+To deliberately delete the identity volume as well:
+
+```sh
+sh install.sh --uninstall --purge --dir "$HOME/mowgli-connect"
+```
+
+Then unlink the robot on <https://connect.bronc.app> so the address stops working.
+You can delete `~/mowgli-connect` after that. Re-running the installer preserves
+existing settings unless an option explicitly changes them. Disable the installer cron
+before transferring update ownership to an Extension Manager; do not run two updaters.
 
 ## Troubleshooting
 
