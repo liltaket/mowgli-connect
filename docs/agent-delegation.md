@@ -9,8 +9,8 @@ The program is usually an AI agent (Claude in T3 Code or Claude Code), or an aut
 the Mowgli Simulation Farm. It can list robots and their status, add robots with a pairing code
 (above all, simulator robots), rename and unlink them, and read a robot's GUI without changing
 anything. It can never drive a mower, run the blade, change settings or edit maps, and it has no
-admin rights. Every delegation is approved by the person, in the browser, on a consent page. It
-expires, and it can be revoked at once. Everything it does is recorded in an activity log.
+admin rights. Every delegation is approved by the person on a consent screen, in the browser or
+in the Mowgli iOS app. It expires, and it can be revoked at once. Everything it does is recorded in an activity log.
 
 In this document, "agent" means the AI agent, and "robot agent" means the `connect-agent` that
 runs on a robot.
@@ -18,8 +18,8 @@ runs on a robot.
 ## Goals
 
 1. **Explicit consent.** A delegation exists only after the person, signed in, approves it on a
-   page that shows the agent's name, the fingerprint of its key, the scopes, the robots and the
-   expiry.
+   page or an app screen that shows the agent's name, the fingerprint of its key, the scopes, the
+   robots and the expiry.
 2. **No bearer secret.** The agent's identity is an Ed25519 key that it keeps in a file of mode
    600 outside any repository. Every call is signed with that key and is valid once, for at most
    60 seconds, for one method, URL and body. Nothing the relay hands out lets a copy of a log act
@@ -155,7 +155,33 @@ secret, and the relay stores nothing until the person approves. Signed in, the p
 
 **Approve** posts the form. The relay checks the Origin like every browser form, validates every
 field again, and creates or replaces the delegation. A key that belongs to another person's
-delegation is refused. A person may have at most 5 active delegations.
+delegation is refused. A person may have at most 5 active delegations, and approve at most 30
+times an hour (the page and the app together).
+
+### 2b. Consent in the iOS app
+
+The same link can be approved in the Mowgli iOS app instead (Settings › Mowgli Connect › AI Agents › Paste Link,
+or by opening the link on an iPhone whose app declares the relay's associated domain). The app
+sends `key` and `req` to `POST /v1/app/delegations/consent` ([app-api.md](app-api.md#ai-agents)),
+signed by its device key: `step: "preview"` answers everything the page shows (the same texts),
+and `step: "approve"` goes through the very same validation and transaction as the page, so every
+rule above holds unchanged: the request is bound to the signed-in account's id, links expire
+after 30 minutes, revoked keys are never approved again, at most 5 active delegations, only
+requested scopes and the person's own robots, `DELEGATION_USERS`, the emergency stop and the
+hourly approval limit. The activity log records an app approval as "you, in the app".
+
+**User presence.** Decided: approving in the app needs a fresh Face ID, Touch ID or passcode check
+(LocalAuthentication, `.deviceOwnerAuthentication`, a new context each time with no reuse) right
+before the signed call, after the person has ticked "I ran this myself". It stands in for the
+signed-in browser session the page relies on, and guards against someone holding the unlocked
+phone and against approving by accident. The relay cannot verify it: the device key signs every
+app call, so it cannot itself require Face ID. A modified app or malware that can sign with the
+device key could skip it and approve on its own: it can make an agent key itself and sign a link
+for the account's public id, so the agent's signature binds the request but proves no human
+approved it. Such a delegation still shows under AI agents and can be revoked, and the device must
+still be signed in when an approval commits, so signing it out stops one under way. A check the
+relay can verify (a second Secure Enclave key with `.userPresence` registered at sign-in, or a
+passkey) is a possible later addition, as for the page.
 
 ### 3. Signed calls
 
@@ -224,6 +250,7 @@ role (`minRole`), so:
 | Wrong pairing codes | 5 per hour per delegation, separate from the person's own 10, so a misbehaving agent cannot lock the person out of adding robots | relay, existing guess budget |
 | Robots per person | the normal robot limit applies to robots a delegate adds | relay, existing |
 | Active delegations per person | 5 | relay |
+| Approvals per person | 30 per hour, page and app together, in the approving statement | relay |
 | Body size | 4 KB | relay |
 | Unauthenticated writes | none: the consent link is signed by the agent and stored nowhere until approved, and a bad or unknown signature writes nothing | relay |
 
@@ -241,8 +268,8 @@ calls. Revoke it, and add `/v1/delegate/*` to the recommended per-IP WAF rate-li
   expiry and last use, with **Activity**, **Renew** (same scopes and robots, the same duration
   again from now) and **Revoke**.
 - **The iOS app**: `GET /v1/app/delegations` and `POST /v1/app/delegations/{id}/revoke`
-  (signed by the device as every app call), so a delegation can be revoked from the phone.
-  Approving or renewing is only possible in the browser.
+  (signed by the device as every app call), so a delegation can be revoked from the phone. The
+  app can also approve a consent link (see 2b). Renewing is only possible in the browser.
 - **The agent itself**: `mc-delegate revoke`.
 - **Admin**: removing a person revokes all their delegations; access checks on every call also
   stop them at once.
@@ -270,7 +297,7 @@ shown escaped, like everywhere else on the relay's pages.
 | **Stolen agent key** (malware on the machine, a backup, a copied home directory) | The key is useless without a live delegation; a delegation has short expiry, a scope set, a robot set and caps; it can be revoked at once from the robots page or the phone, and a revoked key can never be approved again, so the copy stays useless; every use is in the activity log with its outcome. The worst it can do: read the robot set's status, add robots with codes it knows, rename or unlink robots in the set (when `robots:manage` was granted), and look at those robots read-only. | Until revoked or expired, the thief has exactly the delegation's rights, and a viewer session already open on a robot lasts until that robot's next sync after revocation (normally 3, at most 10 minutes). A thief with the key and the person's browser is the person. |
 | **Leaked signed request** (logs, a proxy, a crash report) | Valid once, for at most 60 seconds, bound to method, URL and body hash. | None beyond the original request. |
 | **Prompt-injected agent** (instructions hidden in a web page, an issue, or a robot's own name or GUI data) | Scopes and the robot set bound what it can do; owner sessions do not exist; unlink is limited to the robot set and needs `robots:manage`; claims are capped; the MCP tools mark robot-supplied text as untrusted data (the robot's answer, its headers reduced to a short media type, stays inside one delimited block) and make claim and unlink a deliberate second step (`confirm: true`); the agent cannot widen or renew its own delegation; the activity log shows `denied` attempts. `confirm` is chosen by the model, not by a person: the human check is Claude Code's own permission prompt for each MCP tool, so do not auto-allow `claim_robot` and `unlink_robot`. | Within its scopes it can do damage: unlink a robot in the set (the robot then needs a new pairing on site), or add a robot whose code an attacker fed it. Do not tick real mowers together with `robots:manage` unless you need to. |
-| **Agent drives the person's browser** (Claude in Chrome, a desktop-control tool) and approves its own consent page or a wider one | The consent page requires a ticked "I started this myself" box and shows the fingerprint; the delegate API cannot approve anything. | An agent that controls a browser signed in to Mowgli Connect can do anything the person can there. Do not give an agent control of a browser profile that is signed in to connect.bronc.app. A WebAuthn confirmation (passkey) on approval would close this; it is a possible later addition. |
+| **Agent drives the person's browser** (Claude in Chrome, a desktop-control tool) and approves its own consent page or a wider one | The consent page requires a ticked "I started this myself" box and shows the fingerprint; the delegate API cannot approve anything. | An agent that controls a browser signed in to Mowgli Connect can do anything the person can there. Do not give an agent control of a browser profile that is signed in to connect.bronc.app. A WebAuthn confirmation (passkey) on approval would close this; it is a possible later addition. In the app, approving also needs Face ID or the passcode on the phone (2b); an agent that drives the phone itself (for example through screen mirroring) is not stopped by the relay. |
 | **Phishing a consent link** (someone sends the person a link with their own key and a convincing name) | The page says that only a link from your own terminal, just now, should be approved, shows a fingerprint to compare, and needs the confirmation box; a link works for 30 minutes at most; scopes are limited and expiry short; the delegation shows under AI agents. | A person who approves a stranger's link gives that stranger the approved rights until they revoke. |
 | **Malicious robot** (a robot an agent added, or a robot in the set) | Its name and data are untrusted text: escaped on the relay's pages, marked as data in the MCP tool output and limited in size. A grant is bound to that robot (`aud`), lives 60 seconds and names the delegate, not the person, so the robot learns nothing it could use elsewhere. The robot can never get the agent's key. Robots the agent added are marked "added by <agent>" on the robots page. | A malicious robot can feed the agent false status, or instructions (see prompt injection), and its GUI could try to phish the person who opens it as owner in a browser. Unlink robots you do not recognise. |
 | **Replay** | Single-use `jti` stored until `exp` + skew, 60-second lifetime, `aud`, `htm`, `htu` and `bdh` bound. Grants are single-use on the robot as before. | None known. |

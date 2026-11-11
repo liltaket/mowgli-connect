@@ -118,7 +118,59 @@ owner still has access.
 | `POST /v1/app/claim` | body `{code, label?, step: "preview"\|"confirm"}`: preview `{robotId, name, simulator, hostname}`, confirm `{robotId, hostname}`; same limits and guess budget as the web |
 | `POST /v1/app/sign-out` | deletes this device and, in the same transaction, signs everyone out of the robots its owner owns (their session epoch goes up, so robot sessions and unused grants from before stop working at the robot's next successful sync: normally within `MC_POLL_INTERVAL`, 3 minutes, and at the latest after `MC_MAX_STALE`, 10 minutes, when the robot stops accepting anything until it syncs); pending sign-ins of that key are cancelled; robots the person only views are not touched. A second call answers 401 `unknown_device` |
 | `GET /v1/app/delegations` | `{delegations: [{delegateId, name, scopes, expiresAt, revokedAt, lastUsedAt}]}`: the AI agents that may act for this person ([agent-delegation.md](agent-delegation.md)); empty when delegation is off for them |
-| `POST /v1/app/delegations/{delegateId}/revoke` | ends that delegation now (`{ok: true}`; 404 if it is not this person's or already revoked). The app can only list and revoke; approving and renewing happen in the browser |
+| `POST /v1/app/delegations/{delegateId}/revoke` | ends that delegation now (`{ok: true}`; 404 if it is not this person's or already revoked). Renewing happens in the browser |
+| `POST /v1/app/delegations/consent` | an AI agent's consent link, previewed, approved or declined in the app: see [AI agents](#ai-agents) |
+
+### AI agents
+
+The consent link `mc-delegate request` prints (`/delegate/authorize?key=…&req=…`,
+[agent-delegation.md](agent-delegation.md#2-consent)) can be approved in the app as well as on the
+web page. The app takes the link's `key` and `req` unchanged and calls
+`POST /v1/app/delegations/consent` (body up to 8 KB), signed as every app call. The relay answers
+404 when delegation is off or the person is not in `DELEGATION_USERS`, and 503 `paused` under the
+emergency stop.
+
+`{"step": "preview", "key": "…", "req": "…"}` writes nothing and answers what the consent page
+shows, with the page's own texts:
+
+```json
+{"delegateId": "abcdefghijk2345a", "fingerprint": "abcd-efgh-ijk2-345a", "name": "Claude (T3, laptop)",
+ "login": "liltaket", "linkExpiresAt": 1800001200,
+ "scopes": [{"scope": "robots:read", "title": "See robots", "text": "List the robots below…", "limits": null}],
+ "never": ["Drive a robot or start mowing", "…"],
+ "robots": [{"robotId": "…", "name": "Sim Farm", "role": "owner", "detail": "You own it",
+             "simulator": true, "ticked": false, "addedByAgent": false}],
+ "robotsNote": "Nothing is ticked unless you tick it.", "noRobots": "You have no robots yet. …",
+ "ttl": {"choices": [{"seconds": 3600, "label": "1 hour"}, "…"], "default": 86400},
+ "existing": null}
+```
+
+`name` is the agent's own choice: show it as text, marked as chosen by the agent, and show the
+fingerprint prominently with the page's warning. `robots` are the person's robots; `ticked` is
+true for one this key already has from an earlier approval, `addedByAgent` for one the agent
+added itself (shown fixed, never sent back). `simulator` is the robot's own claim, for the badge
+only. `existing` is `{active, expiresAt, scopes, notice}` when this key already has a delegation;
+approving replaces it.
+
+`{"step": "approve", "key", "req", "scopes": [...], "robots": [...], "ttl": <seconds>, "confirm": true}`
+approves with the person's choices, through the same validation and transaction as the web page:
+only requested scopes, only the person's robots, a `ttl` from the choices, and `confirm` true
+(the "I ran this myself" box). The device that signed the call must still be signed in when
+the approval commits; otherwise it answers 401 `invalid_assertion`/`unknown_device` and stores nothing. Answer:
+`{approved: true, delegateId, fingerprint, name, scopes: [{scope, title}], robots: [{robotId, name}], expiresAt}`.
+`{"step": "decline", …}` changes nothing and answers `{approved: false}`.
+
+Refusals are `{error, message}` with the page's message: `400 invalid_link`, `link_expired`,
+`wrong_account` (the link names another account), `bad_request`, `confirm_required`, `bad_ttl`,
+`no_scopes`; `403 too_many_agents`; `409 key_revoked` (with `revokedAt`; a revoked key is never
+approved again), `key_other_account`, `robot_not_yours`; `429 rate_limited` (30 approvals per
+person an hour, page and app together).
+
+**Before sending an approval the app asks for Face ID, Touch ID or the passcode**
+(LocalAuthentication `.deviceOwnerAuthentication`, a fresh context, no reuse). The relay cannot
+verify that check; see [agent-delegation.md](agent-delegation.md#2b-consent-in-the-ios-app) for
+why it is still required and what it does not cover. Send the approval once: on an unknown
+outcome, read `GET /v1/app/delegations` rather than send it again.
 
 Share calls answer `404 not_found` to anyone who does not own the robot (a person it is shared
 with included), as for a robot that does not exist; `{userId}` is `gh:<numeric GitHub id>`.
@@ -160,6 +212,7 @@ signature (method and URL are); TLS protects them, and a signed request works on
 | The authorization code leaks (logs, a browser history, a shoulder) | It works once, for 60 seconds, only with the PKCE verifier and only with the device key whose thumbprint was bound at authorize time. |
 | The phone's storage is copied (backup, malware reading files) | There is no token: the Secure Enclave key cannot be exported; signed requests live 60 s and work once. |
 | A link tricks someone into approving a sign-in | With the HTTPS callback, the result goes to the genuine app on that person's own phone; the attacker gets nothing. With the free-team scheme callback this holds only if no malicious app is involved (see that section). Either way the consent page names the device, and the device appears under Devices. |
+| A stolen device key, or someone holding the unlocked phone, approves an AI agent | Every rule of the web page applies (agent-delegation.md, 2b), and the device must still be signed in when the approval commits, so signing it out stops an approval under way. The app asks for Face ID or the passcode first; someone holding the unlocked phone needs it. What it does not stop: whoever can sign with the device key (malware in the app, a modified app) can create delegations: they can make their own agent key and sign a link for the account's public id, and the relay cannot verify the Face ID check. The agent's signature binds the request; it proves no human approved it. Every delegation shows under AI agents, where it can be revoked; signing the device out ends this. |
 | Cross-site request to the consent form | Origin check on the POST; the page cannot be framed (`frame-ancestors 'none'`). |
 | Open redirect through `redirect_uri` | Exact match against the relay's own callback URL. |
 | A lost or sold phone | Sign it out under Devices on another device. That also signs everyone out of the robots its owner owns, which ends the robot sessions the app still had at each robot's next sync (within 3, at most 10 minutes; otherwise they would last up to 12 hours), cancels pending app sign-ins, and signs the person out of Mowgli Connect in every other browser, so the phone's own browser cannot sign the app in again. On robots the person only views, the owner can sign everyone out. A grant requested while the sign-out happens gets the old epoch or nothing, never the new one. Keys can also require Face ID or the passcode (app side). An admin removing the person deletes all their devices, and their robots drop them at the next sync. |
@@ -170,7 +223,7 @@ signature (method and URL are); TLS protects them, and a signed request works on
 | Abuse of the endpoints | Sign-in needs an invited account or a robot shared with it (a guest, who cannot add robots); at most 10 devices and 5 open codes per person, both enforced in single statements; a wrong or made-up code writes nothing and does not use up the real one; the existing per-IP WAF rule covers the relay. |
 | Relay or Cloudflare account compromised | Unchanged: they are the root of trust (SECURITY.md). |
 
-What this adds to the attack surface: `/app/authorize` (behind the browser session),
+What this adds to the attack surface: `/app/authorize` (behind the browser session), the AI-agent consent call (behind a device signature and an agent-signed link),
 `/v1/app/token` (behind a one-time code, PKCE and a key signature) and the signed app API. The
 agent, the tunnel and the egress lock are unchanged.
 
@@ -211,7 +264,9 @@ this follow-up).
 
 The relay serves `/.well-known/apple-app-site-association` for these ids (`webcredentials`,
 which an HTTPS `ASWebAuthenticationSession` callback requires, and `applinks` for `/app/callback`
-only). The app declares the associated domains `webcredentials:<relay host>` and
+and, with delegation on, for `/delegate/authorize` with a `key` and `req`, so tapping a consent
+link on an iPhone opens the app; every other device, and an app without the associated domain,
+keeps the web page). The app declares the associated domains `webcredentials:<relay host>` and
 `applinks:<relay host>`. Check the current Apple documentation for
 `ASWebAuthenticationSession.Callback.https` when building the app: this is the one part of the
 flow the relay cannot test.

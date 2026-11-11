@@ -180,7 +180,7 @@ func cmdRequest(ctx context.Context, p *client.Profile, c *client.Client, rest [
 		}
 	}
 	list := strings.FieldsFunc(*scopes, func(r rune) bool { return r == ',' || r == ' ' })
-	fmt.Fprintf(stdout, "Open this link in the browser where you are signed in to Mowgli Connect as @%s (%s), check that it shows the fingerprint\n\n  %s\n\nand approve (the link works for %d minutes):\n\n%s\n\n",
+	fmt.Fprintf(stdout, "Open this link in the browser where you are signed in to Mowgli Connect as @%s (%s), or paste it in the Mowgli iPhone app under Settings > Mowgli Connect > AI Agents. Check that it shows the fingerprint\n\n  %s\n\nand approve (the link works for %d minutes):\n\n%s\n\n",
 		login, uid, client.Fingerprint(p.ID()), int(client.RequestValidity/time.Minute), c.ConsentURL(login, uid, *name, list, d))
 	if !*wait {
 		return nil

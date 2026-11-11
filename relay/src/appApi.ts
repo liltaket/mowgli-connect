@@ -2,7 +2,7 @@ import { canSignIn, GITHUB_USER_ID, ownedRobots, robotLimit } from "./access";
 import { cleanGithubLogin } from "./admin";
 import { claimRobot, planAddress, previewClaim, reachedLimit, limitMessage, unlinkRobot } from "./claim";
 import { DELEGATE_ID } from "./delegateAuth";
-import { delegationAllowed, delegationEnabled, revokeDelegation } from "./delegation";
+import { appConsent, delegationAllowed, delegationEnabled, revokeDelegation } from "./delegation";
 import { DEVICE_ID, DeviceAuthError, jwkThumbprint, parseDeviceJwk, verifyDeviceAssertion, type DeviceJwk } from "./deviceAuth";
 import type { Env } from "./env";
 import { mintGrant, type Role } from "./grant";
@@ -71,13 +71,19 @@ function allowedRedirect(env: Env, uri: string | null): uri is string {
   return uri !== null && (uri === callbackUrl(env) || schemeRedirects(env).includes(uri));
 }
 
-/** apple-app-site-association: only the configured apps, only the callback path. */
+/**
+ * apple-app-site-association: only the configured apps, only the callback path and, with
+ * delegation on, the consent link (an app that declares applinks then opens it natively; every
+ * other device keeps the web page).
+ */
 export function appleAppSiteAssociation(env: Env): Response {
   const apps = appIds(env);
   if (apps.length === 0) return new Response("Not found", { status: 404 });
+  const components: Record<string, unknown>[] = [{ "/": "/app/callback", comment: "Mowgli Connect sign-in" }];
+  if (delegationEnabled(env)) components.push({ "/": "/delegate/authorize", "?": { key: "?*", req: "?*" }, comment: "AI agent consent" });
   return new Response(
     JSON.stringify({
-      applinks: { details: [{ appIDs: apps, components: [{ "/": "/app/callback", comment: "Mowgli Connect sign-in" }] }] },
+      applinks: { details: [{ appIDs: apps, components }] },
       webcredentials: { apps },
     }),
     { headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=3600" } },
@@ -221,9 +227,9 @@ ${hidden("redirect_uri", p.redirectUri)}${hidden("code_challenge", p.challenge)}
   return new Response("Method Not Allowed", { status: 405, headers: { Allow: "GET, POST" } });
 }
 
-async function readJson(request: Request): Promise<Record<string, unknown> | null> {
+async function readJson(request: Request, maxBytes = 4096): Promise<Record<string, unknown> | null> {
   if (!(request.headers.get("Content-Type") ?? "").startsWith("application/json")) return null;
-  const text = await readBodyText(request, 4096);
+  const text = await readBodyText(request, maxBytes);
   if (text === null) return null;
   try {
     const v: unknown = JSON.parse(text);
@@ -478,6 +484,8 @@ function lookupFailure(res: { message: string; status: number }): Response {
   return json({ error, message: res.message }, res.status);
 }
 
+const CONSENT_PATH = "/v1/app/delegations/consent";
+
 /** /v1/app/*: the signed JSON API. Returns null for other paths. */
 export async function handleAppApi(request: Request, env: Env, url: URL): Promise<Response | null> {
   if (!url.pathname.startsWith("/v1/app/")) return null;
@@ -492,14 +500,23 @@ export async function handleAppApi(request: Request, env: Env, url: URL): Promis
   const ownerAction = OWNER_ACTION.exec(path);
   const delegationPath = /^\/v1\/app\/delegations\/([^/]+)\/revoke$/.exec(path);
   const known =
-    path === "/v1/app/me" || path === "/v1/app/robots" || path === "/v1/app/claim" || path === "/v1/app/sign-out" || path === "/v1/app/delegations" || grantPath || shareRoute || ownerAction || delegationPath;
+    path === "/v1/app/me" ||
+    path === "/v1/app/robots" ||
+    path === "/v1/app/claim" ||
+    path === "/v1/app/sign-out" ||
+    path === "/v1/app/delegations" ||
+    path === CONSENT_PATH ||
+    grantPath ||
+    shareRoute ||
+    ownerAction ||
+    delegationPath;
   if (!known) return json({ error: "not_found" }, 404);
   // The share list is the one share call that reads.
   const bareShares = shareRoute && !shareRoute[2] && !shareRoute[3] && !shareRoute[4];
   const wantPost = path !== "/v1/app/me" && path !== "/v1/app/robots" && path !== "/v1/app/delegations" && !(bareShares && method === "GET");
   if (method !== (wantPost ? "POST" : "GET")) return json({ error: "method_not_allowed" }, 405, { Allow: bareShares ? "GET, POST" : wantPost ? "POST" : "GET" });
   // Off by default: unknown, before anything is verified or written.
-  if ((path === "/v1/app/delegations" || delegationPath) && !delegationEnabled(env)) return json({ error: "not_found" }, 404);
+  if ((path === "/v1/app/delegations" || path === CONSENT_PATH || delegationPath) && !delegationEnabled(env)) return json({ error: "not_found" }, 404);
 
   const auth = await authenticate(request, env, url);
   if (auth instanceof Response) return auth;
@@ -520,7 +537,13 @@ export async function handleAppApi(request: Request, env: Env, url: URL): Promis
     return json({ ok: true });
   }
 
-  // AI agents (docs/agent-delegation.md): the app can list and revoke them, never approve or renew.
+  // AI agents (docs/agent-delegation.md): the app can list, approve (the consent link, with the
+  // same checks as the page) and revoke them; renewing is on the web page.
+  if (path === CONSENT_PATH) {
+    // The signed request is up to about 1 KB and the robot list up to 100 ids.
+    const body = await readJson(request, 8192);
+    return body ? appConsent(env, user, device.device_id, body) : json({ error: "bad_request" }, 400);
+  }
   if (path === "/v1/app/delegations") {
     if (!delegationAllowed(env, user.id)) return json({ delegations: [] });
     const rows = await env.DB.prepare(
