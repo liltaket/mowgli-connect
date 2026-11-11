@@ -36,6 +36,7 @@ YES=no
 UNINSTALL=no
 PURGE=no
 RELAY_SET=no
+AUTOUPDATE_SET=no
 IMAGE_SET=no
 DNS_SET=no
 
@@ -50,7 +51,7 @@ while [ $# -gt 0 ]; do
 	--relay) RELAY=$2; RELAY_SET=yes; shift 2 ;;
 	--name) NAME=$2; shift 2 ;;
 	--teleop) TELEOP=$2; shift 2 ;;
-	--auto-update) AUTOUPDATE=$2; shift 2 ;;
+	--auto-update) AUTOUPDATE=$2; AUTOUPDATE_SET=yes; shift 2 ;;
 	--dns) DNS=$2; DNS_SET=yes; shift 2 ;;
 	--image) IMAGE=$2; IMAGE_SET=yes; shift 2 ;;
 	--signer) SIGNER=$2; shift 2 ;;
@@ -84,10 +85,11 @@ if [ "$UNINSTALL" = yes ]; then
 		if [ -n "$current" ]; then printf '%s\n' "$current" | crontab -; else crontab -r 2>/dev/null || true; fi
 	fi
 	# No -v by default: disabling remote access must not silently delete identity.
+	# Compose interpolates MC_IMAGE even for "down", and it is empty until an image was verified.
 	if [ "$PURGE" = yes ]; then
-		docker compose --project-directory "$DIR" -f "$DIR/compose.yaml" --env-file "$DIR/.env" down --volumes
+		MC_IMAGE=${MC_IMAGE:-none} docker compose --project-directory "$DIR" -f "$DIR/compose.yaml" --env-file "$DIR/.env" down --volumes
 	else
-		docker compose --project-directory "$DIR" -f "$DIR/compose.yaml" --env-file "$DIR/.env" down
+		MC_IMAGE=${MC_IMAGE:-none} docker compose --project-directory "$DIR" -f "$DIR/compose.yaml" --env-file "$DIR/.env" down
 	fi
 	echo "Mowgli Connect removed; configuration kept. Identity is kept unless --purge was supplied."
 	exit 0
@@ -193,7 +195,8 @@ if [ "$SKIP_VERIFY" = yes ]; then
 		die "--insecure-skip-verify is only for a custom --image: $OFFICIAL_REPO is always verified, however it is spelled"
 		;;
 	esac
-	[ "$AUTOUPDATE" = yes ] && die "--insecure-skip-verify cannot be combined with --auto-update yes: an unverified image is never updated automatically"
+	# A saved "yes" is from the verified image this replaces; only an explicit one is a mistake.
+	[ "$AUTOUPDATE" = yes ] && [ "$AUTOUPDATE_SET" = yes ] && die "--insecure-skip-verify cannot be combined with --auto-update yes: an unverified image is never updated automatically"
 	AUTOUPDATE=no
 	echo "WARNING: --insecure-skip-verify: $IMAGE will run WITHOUT any signature check."
 	echo "WARNING: Whoever can push to that repository can run code on this robot. Automatic updates are off."
@@ -251,7 +254,9 @@ trap 'rm -f "$env_stage"' EXIT HUP INT TERM
 if [ -f "$DIR/.env" ]; then
 	while IFS= read -r line || [ -n "$line" ]; do
 		case $line in
-		MC_RELAY_URL=*|MC_ROBOT_NAME=*|MC_ALLOW_TELEOP=*|MC_IMAGE=*|MC_AUTO_UPDATE=*|MC_DNS=*) ;;
+		# COMPOSE_* in .env would steer Compose (the file, the project); update.sh unsets them in the
+		# environment for the same reason, so they are not carried over.
+		MC_RELAY_URL=*|MC_ROBOT_NAME=*|MC_ALLOW_TELEOP=*|MC_IMAGE=*|MC_AUTO_UPDATE=*|MC_DNS=*|COMPOSE_*=*) ;;
 		*) printf '%s\n' "$line" ;;
 		esac
 	done < "$DIR/.env" > "$env_stage"
@@ -724,7 +729,7 @@ if [ -f "$STATE/update.log" ] && [ "$(wc -l <"$STATE/update.log")" -gt 2000 ]; t
 fi
 
 if [ "$VERIFY" != yes ]; then
-	fail "installed with --insecure-skip-verify: nothing is verified, so nothing is updated here. Run install.sh again without it, or update by hand (docker compose pull && docker compose up -d)"
+	fail "installed with --insecure-skip-verify: nothing is verified, so nothing is updated here. Run install.sh again with --image ghcr.io/liltaket/mowgli-connect-agent:latest, or update by hand (docker compose pull && docker compose up -d)"
 fi
 if [ "$MODE" != install ] && is_digest "$REF"; then
 	set_status up-to-date "pinned to $REF by install.sh; nothing to follow"

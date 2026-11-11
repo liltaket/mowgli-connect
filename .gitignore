@@ -7,3 +7,5 @@ node_modules/
 *.log
 /.claude/
 /docs/drafts/
+__pycache__/
+*.pyc

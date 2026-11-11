@@ -266,7 +266,7 @@ amend `docs/protocol.md`):
 7. **Epoch**: starts at 1, is bumped at claim (so 2 after first claim), unlink and sessions/revoke.
 8. **Extras**: `421` on a foreign Host; allowlist accepts `gh:<id>`; `unclaimed` robots
    silent for 7 days are garbage-collected; `GET /style.css` (CSP forbids inline style).
-9. Sharing (`/robots/:id/share`, roles `viewer` and `operator`) is described in [docs/sharing.md](../docs/sharing.md). Apply migration 0011 before deploying the Worker that uses it: that Worker writes `operator` members and `share_events` rows, which the older schema refuses. Migration 0009 adds a unique index allowing one owner per robot, so first check that the database has no robot with two owners; this must print no rows:
+9. Sharing (`/robots/:id/share`, roles `viewer` and `operator`) is described in [docs/sharing.md](../docs/sharing.md). Apply migration 0011 (named `0009_sharing.sql` in earlier revisions of this branch: a database that ran that file must have 0011 marked as applied by hand, not run again) before deploying the Worker that uses it: that Worker writes `operator` members and `share_events` rows, which the older schema refuses. Migration 0011 adds a unique index allowing one owner per robot, so first check that the database has no robot with two owners; this must print no rows:
    ```sh
    npx wrangler d1 execute mowgli-connect-relay --remote --command "SELECT robot_id FROM members WHERE role='owner' GROUP BY robot_id HAVING COUNT(*)>1"
    ```

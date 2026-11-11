@@ -120,6 +120,29 @@ esac
         self.assertIn("MC_AUTO_UPDATE=yes", (self.directory / ".env").read_text())
         self.assertIn(f"# mowgli-connect auto-update {self.directory}", self.cron.read_text())
 
+    def test_compose_settings_in_dotenv_are_not_carried_over(self):
+        self.seed()
+        with (self.directory / ".env").open("a") as f:
+            f.write("COMPOSE_FILE=/elsewhere/compose.yaml\nCOMPOSE_PROJECT_NAME=other\n")
+        self.run_installer("--yes", "--auto-update", "no", "--dns", "system")
+        settings = (self.directory / ".env").read_text()
+        self.assertNotIn("COMPOSE_", settings)
+        self.assertIn("MC_CUSTOM='keep-me'", settings)
+
+    def test_saved_auto_update_does_not_block_an_unverified_custom_image(self):
+        self.seed()
+        with (self.directory / ".env").open("a") as f:
+            f.write("MC_AUTO_UPDATE=yes\n")
+        self.run_installer("--yes", "--dns", "system")
+        self.assertIn("MC_AUTO_UPDATE=no", (self.directory / ".env").read_text())
+        # An explicit request for both is still refused.
+        self.run_installer("--yes", "--dns", "system", "--auto-update", "yes", success=False)
+
+    def test_uninstall_works_before_any_image_was_verified(self):
+        self.seed(image="")
+        self.run_installer("--uninstall")
+        self.assertIn(" down", self.log.read_text())
+
     def test_saved_values_are_never_executed_as_shell(self):
         self.seed()
         marker = self.root / "executed"

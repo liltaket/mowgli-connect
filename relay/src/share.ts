@@ -274,12 +274,28 @@ export async function changeShareRole(env: Env, ownerId: string, robotId: string
   return true;
 }
 
+/**
+ * An AI agent keeps a robot in its set only while its person is a member of that robot: when the
+ * share ends, so does the agent's hold on it, and a later share does not bring it back
+ * (docs/agent-delegation.md, as for an unlinked robot).
+ */
+async function forgetDelegatedRobot(env: Env, robotId: string, userId: string): Promise<void> {
+  await env.DB.prepare(
+    `DELETE FROM delegation_robots WHERE robot_id = ?1
+       AND delegation_id IN (SELECT delegation_id FROM delegations WHERE user_id = ?2)
+       AND NOT EXISTS (SELECT 1 FROM members WHERE robot_id = ?1 AND user_id = ?2)`,
+  )
+    .bind(robotId, userId)
+    .run();
+}
+
 /** Removes a share, signing the person out of the relay if it was their last way in. */
 export async function removeShare(env: Env, ownerId: string, robotId: string, target: string): Promise<boolean> {
   const del = await env.DB.prepare(`DELETE FROM members WHERE robot_id = ?1 AND user_id = ?2 AND role != 'owner' AND ${IS_OWNER("?3")}`)
     .bind(robotId, target, ownerId)
     .run();
   if (del.meta.changes !== 1) return false;
+  await forgetDelegatedRobot(env, robotId, target);
   await afterShareEnded(env, target);
   console.log("share: removed", robotId);
   return true;
@@ -292,6 +308,7 @@ export async function removeShare(env: Env, ownerId: string, robotId: string, ta
 export async function leaveShare(env: Env, userId: string, robotId: string): Promise<{ signedOut: boolean } | null> {
   const del = await env.DB.prepare("DELETE FROM members WHERE robot_id = ? AND user_id = ? AND role != 'owner'").bind(robotId, userId).run();
   if (del.meta.changes !== 1) return null;
+  await forgetDelegatedRobot(env, robotId, userId);
   console.log("share: left", robotId);
   return { signedOut: await afterShareEnded(env, userId) };
 }

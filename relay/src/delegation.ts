@@ -745,7 +745,8 @@ export async function handleDelegateApi(request: Request, env: Env, url: URL): P
           hostname: r.hostname,
           role: r.role,
           online,
-          joystick: r.allow_teleop === null ? null : r.allow_teleop === 1,
+          // The robot's own configuration is its owner's business, as in the app and on the web.
+          joystick: r.role !== "owner" || r.allow_teleop === null ? null : r.allow_teleop === 1,
           updateAvailable: r.role === "owner" ? updateAvailable(r.agent_version, latest) : null,
           addedByDelegate: r.via === "claim",
         };

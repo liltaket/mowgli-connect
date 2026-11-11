@@ -288,6 +288,36 @@ describe("sharing a robot", () => {
     expect(await member(ra.robotId, a.id)).toEqual({ role: "owner" });
   });
 
+  it("an agent's hold on a robot ends with the share, and a later share does not bring it back", async () => {
+    const a = await invitedUser();
+    const ra = await ownedRobot(a);
+    const rb = await ownedRobot(a);
+    const gh = { id: nextId(), login: "agent-reshare" };
+    await share(a, ra, gh);
+    await share(a, rb, gh);
+    const guest = (await signIn(gh))!;
+    const now = nowSeconds();
+    const id = "3".repeat(16);
+    await testEnv.DB.prepare(
+      `INSERT INTO delegations (delegation_id, user_id, public_key, name, scopes, ttl_seconds, created_at, approved_at, expires_at)
+       VALUES (?1, ?2, 'reshare-key', 'agent', 'sessions:readonly', 3600, ?3, ?3, ?4)`,
+    )
+      .bind(id, guest.id, now, now + 3600)
+      .run();
+    for (const r of [ra, rb]) {
+      await testEnv.DB.prepare("INSERT INTO delegation_robots (delegation_id, robot_id, via, added_at) VALUES (?, ?, 'consent', ?)").bind(id, r.robotId, now).run();
+    }
+    const held = async () => (await testEnv.DB.prepare("SELECT robot_id FROM delegation_robots WHERE delegation_id = ?").bind(id).all<{ robot_id: string }>()).results.map((r) => r.robot_id);
+    // The owner removes one share: the agent loses that robot only, and a new share does not return it.
+    expect((await post(`/robots/${ra.robotId}/members/${guest.id}/remove`, a, {})).status).toBe(303);
+    expect(await held()).toEqual([rb.robotId]);
+    await share(a, ra, gh);
+    expect(await held()).toEqual([rb.robotId]);
+    // Leaving a share does the same.
+    expect((await post(`/robots/${rb.robotId}/leave`, guest, {})).status).toBe(303);
+    expect(await held()).toEqual([]);
+  });
+
   it("a guest's AI agents end with their last share, and an owner's are left alone", async () => {
     const a = await invitedUser();
     const ra = await ownedRobot(a);

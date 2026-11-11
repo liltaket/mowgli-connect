@@ -463,7 +463,7 @@ async function handleOwnerAction(env: Env, user: SessionUser, m: RegExpExecArray
     .bind(robotId, user.id)
     .first();
   if (!owner) return notFound();
-  if (m[2] === "unlink") return (await unlinkRobot(env, createProvisioner(env), robotId)) ? json({ ok: true }) : notFound();
+  if (m[2] === "unlink") return (await unlinkRobot(env, createProvisioner(env), robotId, { guard: { ownerId: user.id } })) ? json({ ok: true }) : notFound();
   // Sign everyone out: the session epoch goes up, so every robot session and unused grant from
   // before ends at the robot's next sync (the owner's own included).
   const res = await env.DB.prepare("UPDATE robots SET session_epoch = session_epoch + 1, updated_at = ? WHERE robot_id = ? AND status = 'claimed'")
