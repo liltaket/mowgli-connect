@@ -49,13 +49,8 @@ func fakeGUI(t *testing.T) *httptest.Server {
 		}
 	}
 	mux.HandleFunc("/api/mowglinext/multiplex", echoWS)
-	mux.HandleFunc("/api/containers/", echoWS) // owner-only log socket
-	mux.HandleFunc("/api/mowglinext/publish/", func(w http.ResponseWriter, r *http.Request) {
-		c, err := up.Upgrade(w, r, nil)
-		if err == nil {
-			c.Close()
-		}
-	})
+	mux.HandleFunc("/api/containers/", echoWS)         // owner-only log socket
+	mux.HandleFunc("/api/mowglinext/publish/", echoWS) // joystick: stays open like the real one
 	mux.HandleFunc("/api/setup/flashBoard", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		for i := 0; i < 2; i++ {

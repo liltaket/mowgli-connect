@@ -24,7 +24,9 @@ func FuzzCanonicalPathPolicy(f *testing.F) {
 		"/api/x/../mowglinext/publish/x", "/api/mowglinext/publish/", "/api/mowglinext/publish", "/%2e%2e/api", "/a%2Fb", "/api/mowglinext/publish%2Fx",
 		"/api/mowglinext/call/high_level_control", "/api/mowglinext/call/high_level_control/", "/api/mowglinext/call/../call/emergency",
 		"/api/settings", "/api/config/keys/get", "/api/config/keys/get/", "/api/config/keys/../keys/get", "/tiles", "/tiles/", "/tiles/1/2/3", "/tiles/1/2/3.png",
-		"/tiles/1/2/3.png?x=1", "/tiles/1/2/3.png?", "/tiles/1%2F2/3", "/tiles/1/2/%33.png", "/tiles/../api/settings", "/tiles/1/2/3.png/", "/tiles/a/b/c"} {
+		"/tiles/1/2/3.png?x=1", "/tiles/1/2/3.png?", "/tiles/1%2F2/3", "/tiles/1/2/%33.png", "/tiles/../api/settings", "/tiles/1/2/3.png/", "/tiles/a/b/c",
+		"/api/schedules", "/api/schedules/1", "/api/schedules/1/", "/api/schedules/../settings", "/api/map-backups", "/api/map-backups/areas-20261111T092748.000Z.dat/restore",
+		"/api/mowglinext/map", "/api/mowglinext/map/", "/api/mowglinext/call/set_datum", "/api/mowglinext/call/blade_control/"} {
 		f.Add(s)
 	}
 	pol := MowgliPolicy{}
@@ -52,11 +54,29 @@ func FuzzCanonicalPathPolicy(f *testing.F) {
 		if pol.Allow(RoleOperator, "GET", u.Path, true) != pol.Allow(RoleViewer, "GET", u.Path, true) {
 			t.Fatalf("operator and viewer sockets differ for %q", u.Path)
 		}
-		if pol.Allow(RoleOperator, "POST", u.Path, false) && !mowgliOperatorCalls[u.Path] && u.Path != configKeysGet {
-			t.Fatalf("operator POST allowed for %q", u.Path)
+		// An operator reaches the mower's own routes (and the one config read) and nothing else,
+		// whatever the method; a viewer reaches no write but the config read.
+		for _, m := range []string{"POST", "PUT", "DELETE", "PATCH"} {
+			if pol.Allow(RoleOperator, m, u.Path, false) && !operatorRoute(m, u.Path) && !(m == "POST" && u.Path == configKeysGet) {
+				t.Fatalf("operator %s allowed for %q", m, u.Path)
+			}
+			if m != "POST" && pol.Allow(RoleViewer, m, u.Path, false) {
+				t.Fatalf("viewer %s allowed for %q", m, u.Path)
+			}
+		}
+		if operatorRoute("POST", u.Path) && !strings.HasPrefix(u.Path, "/api/mowglinext/") && !strings.HasPrefix(u.Path, "/api/schedules") && !strings.HasPrefix(u.Path, "/api/map-backups") {
+			t.Fatalf("operator route outside the mower's own: %q", u.Path)
+		}
+		if cmd, ok := strings.CutPrefix(u.Path, callPrefix); ok && operatorRoute("POST", u.Path) && !mowgliOperatorCalls[cmd] {
+			t.Fatalf("operator call %q not on the list", u.Path)
+		}
+		for _, p := range []string{"/api/settings", "/api/config/keys/set", "/api/mowglinext/call/set_datum", "/api/mowglinext/call/reboot_board", "/api/system/reboot"} {
+			if operatorRoute("POST", p) {
+				t.Fatalf("operator route for owner-only %q", p)
+			}
 		}
 		for _, role := range []string{RoleViewer, RoleOperator} {
-			if pol.Allow(role, "POST", u.Path, false) && !mowgliOperatorCalls[u.Path] {
+			if pol.Allow(role, "POST", u.Path, false) && !(role == RoleOperator && operatorRoute("POST", u.Path)) {
 				// The config store's read, by body only: refused without one or with a key not on the list.
 				if role == RoleViewer && u.Path != configKeysGet {
 					t.Fatalf("viewer POST allowed for %q", u.Path)

@@ -25,7 +25,7 @@ type RequestPolicy interface {
 
 const (
 	RoleOwner    = "owner"
-	RoleOperator = "operator" // "Can control": mowing controls, nothing that changes the robot
+	RoleOperator = "operator" // "Can control": runs the mower, its map and schedules; not the robot's settings
 	RoleViewer   = "viewer"
 )
 
@@ -72,8 +72,8 @@ func (GenericPolicy) Allow(role, method, path string, ws bool) bool {
 
 // MowgliPolicy encodes the MowgliNext GUI surface (docs/research/mowgli-gui-traffic.md).
 type MowgliPolicy struct {
-	// AllowTeleop permits the joystick publish socket (/api/mowglinext/publish/*) for owners.
-	// Off by default: remote manual driving over the internet has unvalidated latency.
+	// AllowTeleop permits the joystick publish socket (/api/mowglinext/publish/*) for owners and
+	// operators. Off by default: remote manual driving over the internet has unvalidated latency.
 	AllowTeleop bool
 }
 
@@ -106,23 +106,67 @@ var mowgliReadableKeys = map[string]bool{
 
 const configKeysGet = "/api/config/keys/get"
 
-// Operators get what viewers get plus these ROS service calls, the GUI's mowing controls
-// (gui/web/src/pages/MowgliNextPage.tsx, MapPage.tsx, components/MowerActions.tsx at
-// mowglinext 8d78819). Exact paths only: the GUI's router is case-sensitive and does not
-// rewrite them. The two calls whose argument selects what happens are also checked by body
-// (AllowRequest); everything else (settings, maps, schedules, containers, updates, firmware,
-// calibration, tuning, diagnostics, fleet, remote access, the joystick) stays owner-only.
+// Operators get what viewers get plus what running the mower takes: its ROS service calls, the
+// map editor, schedules and map backups (gui/web/src/pages/MowgliNextPage.tsx, MapPage.tsx,
+// SchedulesPage and components/MowerActions.tsx at mowglinext 8d78819). Exact paths only: the
+// GUI's router is case-sensitive and does not rewrite them. What stays owner-only is the robot
+// and the account around it: settings and the config store (credentials), parameters, hardware,
+// firmware, calibration, tuning, GNSS, containers, updates, reboot and shutdown, remote access,
+// notifications, fleet, import, rosbag and diagnostics. So are the commands that move the
+// robot's frame of reference or reset what it stores (set_datum, fusion_graph_*, reboot_board,
+// reset_firmware_param_store) and the two ways to delete the whole map (DELETE /api/mowglinext/map,
+// command 255).
+const callPrefix = "/api/mowglinext/call/"
+
 var mowgliOperatorCalls = map[string]bool{
-	"/api/mowglinext/call/high_level_control":    true, // body: start/continue, dock, pause/stop
-	"/api/mowglinext/call/emergency":             true, // body: engage only
-	"/api/mowglinext/call/start_in_area":         true, // mow one area now
-	"/api/mowglinext/call/coverage_clear_resume": true, // "Start fresh": forget the interrupted run
+	"high_level_control": true, // body: start, dock, area recording, manual mow, stop, reset emergency
+	"emergency":          true, // body: engage or release
+	"mow_enabled":        true, // body: OFF only
+	"blade_control":      true, "coverage_orientation": true,
+	"start_in_area": true, "coverage_clear_resume": true, "clear_dig_escalation": true,
+	"promote_obstacle": true, "ignore_obstacle": true, "discard_obstacle": true,
+	"correct_recorded_obstacle": true, "preview_obstacle_clearance": true, "preview_coverage": true,
+	"set_area_coverage_lines": true, "get_lidar_ignore_corridors": true, "set_lidar_ignore_corridors": true,
 }
 
 // highLevelCommands are the HighLevelControl commands an operator may send
-// (ros2/src/mowgli_interfaces/srv/HighLevelControl.srv). Not area recording (3-6), manual mow
-// (7), emergency reset (254) or COMMAND_DELETE_MAPS (255).
-var highLevelCommands = map[uint64]bool{1: true /* START */, 2: true /* HOME */, 8: true /* STOP */}
+// (ros2/src/mowgli_interfaces/srv/HighLevelControl.srv). Not COMMAND_DELETE_MAPS (255).
+var highLevelCommands = map[uint64]bool{
+	1: true /* START */, 2: true /* HOME */, 3: true /* RECORD_AREA */, 4: true /* S2 */, 5: true, /* RECORD_FINISH */
+	6: true /* RECORD_CANCEL */, 7: true /* MANUAL_MOW */, 8: true /* STOP */, 254: true, /* RESET_EMERGENCY */
+}
+
+// Non-call operator routes, by method and exact path (ids are matched by their shape).
+var mowgliOperatorRoutes = map[string]map[string]bool{
+	http.MethodGet: {"/api/map-backups": true},
+	http.MethodPost: {
+		"/api/mowglinext/map/area/add": true, "/api/mowglinext/map/docking": true,
+		"/api/map-backups": true, "/api/schedules": true,
+	},
+	http.MethodPut: {"/api/mowglinext/map": true},
+}
+
+var (
+	scheduleIDPath = regexp.MustCompile(`^/api/schedules/[0-9A-Za-z_-]{1,64}$`)
+	mapBackupPath  = regexp.MustCompile(`^/api/map-backups/areas-[0-9]{8}T[0-9]{6}\.[0-9]{3}Z\.dat/restore$`)
+)
+
+// operatorRoute reports whether an operator may use method on path, before any body check.
+func operatorRoute(method, path string) bool {
+	if mowgliOperatorRoutes[method][path] {
+		return true
+	}
+	switch method {
+	case http.MethodPost:
+		if cmd, ok := strings.CutPrefix(path, callPrefix); ok {
+			return mowgliOperatorCalls[cmd]
+		}
+		return mapBackupPath.MatchString(path)
+	case http.MethodPut, http.MethodDelete:
+		return scheduleIDPath.MatchString(path)
+	}
+	return false
+}
 
 func hasAnyPrefix(p string, prefixes []string) bool {
 	for _, x := range prefixes {
@@ -134,7 +178,7 @@ func hasAnyPrefix(p string, prefixes []string) bool {
 }
 
 func (m MowgliPolicy) Allow(role, method, path string, ws bool) bool {
-	if ws && strings.HasPrefix(path, "/api/mowglinext/publish/") && (!m.AllowTeleop || role != RoleOwner) {
+	if ws && strings.HasPrefix(path, "/api/mowglinext/publish/") && (!m.AllowTeleop || role != RoleOwner && role != RoleOperator) {
 		return false
 	}
 	switch role {
@@ -142,13 +186,13 @@ func (m MowgliPolicy) Allow(role, method, path string, ws bool) bool {
 		return true
 	case RoleOperator, RoleViewer:
 		if ws {
-			return method == "GET" && hasAnyPrefix(path, mowgliViewerSockets)
+			return method == "GET" && (hasAnyPrefix(path, mowgliViewerSockets) || role == RoleOperator && strings.HasPrefix(path, "/api/mowglinext/publish/"))
 		}
 		if !safeMethod(method) {
-			return method == http.MethodPost && (path == configKeysGet || role == RoleOperator && mowgliOperatorCalls[path])
+			return method == http.MethodPost && path == configKeysGet || role == RoleOperator && operatorRoute(method, path)
 		}
 		if path == "/api" || strings.HasPrefix(path, "/api/") {
-			return mowgliViewerAPI[path]
+			return mowgliViewerAPI[path] || role == RoleOperator && operatorRoute(method, path)
 		}
 		if hasAnyPrefix(path, []string{tilesPrefix}) {
 			return tilePath.MatchString(path)
@@ -181,18 +225,23 @@ func (m MowgliPolicy) AllowRequest(role string, r *http.Request) bool {
 	if role != RoleOperator {
 		return false
 	}
-	switch r.URL.Path {
-	case "/api/mowglinext/call/high_level_control":
-		return bodyHasOnly(r, []string{"command", "Command"}, func(v uint64) bool { return highLevelCommands[v] })
-	case "/api/mowglinext/call/emergency":
-		// Engage only. Releasing the latch stays with the owner, like the joystick.
-		return bodyHasOnly(r, []string{"emergency", "Emergency"}, func(v uint64) bool { return v == 1 })
-	case "/api/mowglinext/call/start_in_area":
-		return bodyHasOnly(r, []string{"area", "Area"}, func(uint64) bool { return true })
-	case "/api/mowglinext/call/coverage_clear_resume":
-		return true // the GUI ignores the body
+	if !operatorRoute(r.Method, r.URL.Path) {
+		return false // a route Allow let through that this check does not know
 	}
-	return false // a route Allow let through that this check does not know
+	switch r.URL.Path {
+	case callPrefix + "high_level_control":
+		return bodyHasOnly(r, []string{"command", "Command"}, func(v uint64) bool { return highLevelCommands[v] })
+	case callPrefix + "emergency":
+		// Only 0 and 1: with a single member no parser reads another value, or a default zero.
+		return bodyHasOnly(r, []string{"emergency", "Emergency"}, func(v uint64) bool { return v <= 1 })
+	case callPrefix + "mow_enabled":
+		// The GUI hands this body to the hardware unchecked, past the behavior tree's gate, so
+		// only the OFF the web app sends is allowed; switching the blade on goes by blade_control.
+		return bodyIsExactly(r, map[string]uint64{"mow_enabled": 0, "mow_direction": 0})
+	case callPrefix + "start_in_area":
+		return bodyHasOnly(r, []string{"area", "Area"}, func(uint64) bool { return true })
+	}
+	return true // the map editor, schedules and the other calls: their bodies are the app's own
 }
 
 // readCallBody reads a small request body and puts the same bytes back for the proxy. It reports
@@ -246,6 +295,45 @@ func bodyHasOnly(r *http.Request, names []string, ok func(uint64) bool) bool {
 		return false
 	}
 	return ok(v)
+}
+
+// bodyIsExactly reports whether the body is one JSON object whose members are exactly want's
+// keys, each once, each a plain unsigned integer literal equal to its wanted value, in any order.
+func bodyIsExactly(r *http.Request, want map[string]uint64) bool {
+	b, read := readCallBody(r)
+	if !read {
+		return false
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return false
+	}
+	seen := map[string]bool{}
+	for dec.More() {
+		t, err := dec.Token()
+		key, isStr := t.(string)
+		exp, known := want[key]
+		if err != nil || !isStr || !known || seen[key] {
+			return false
+		}
+		seen[key] = true
+		t, err = dec.Token()
+		num, isNum := t.(json.Number)
+		if err != nil || !isNum || strings.ContainsAny(string(num), ".eE+-") {
+			return false
+		}
+		if v, err := strconv.ParseUint(string(num), 10, 8); err != nil || v != exp {
+			return false
+		}
+	}
+	if t, err := dec.Token(); err != nil || t != json.Delim('}') {
+		return false
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return false
+	}
+	return len(seen) == len(want)
 }
 
 // bodyHasOnlyKeys reports whether the body is one JSON object of one or more distinct members

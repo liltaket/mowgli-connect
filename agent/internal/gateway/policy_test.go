@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 // Every role against every kind of route. "unknown" stands for any role this agent does not
@@ -68,31 +71,69 @@ func TestMowgliPolicyRoles(t *testing.T) {
 		{"GET", "/api/notifications/settings", false, ownerOnly},
 		{"GET", "/api/diagnostics/snapshot", false, ownerOnly},
 		{"GET", "/api/tools/rosbag/download/x", false, ownerOnly},
-		{"GET", "/api/map-backups", false, ownerOnly},
+		{"GET", "/api/map-backups", false, control},
+		{"GET", "/api/map-backups/", false, ownerOnly},
+		{"GET", "/api/map-backups/x", false, ownerOnly},
 		{"GET", "/api/fleet/robots", false, ownerOnly},
 		{"GET", "/api/new-endpoint", false, ownerOnly},
-		// Mowing controls (the body is checked separately, see TestOperatorBodies).
+		// Running the mower: its calls (high_level_control and emergency are also checked by body,
+		// see TestOperatorBodies), the map editor, schedules and map backups.
 		{"POST", "/api/mowglinext/call/high_level_control", false, control},
 		{"POST", "/api/mowglinext/call/emergency", false, control},
 		{"POST", "/api/mowglinext/call/start_in_area", false, control},
 		{"POST", "/api/mowglinext/call/coverage_clear_resume", false, control},
+		{"POST", "/api/mowglinext/call/mow_enabled", false, control},
+		{"POST", "/api/mowglinext/call/blade_control", false, control},
+		{"POST", "/api/mowglinext/call/coverage_orientation", false, control},
+		{"POST", "/api/mowglinext/call/clear_dig_escalation", false, control},
+		{"POST", "/api/mowglinext/call/promote_obstacle", false, control},
+		{"POST", "/api/mowglinext/call/ignore_obstacle", false, control},
+		{"POST", "/api/mowglinext/call/discard_obstacle", false, control},
+		{"POST", "/api/mowglinext/call/correct_recorded_obstacle", false, control},
+		{"POST", "/api/mowglinext/call/preview_obstacle_clearance", false, control},
+		{"POST", "/api/mowglinext/call/preview_coverage", false, control},
+		{"POST", "/api/mowglinext/call/set_area_coverage_lines", false, control},
+		{"POST", "/api/mowglinext/call/get_lidar_ignore_corridors", false, control},
+		{"POST", "/api/mowglinext/call/set_lidar_ignore_corridors", false, control},
+		{"POST", "/api/mowglinext/map/area/add", false, control},
+		{"POST", "/api/mowglinext/map/docking", false, control},
+		{"PUT", "/api/mowglinext/map", false, control},
+		{"POST", "/api/schedules", false, control},
+		{"PUT", "/api/schedules/1731312000000000000", false, control},
+		{"PUT", "/api/schedules/a-b_C", false, control},
+		{"DELETE", "/api/schedules/1731312000000000000", false, control},
+		{"POST", "/api/map-backups", false, control},
+		{"POST", "/api/map-backups/areas-20261111T092748.000Z.dat/restore", false, control},
 		{"PUT", "/api/mowglinext/call/high_level_control", false, ownerOnly},
 		{"DELETE", "/api/mowglinext/call/high_level_control", false, ownerOnly},
-		// Everything else that changes the robot.
-		{"POST", "/api/mowglinext/call/mow_enabled", false, ownerOnly},
-		{"POST", "/api/mowglinext/call/blade_control", false, ownerOnly},
-		{"POST", "/api/mowglinext/call/clear_dig_escalation", false, ownerOnly},
+		{"GET", "/api/mowglinext/call/high_level_control", false, ownerOnly},
+		// What stays with the owner: the robot and its account, not the mowing.
 		{"POST", "/api/mowglinext/call/reboot_board", false, ownerOnly},
 		{"POST", "/api/mowglinext/call/reset_firmware_param_store", false, ownerOnly},
 		{"POST", "/api/mowglinext/call/fusion_graph_clear", false, ownerOnly},
-		{"POST", "/api/mowglinext/call/promote_obstacle", false, ownerOnly},
+		{"POST", "/api/mowglinext/call/fusion_graph_save", false, ownerOnly},
 		{"POST", "/api/mowglinext/call/set_datum", false, ownerOnly},
 		{"POST", "/api/mowglinext/call/start", false, ownerOnly},
+		{"POST", "/api/mowglinext/call/HIGH_LEVEL_CONTROL", false, ownerOnly},
+		{"POST", "/api/mowglinext/call/high_level_control/", false, ownerOnly},
+		{"POST", "/api/mowglinext/call/high_level_control/x", false, ownerOnly},
 		{"POST", "/api/mowglinext/call/", false, ownerOnly},
-		{"POST", "/api/mowglinext/map/area/add", false, ownerOnly},
-		{"POST", "/api/mowglinext/map/docking", false, ownerOnly},
-		{"DELETE", "/api/mowglinext/map", false, ownerOnly},
-		{"PUT", "/api/mowglinext/map", false, ownerOnly},
+		{"POST", "/api/mowglinext/call", false, ownerOnly},
+		{"DELETE", "/api/mowglinext/map", false, ownerOnly}, // delete the whole map
+		{"POST", "/api/mowglinext/map", false, ownerOnly},
+		{"PUT", "/api/mowglinext/map/docking", false, ownerOnly},
+		{"PUT", "/api/schedules", false, ownerOnly},
+		{"DELETE", "/api/schedules", false, ownerOnly},
+		{"POST", "/api/schedules/1", false, ownerOnly},
+		{"PUT", "/api/schedules/1/x", false, ownerOnly},
+		{"PUT", "/api/schedules/", false, ownerOnly},
+		{"PUT", "/api/schedules/a%2Fb", false, ownerOnly},
+		{"PUT", "/api/schedules/a.b", false, ownerOnly},
+		{"PUT", "/api/schedules/" + strings.Repeat("1", 65), false, ownerOnly},
+		{"DELETE", "/api/map-backups/areas-20261111T092748.000Z.dat", false, ownerOnly},
+		{"POST", "/api/map-backups/1/restore", false, ownerOnly},
+		{"POST", "/api/map-backups/areas-20261111T092748.000Z.dat/restore/x", false, ownerOnly},
+		{"POST", "/api/map-backups/../settings/restore", false, ownerOnly},
 		{"POST", "/api/settings", false, ownerOnly},
 		{"POST", "/api/settings/yaml", false, ownerOnly},
 		{"POST", "/api/config/keys/set", false, ownerOnly},
@@ -100,9 +141,6 @@ func TestMowgliPolicyRoles(t *testing.T) {
 		{"GET", "/api/config/keys/get", false, ownerOnly},
 		{"PUT", "/api/config/keys/get", false, ownerOnly},
 		{"POST", "/api/params", false, ownerOnly},
-		{"POST", "/api/schedules", false, ownerOnly},
-		{"PUT", "/api/schedules/1", false, ownerOnly},
-		{"DELETE", "/api/schedules/1", false, ownerOnly},
 		{"POST", "/api/containers/abc/restart", false, ownerOnly},
 		{"POST", "/api/system/reboot", false, ownerOnly},
 		{"POST", "/api/system/updater/apply", false, ownerOnly},
@@ -115,7 +153,6 @@ func TestMowgliPolicyRoles(t *testing.T) {
 		{"POST", "/api/tools/drive/pid-tuning/start", false, ownerOnly},
 		{"POST", "/api/calibration/imu-yaw", false, ownerOnly},
 		{"POST", "/api/diagnostics/sessions", false, ownerOnly},
-		{"POST", "/api/map-backups/1/restore", false, ownerOnly},
 		{"POST", "/api/import/openmower", false, ownerOnly},
 		{"PUT", "/api/notifications/settings", false, ownerOnly},
 		{"POST", "/", false, ownerOnly},
@@ -140,12 +177,12 @@ func TestMowgliPolicyRoles(t *testing.T) {
 	}
 }
 
-// The joystick socket is the owner's only, and only when the robot allows it.
-func TestTeleopIsOwnerOnly(t *testing.T) {
+// The joystick socket is for owners and operators, and only when the robot allows it.
+func TestTeleopNeedsTheRobotsOptIn(t *testing.T) {
 	for _, teleop := range []bool{false, true} {
 		p := MowgliPolicy{AllowTeleop: teleop}
 		for _, role := range []string{RoleOwner, RoleOperator, RoleViewer, "admin"} {
-			want := teleop && role == RoleOwner
+			want := teleop && (role == RoleOwner || role == RoleOperator)
 			if got := p.Allow(role, "GET", "/api/mowglinext/publish/cmd_vel", true); got != want {
 				t.Errorf("teleop=%v %s: allow=%v, want %v", teleop, role, got, want)
 			}
@@ -211,11 +248,14 @@ func TestOperatorBodies(t *testing.T) {
 		{hlc, `{"Command":8}`, true}, // pause, stop
 		{hlc, `{"command":8}`, true},
 		{hlc, ` { "Command" : 1 } ` + "\n", true},
-		{hlc, `{"Command":3}`, false},   // record area
-		{hlc, `{"Command":5}`, false},   // finish recording
-		{hlc, `{"Command":6}`, false},   // cancel recording
-		{hlc, `{"Command":7}`, false},   // manual mowing
-		{hlc, `{"Command":254}`, false}, // reset emergency
+		{hlc, `{"Command":3}`, true}, // record area
+		{hlc, `{"Command":4}`, true},
+		{hlc, `{"Command":5}`, true},   // finish recording
+		{hlc, `{"Command":6}`, true},   // cancel recording
+		{hlc, `{"Command":7}`, true},   // manual mowing
+		{hlc, `{"Command":254}`, true}, // reset emergency
+		{hlc, `{"Command":9}`, false},
+		{hlc, `{"Command":253}`, false},
 		{hlc, `{"Command":255}`, false}, // delete maps
 		{hlc, `{"Command":0}`, false},
 		{hlc, `{"Command":257}`, false}, // 257 & 0xff would be 1
@@ -239,8 +279,9 @@ func TestOperatorBodies(t *testing.T) {
 		{hlc, `{"Command":1` + strings.Repeat(" ", maxCallBody) + `}`, false},
 		{em, `{"Emergency":1}`, true},
 		{em, `{"emergency":1}`, true},
-		{em, `{"Emergency":0}`, false}, // releasing the emergency stop stays with the owner
-		{em, `{}`, false},              // the GUI would decode a missing field as 0, a release
+		{em, `{"Emergency":0}`, true}, // release
+		{em, `{}`, false},             // a missing field would be read as a default by the GUI
+		{em, `{"Emergency":2}`, false},
 		{em, `{"Emergency":1,"Emergency":0}`, false},
 		{em, `{"Emergency":256}`, false},
 		{area, `{"area":0}`, true},
@@ -250,7 +291,26 @@ func TestOperatorBodies(t *testing.T) {
 		{area, `{"area":1,"x":2}`, false},
 		{fresh, `{}`, true},
 		{fresh, ``, true},
-		{"/api/mowglinext/call/mow_enabled", `{"mow_enabled":1}`, false}, // unknown to AllowRequest: refused
+		// Calls whose body is the app's own are passed on as sent.
+		{"/api/mowglinext/call/mow_enabled", `{"mow_enabled":0,"mow_direction":0}`, true},
+		{"/api/mowglinext/call/mow_enabled", `{"mow_direction":0,"mow_enabled":0}`, true},
+		{"/api/mowglinext/call/mow_enabled", `{"mow_enabled":1,"mow_direction":0}`, false}, // ON skips the tree's gate
+		{"/api/mowglinext/call/mow_enabled", `{"mow_enabled":1,"mow_direction":7}`, false},
+		{"/api/mowglinext/call/mow_enabled", `{"mow_enabled":0}`, false},
+		{"/api/mowglinext/call/mow_enabled", `{"mow_enabled":0,"mow_direction":1}`, false},
+		{"/api/mowglinext/call/mow_enabled", `{"mow_enabled":0,"mow_enabled":1,"mow_direction":0}`, false},
+		{"/api/mowglinext/call/mow_enabled", `{"mow_enabled":0,"mow_direction":0,"x":1}`, false},
+		{"/api/mowglinext/call/mow_enabled", `{"Mow_Enabled":0,"mow_direction":0}`, false},
+		{"/api/mowglinext/call/mow_enabled", `{"mow_enabled":0.0,"mow_direction":0}`, false},
+		{"/api/mowglinext/call/mow_enabled", `{"mow_enabled":256,"mow_direction":0}`, false},
+		{"/api/mowglinext/call/mow_enabled", `{"mow_enabled":0,"mow_direction":0}{}`, false},
+		{"/api/mowglinext/call/mow_enabled", ``, false},
+		{"/api/mowglinext/call/blade_control", `{"mow_enabled":1,"mow_direction":0}`, true},
+		{"/api/schedules", `{"time":"08:00"}`, true},
+		{"/api/mowglinext/map/docking", `{}`, true},
+		{"/api/mowglinext/call/set_datum", `{}`, false}, // a route Allow does not let through
+		{"/api/settings", `{}`, false},
+		{"/api/mowglinext/call/", `{}`, false},
 	} {
 		r := httptest.NewRequest("POST", tc.path, strings.NewReader(tc.body))
 		if got := (MowgliPolicy{}).AllowRequest(RoleOperator, r); got != tc.allow {
@@ -360,8 +420,8 @@ func TestReadableConfigKeys(t *testing.T) {
 	}
 }
 
-// End to end through the gateway: an operator session can use the mowing controls and nothing
-// that changes the robot, and the GUI receives exactly the checked body.
+// End to end through the gateway: an operator session can run the mower and nothing that
+// changes the robot or its settings, and the GUI receives exactly the checked body.
 func TestOperatorInGateway(t *testing.T) {
 	f := newFixture(t, MowgliPolicy{AllowTeleop: true})
 	tok, _ := f.login(f.grant(func(c map[string]any) { c["sub"] = "gh:3"; c["role"] = RoleOperator }))
@@ -376,16 +436,34 @@ func TestOperatorInGateway(t *testing.T) {
 	}
 	for _, tc := range []struct{ method, path, body string }{
 		{"POST", "/api/mowglinext/call/high_level_control", `{"Command":255}`},
-		{"POST", "/api/mowglinext/call/emergency", `{"Emergency":0}`},
-		{"POST", "/api/mowglinext/call/blade_control", `{"mow_enabled":1,"mow_direction":0}`},
+		{"POST", "/api/mowglinext/call/set_datum", `{}`},
+		{"POST", "/api/mowglinext/call/reboot_board", `{}`},
+		{"POST", "/api/mowglinext/call/mow_enabled", `{"mow_enabled":1,"mow_direction":7}`},
 		{"POST", "/api/settings", `{}`},
 		{"GET", "/api/settings", ``},
 		{"POST", "/api/system/reboot", ``},
-		{"POST", "/api/schedules", `{}`},
+		{"POST", "/api/config/keys/set", `{"gui.map.offset.x":"1"}`},
 		{"DELETE", "/api/mowglinext/map", ``},
 	} {
 		if r := f.req(tc.method, tc.path, h, tc.body); r.StatusCode != 403 {
 			t.Errorf("operator %s %s %s: %d", tc.method, tc.path, tc.body, r.StatusCode)
+		}
+	}
+	// The rest of running the mower goes through unchanged: release the emergency stop, the
+	// blade, the map editor and schedules.
+	for _, tc := range []struct{ method, path, body string }{
+		{"POST", "/api/mowglinext/call/high_level_control", `{"Command":254}`},
+		{"POST", "/api/mowglinext/call/emergency", `{"Emergency":0}`},
+		{"POST", "/api/mowglinext/call/blade_control", `{"mow_enabled":1,"mow_direction":0}`},
+		{"POST", "/api/mowglinext/call/mow_enabled", `{"mow_enabled":0,"mow_direction":0}`},
+		{"PUT", "/api/mowglinext/map", `{"areas":[]}`},
+		{"POST", "/api/schedules", `{"time":"08:00"}`},
+		{"DELETE", "/api/schedules/12", ``},
+	} {
+		r := f.req(tc.method, tc.path, h, tc.body)
+		var echo map[string]string
+		if r.StatusCode != 200 || json.NewDecoder(r.Body).Decode(&echo) != nil || echo["body"] != tc.body {
+			t.Errorf("operator %s %s %s: %d %v", tc.method, tc.path, tc.body, r.StatusCode, echo)
 		}
 	}
 	// Spellings a router might normalize to a control never reach the GUI.
@@ -396,14 +474,18 @@ func TestOperatorInGateway(t *testing.T) {
 			t.Errorf("operator POST %s: %d", p, r.StatusCode)
 		}
 	}
-	// Telemetry yes, the joystick no (even with AllowTeleop on).
-	c, _, err := f.dialWS("/api/mowglinext/multiplex", tok, "https://"+testHost)
-	if err != nil {
-		t.Fatalf("operator multiplex: %v", err)
+	// Telemetry, and the joystick because AllowTeleop is on.
+	for _, p := range []string{"/api/mowglinext/multiplex", "/api/mowglinext/publish/cmd_vel"} {
+		c, _, err := f.dialWS(p, tok, "https://"+testHost)
+		if err != nil {
+			t.Fatalf("operator %s: %v", p, err)
+		}
+		c.Close()
 	}
-	c.Close()
-	if _, resp, err := f.dialWS("/api/mowglinext/publish/cmd_vel", tok, "https://"+testHost); err == nil || resp.StatusCode != 403 {
-		t.Fatal("operator got the joystick socket")
+	off := newFixture(t, MowgliPolicy{})
+	otok, _ := off.login(off.grant(func(c map[string]any) { c["sub"] = "gh:3"; c["role"] = RoleOperator }))
+	if _, resp, err := off.dialWS("/api/mowglinext/publish/cmd_vel", otok, "https://"+testHost); err == nil || resp.StatusCode != 403 {
+		t.Fatal("operator got the joystick socket on a robot that does not allow it")
 	}
 	// The CSRF check still applies to the controls.
 	bad := map[string]string{"Cookie": cookie(tok), "Origin": "https://evil.example.com"}
@@ -522,5 +604,67 @@ func TestRoleUpgradeResyncs(t *testing.T) {
 	h["Cookie"] = cookie(tok)
 	if r := g.req("POST", "/api/mowglinext/call/high_level_control", h, `{"Command":1}`); r.StatusCode != 403 {
 		t.Fatalf("viewer controls with an operator grant: %d", r.StatusCode)
+	}
+}
+
+// Written out by hand, not derived from the policy's own tables: what an operator must never
+// reach, by any method, through Allow and then AllowRequest with the bodies the GUI would take.
+func TestOperatorNeverReachesTheRobot(t *testing.T) {
+	var paths []string
+	for _, c := range []string{"set_datum", "fusion_graph_save", "fusion_graph_clear", "fusion_graph_clear_lidar_map",
+		"reboot_board", "reset_firmware_param_store", "unknown", "High_Level_Control", " high_level_control", "high_level_control%2f"} {
+		paths = append(paths, "/api/mowglinext/call/"+c)
+	}
+	paths = append(paths, "/api/settings", "/api/settings/yaml", "/api/settings/status", "/api/settings/schema", "/api/settings/yaml/defaults",
+		"/api/settings/gnss/apply", "/api/settings/gnss/runtime-config", "/api/config/keys/set", "/api/config/envs", "/api/params",
+		"/api/system/reboot", "/api/system/shutdown", "/api/system/updater/apply", "/api/system/updates", "/api/containers/", "/api/containers/x/restart",
+		"/api/setup/flashBoard", "/api/firmware/available", "/api/calibration/imu-yaw", "/api/tools/drive/pid-tuning/start", "/api/tools/rosbag/start",
+		"/api/tools/blackbox/save", "/api/diagnostics/sessions", "/api/diagnostics/snapshot", "/api/remote-access/settings", "/api/remote-access/apply",
+		"/api/notifications/settings", "/api/notifications/test", "/api/fleet/peers", "/api/fleet/robots/x/call/high_level_control",
+		"/api/import/openmower", "/api/irrisense/settings", "/api/mowglinext/map/", "/api/mowglinext/map/area", "/api/drive", "/api",
+		"/swagger/index.html", "/api/schedules/a/b", "/api/map-backups/x", "/api/map-backups/restore")
+	pol := MowgliPolicy{AllowTeleop: true}
+	for _, p := range paths {
+		for _, m := range []string{"POST", "PUT", "DELETE", "PATCH"} { // reads: TestMowgliPolicyRoles
+			for _, body := range []string{"", "{}", `{"command":1}`, `{"mow_enabled":0,"mow_direction":0}`} {
+				r := httptest.NewRequest(m, "/", strings.NewReader(body))
+				r.URL.Path = p
+				if pol.Allow(RoleOperator, m, p, false) && pol.AllowRequest(RoleOperator, r) {
+					t.Errorf("operator %s %s %q allowed", m, p, body)
+				}
+			}
+		}
+	}
+	// The whole map in one step, and every other way to run a command the GUI does not offer.
+	for _, body := range []string{`{"Command":255}`, `{"command":255}`} {
+		r := httptest.NewRequest("POST", callPrefix+"high_level_control", strings.NewReader(body))
+		if (MowgliPolicy{}).AllowRequest(RoleOperator, r) {
+			t.Errorf("operator command 255: %s", body)
+		}
+	}
+	if pol.Allow(RoleOperator, "DELETE", "/api/mowglinext/map", false) {
+		t.Error("operator may delete the whole map")
+	}
+}
+
+// An operator's open joystick socket ends when the member list downgrades them to viewer.
+func TestOperatorJoystickEndsOnDowngrade(t *testing.T) {
+	f := newFixture(t, MowgliPolicy{AllowTeleop: true})
+	tok, _ := f.login(f.grant(func(c map[string]any) { c["sub"] = "gh:3"; c["role"] = RoleOperator }))
+	c, _, err := f.dialWS("/api/mowglinext/publish/cmd_vel", tok, "https://"+testHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	f.state.Members["gh:3"] = RoleViewer
+	f.gw.UpdateState(f.state)
+	_ = c.SetReadDeadline(time.Now().Add(wsAuthRecheck + 3*time.Second))
+	for {
+		if _, _, err := c.ReadMessage(); err != nil {
+			if !websocket.IsCloseError(err, websocket.ClosePolicyViolation) {
+				t.Fatalf("joystick socket ended with %v, want a policy close", err)
+			}
+			return
+		}
 	}
 }
