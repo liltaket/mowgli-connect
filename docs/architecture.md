@@ -104,7 +104,7 @@ SSL does not cover deeper names. Put the relay on a **different registrable doma
   `MC_MAX_STALE` (10 min), the agent fails closed: remote sessions stop until it syncs again. Local
   LAN access to the GUI never depends on the cloud. Push-based revocation can come later.
 - **Sharing:** an owner can share a robot by GitHub account as "View only" (`viewer`) or "Can
-  control" (`operator`: mowing controls, no settings), see [sharing.md](sharing.md). Both are
+  control" (`operator`: runs the mower, no settings), see [sharing.md](sharing.md). Both are
   deny-by-default allow lists in the agent, checked against the GUI's source, not against a real
   GUI or robot.
 - **Fleet peers** use plain `ws://` between robots and must stay on the LAN; Connect does not and

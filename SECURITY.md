@@ -60,9 +60,10 @@ Out of scope: vulnerabilities in MowgliNext itself, in Cloudflare or GitHub, and
   open robots their owners shared with them. Removing someone ends their relay sessions at once;
   their robots stop accepting them at the next sync, within a few minutes.
 - **Sharing** gives another GitHub account "View only" or "Can control" on one robot. "Can control"
-  means mowing: start, pause, stop, dock and engaging the emergency stop, enforced by the agent on
-  the robot. It does not include settings, maps, schedules, containers, updates, the joystick or
-  releasing an emergency stop. Removing someone reaches the robot at its next sync (3 minutes by
+  means running the mower: start, pause, stop, dock, the map editor, schedules, the blade, the
+  emergency stop (engage and release) and, if the robot allows it, the joystick, enforced by the
+  agent on the robot. It does not include settings and the config store (they hold credentials),
+  calibration, firmware, containers, updates, reboot, remote access or sharing. Removing someone reaches the robot at its next sync (3 minutes by
   default). Design, threat model and what is not verified: [docs/sharing.md](docs/sharing.md).
 - **Updates are a root of trust too.** A malicious agent image could skip the network lock and the
   privilege drop, read the robot's key and tunnel token, and reach the robot's GUI and home

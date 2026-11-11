@@ -1,5 +1,6 @@
-import { canSignIn, ownedRobots, robotLimit } from "./access";
-import { claimRobot, planAddress, previewClaim, reachedLimit, limitMessage } from "./claim";
+import { canSignIn, GITHUB_USER_ID, ownedRobots, robotLimit } from "./access";
+import { cleanGithubLogin } from "./admin";
+import { claimRobot, planAddress, previewClaim, reachedLimit, limitMessage, unlinkRobot } from "./claim";
 import { DEVICE_ID, DeviceAuthError, jwkThumbprint, parseDeviceJwk, verifyDeviceAssertion, type DeviceJwk } from "./deviceAuth";
 import type { Env } from "./env";
 import { mintGrant, type Role } from "./grant";
@@ -7,6 +8,7 @@ import { html, page, type PageUser } from "./html";
 import { createProvisioner } from "./provisioner";
 import { json } from "./robotApi";
 import type { SessionUser } from "./session";
+import { addShare, changeShareRole, leaveShare, listShares, lookup, managedRobot, MAX_SHARES_PER_ROBOT, parseRole, removeShare } from "./share";
 import { latestAgentSha, updateAvailable } from "./updates";
 import { cleanLabel, isRobotId, nowSeconds, randomToken, readBodyText, sha256Hex, SKEW_SECONDS } from "./util";
 
@@ -379,6 +381,100 @@ async function markFirstOnline(env: Env, robotId: string): Promise<void> {
   await env.DB.prepare("UPDATE robots SET first_online_at = ? WHERE robot_id = ? AND first_online_at IS NULL").bind(nowSeconds(), robotId).run();
 }
 
+/** Sharing: /robots/:id/shares, /shares/lookup, /shares/:userId/(role|remove) and /robots/:id/leave. */
+const SHARE_ROUTE = /^\/v1\/app\/robots\/([^/]+)\/(?:(leave)|shares(?:\/(lookup)|\/([^/]+)\/(role|remove))?)$/;
+
+/**
+ * The owner's side of sharing for the app (docs/sharing.md): the same operations and limits as the
+ * web page, answering JSON. The signed call replaces the web's Origin check as the CSRF defence.
+ * Everything but leaving answers like an unknown robot to anyone who does not own it.
+ */
+async function handleShareCall(request: Request, env: Env, user: SessionUser, m: RegExpExecArray): Promise<Response> {
+  const robotId = m[1]!;
+  const [leave, lookupStep, target, op] = [m[2], m[3], m[4], m[5]];
+  if (!isRobotId(robotId)) return json({ error: "not_found" }, 404);
+  const notFound = () => json({ error: "not_found" }, 404);
+
+  if (leave) {
+    const left = await leaveShare(env, user.id, robotId);
+    // A guest whose last share this was is signed out of the relay, this device included: the app
+    // should show its sign-in again.
+    return left ? json({ ok: true, signedOut: left.signedOut }) : notFound();
+  }
+
+  const robot = await managedRobot(env, user, robotId);
+  if (!robot) return notFound();
+
+  if (request.method === "GET") return json({ shares: (await listShares(env, robotId)).map((p) => ({ userId: p.user_id, login: p.login, name: p.name, role: p.role, since: p.created_at, signedIn: p.last_login_at !== 0 })), limit: MAX_SHARES_PER_ROBOT });
+
+  if (op === "remove") {
+    if (!GITHUB_USER_ID.test(target!)) return notFound();
+    return (await removeShare(env, user.id, robotId, target!)) ? json({ ok: true }) : notFound();
+  }
+  const body = await readJson(request);
+  if (!body) return json({ error: "bad_request" }, 400);
+  const role = parseRole(body.role);
+
+  if (op === "role") {
+    if (!GITHUB_USER_ID.test(target!)) return notFound();
+    if (!role) return json({ error: "bad_role", message: "role must be viewer or operator" }, 400);
+    return (await changeShareRole(env, user.id, robotId, target!, role)) ? json({ ok: true }) : notFound();
+  }
+
+  if (lookupStep) {
+    // Step 1: find the account by login and return it to be confirmed. Nothing is shared yet.
+    const login = cleanGithubLogin(typeof body.login === "string" ? body.login : null);
+    if (!login) return json({ error: "bad_login", message: "That is not a GitHub username." }, 400);
+    const res = await lookup(env, user.id, { login });
+    if (!res.ok) return lookupFailure(res);
+    const id = `gh:${res.user.id}`;
+    if (id === user.id) return json({ error: "own_account", message: "That is your own account. You own this robot already." }, 400);
+    const member = await env.DB.prepare("SELECT 1 AS ok FROM members WHERE robot_id = ? AND user_id = ?").bind(robotId, id).first();
+    if (member) return json({ error: "already_shared", message: `@${res.user.login} already has access to this robot.` }, 409);
+    return json({ id: String(res.user.id), login: res.user.login, name: res.user.name, joinedYear: res.user.createdAt ? Number(res.user.createdAt.slice(0, 4)) || null : null });
+  }
+
+  // Step 2: the owner confirmed the account step 1 returned. Look it up again by id, so the stored
+  // login and name are GitHub's and the id is a person's account, not the caller's say.
+  const rawId = typeof body.id === "number" ? String(body.id) : body.id;
+  if (!role) return json({ error: "bad_role", message: "role must be viewer or operator" }, 400);
+  if (typeof rawId !== "string" || !/^[1-9][0-9]{0,19}$/.test(rawId) || !Number.isSafeInteger(Number(rawId))) return json({ error: "bad_id" }, 400);
+  const res = await lookup(env, user.id, { id: Number(rawId) });
+  if (!res.ok) return lookupFailure(res);
+  const out = await addShare(env, user, robotId, res.user, role);
+  if (out.ok) return json({ ok: true, userId: `gh:${res.user.id}` });
+  if (out.status === 404) return notFound();
+  if (out.notice) return json({ error: "already_shared" }, 409);
+  const error = out.status === 400 ? "own_account" : out.status === 403 ? "share_limit" : out.status === 429 ? "rate_limited" : "share_failed";
+  return json({ error, message: out.error }, out.status);
+}
+
+/** The robot's owner's other two actions, as on the web: unlink it, or sign everyone out of it. */
+const OWNER_ACTION = /^\/v1\/app\/robots\/([^/]+)\/(unlink|sessions\/revoke)$/;
+
+async function handleOwnerAction(env: Env, user: SessionUser, m: RegExpExecArray): Promise<Response> {
+  const robotId = m[1]!;
+  const notFound = () => json({ error: "not_found" }, 404);
+  if (!isRobotId(robotId)) return notFound();
+  // The same check as the web page: the robot's owner, whoever else may be shared in.
+  const owner = await env.DB.prepare("SELECT 1 AS ok FROM members m JOIN robots r ON r.robot_id = m.robot_id WHERE m.robot_id = ? AND m.user_id = ? AND m.role = 'owner' AND r.status = 'claimed'")
+    .bind(robotId, user.id)
+    .first();
+  if (!owner) return notFound();
+  if (m[2] === "unlink") return (await unlinkRobot(env, createProvisioner(env), robotId)) ? json({ ok: true }) : notFound();
+  // Sign everyone out: the session epoch goes up, so every robot session and unused grant from
+  // before ends at the robot's next sync (the owner's own included).
+  const res = await env.DB.prepare("UPDATE robots SET session_epoch = session_epoch + 1, updated_at = ? WHERE robot_id = ? AND status = 'claimed'")
+    .bind(nowSeconds(), robotId)
+    .run();
+  return res.meta.changes === 1 ? json({ ok: true }) : notFound();
+}
+
+function lookupFailure(res: { message: string; status: number }): Response {
+  const error = res.status === 429 ? "rate_limited" : res.status === 502 ? "github_unavailable" : "no_such_account";
+  return json({ error, message: res.message }, res.status);
+}
+
 /** /v1/app/*: the signed JSON API. Returns null for other paths. */
 export async function handleAppApi(request: Request, env: Env, url: URL): Promise<Response | null> {
   if (!url.pathname.startsWith("/v1/app/")) return null;
@@ -389,14 +485,21 @@ export async function handleAppApi(request: Request, env: Env, url: URL): Promis
   if (path === "/v1/app/token") return method === "POST" ? token(request, env, url) : json({ error: "method_not_allowed" }, 405, { Allow: "POST" });
 
   const grantPath = /^\/v1\/app\/robots\/([^/]+)\/grant$/.exec(path);
-  const known = path === "/v1/app/me" || path === "/v1/app/robots" || path === "/v1/app/claim" || path === "/v1/app/sign-out" || grantPath;
+  const shareRoute = SHARE_ROUTE.exec(path);
+  const ownerAction = OWNER_ACTION.exec(path);
+  const known = path === "/v1/app/me" || path === "/v1/app/robots" || path === "/v1/app/claim" || path === "/v1/app/sign-out" || grantPath || shareRoute || ownerAction;
   if (!known) return json({ error: "not_found" }, 404);
-  const wantPost = path !== "/v1/app/me" && path !== "/v1/app/robots";
-  if (method !== (wantPost ? "POST" : "GET")) return json({ error: "method_not_allowed" }, 405, { Allow: wantPost ? "POST" : "GET" });
+  // The share list is the one share call that reads.
+  const wantPost = path !== "/v1/app/me" && path !== "/v1/app/robots" && !(shareRoute && !shareRoute[2] && !shareRoute[3] && !shareRoute[4] && method === "GET");
+  const bareShares = shareRoute && !shareRoute[2] && !shareRoute[3] && !shareRoute[4];
+  if (method !== (wantPost ? "POST" : "GET")) return json({ error: "method_not_allowed" }, 405, { Allow: bareShares ? "GET, POST" : wantPost ? "POST" : "GET" });
 
   const auth = await authenticate(request, env, url);
   if (auth instanceof Response) return auth;
   const { device, user } = auth;
+
+  if (shareRoute) return handleShareCall(request, env, user, shareRoute);
+  if (ownerAction) return handleOwnerAction(env, user, ownerAction);
 
   if (path === "/v1/app/me") {
     return json({ login: user.login, name: user.name, robotLimit: await robotLimit(env, user.id), robots: await ownedRobots(env, user.id) });
