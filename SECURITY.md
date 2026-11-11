@@ -65,6 +65,10 @@ Out of scope: vulnerabilities in MowgliNext itself, in Cloudflare or GitHub, and
   agent on the robot. It does not include settings and the config store (they hold credentials),
   calibration, firmware, containers, updates, reboot, remote access or sharing. Removing someone reaches the robot at its next sync (3 minutes by
   default). Design, threat model and what is not verified: [docs/sharing.md](docs/sharing.md).
+- The GitHub account must have two-factor authentication turned on. The relay asks GitHub for the
+  `read:user` scope, reads `two_factor_authentication` from `GET /user` and refuses the sign-in
+  unless it is `true` (a missing field also refuses). It checks the account setting, not that this
+  particular sign-in used a second factor, and the token is discarded right after.
 - **Updates are a root of trust too.** A malicious agent image could skip the network lock and the
   privilege drop, read the robot's key and tunnel token, and reach the robot's GUI and home
   network. So the robot runs an image only after cosign has verified a Sigstore keyless signature
@@ -90,6 +94,11 @@ Out of scope: vulnerabilities in MowgliNext itself, in Cloudflare or GitHub, and
 - **The native app** (off until configured) signs in through a consent page and holds no bearer
   token: its identity is a Secure Enclave key, every call is signed, and each device is listed with
   Sign out. Design and threat model: [docs/app-api.md](docs/app-api.md).
+- **AI agents** (off until configured) act only within a delegation the person approved on a consent
+  page: an Ed25519 key the agent holds, signed single-use calls, limited scopes and robots, an
+  expiry, revocation and an activity log. They can never get an owner session on a robot: robots
+  list them as viewers of their own. Design and threat model:
+  [docs/agent-delegation.md](docs/agent-delegation.md).
 - If the robot cannot reach the relay for longer than `MC_MAX_STALE` (10 minutes by default), remote
   sessions stop working, so a revocation cannot be outwaited.
 

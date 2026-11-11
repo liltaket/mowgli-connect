@@ -1,6 +1,7 @@
 import { afterSharesEnded, canOwn, defaultRobotLimit, GITHUB_USER_ID, isAdmin, MAX_ROBOT_LIMIT, parseRobotLimit } from "./access";
 import type { Env } from "./env";
 import { revokeRobot, unlinkRobot } from "./claim";
+import { revokeAllStatements } from "./delegation";
 import { GITHUB_LOGIN, lookupGithubUser } from "./github";
 import { html, page } from "./html";
 import type { SessionUser } from "./session";
@@ -267,6 +268,7 @@ export async function handleAdmin(request: Request, env: Env, url: URL, user: Se
     // And the robots others shared with them, or they could go on signing in as a guest; but not
     // while the configuration still lets them in anyway.
     ...(still ? [] : [env.DB.prepare("DELETE FROM members WHERE user_id = ? AND role != 'owner'").bind(target)]),
+    ...revokeAllStatements(env, target, nowSeconds()), // and their AI agents
   ]);
   console.log("admin: removed", target, "by", user.id);
   // Say so when the configuration still lets them in, instead of promising what did not happen.

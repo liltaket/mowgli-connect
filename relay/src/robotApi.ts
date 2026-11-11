@@ -7,6 +7,7 @@ import { b64urlDecode, deriveRobotId } from "./crypto";
 import { loadRelayKey } from "./relayKey";
 import { formatPairingCode, generatePairingCode, hashPairingCode, PAIRING_TTL_SECONDS } from "./pairing";
 import { SECURITY_HEADERS } from "./html";
+import { delegateMembers } from "./delegation";
 import { cleanLabel, nowSeconds, readBodyText, sha256Hex, SKEW_SECONDS } from "./util";
 
 export function json(body: unknown, status = 200, extra: HeadersInit = {}): Response {
@@ -278,8 +279,11 @@ async function selfResponse(env: Env, robotId: string, robot: RobotRow): Promise
   const owner = rows.results.find((m) => m.role === "owner");
   const ownerOk = owner !== undefined && owner.login !== null && (await canOwn(env, owner.user_id, owner.login));
   const members = ownerOk ? rows.results.filter((m) => m.login !== null) : [];
-  const key = await loadRelayKey(env);
+  // Delegates with read-only sessions on this robot are listed as viewers of their own
+  // (docs/agent-delegation.md), so the robot caps their sessions and drops them when they end.
   const claimed = robot.status === "claimed";
+  const delegates = claimed ? await delegateMembers(env, robotId, new Set(members.map((m) => m.user_id))) : [];
+  const key = await loadRelayKey(env);
   return json({
     robotId: robot.robot_id,
     status: robot.status,
@@ -287,7 +291,7 @@ async function selfResponse(env: Env, robotId: string, robot: RobotRow): Promise
     tunnelToken: claimed ? await openToken(env, robotId, robot.tunnel_token) : null,
     relayKeys: [{ kid: key.kid, publicKey: key.publicKeyB64 }],
     sessionEpoch: robot.session_epoch,
-    members: claimed ? members.map((m) => ({ userId: m.user_id, role: m.role })) : [],
+    members: claimed ? [...members.map((m) => ({ userId: m.user_id, role: m.role })), ...delegates] : [],
   });
 }
 

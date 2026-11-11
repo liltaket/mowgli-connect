@@ -1,6 +1,8 @@
 import { canSignIn, GITHUB_USER_ID, ownedRobots, robotLimit } from "./access";
 import { cleanGithubLogin } from "./admin";
 import { claimRobot, planAddress, previewClaim, reachedLimit, limitMessage, unlinkRobot } from "./claim";
+import { DELEGATE_ID } from "./delegateAuth";
+import { delegationAllowed, delegationEnabled, revokeDelegation } from "./delegation";
 import { DEVICE_ID, DeviceAuthError, jwkThumbprint, parseDeviceJwk, verifyDeviceAssertion, type DeviceJwk } from "./deviceAuth";
 import type { Env } from "./env";
 import { mintGrant, type Role } from "./grant";
@@ -487,12 +489,16 @@ export async function handleAppApi(request: Request, env: Env, url: URL): Promis
   const grantPath = /^\/v1\/app\/robots\/([^/]+)\/grant$/.exec(path);
   const shareRoute = SHARE_ROUTE.exec(path);
   const ownerAction = OWNER_ACTION.exec(path);
-  const known = path === "/v1/app/me" || path === "/v1/app/robots" || path === "/v1/app/claim" || path === "/v1/app/sign-out" || grantPath || shareRoute || ownerAction;
+  const delegationPath = /^\/v1\/app\/delegations\/([^/]+)\/revoke$/.exec(path);
+  const known =
+    path === "/v1/app/me" || path === "/v1/app/robots" || path === "/v1/app/claim" || path === "/v1/app/sign-out" || path === "/v1/app/delegations" || grantPath || shareRoute || ownerAction || delegationPath;
   if (!known) return json({ error: "not_found" }, 404);
   // The share list is the one share call that reads.
-  const wantPost = path !== "/v1/app/me" && path !== "/v1/app/robots" && !(shareRoute && !shareRoute[2] && !shareRoute[3] && !shareRoute[4] && method === "GET");
   const bareShares = shareRoute && !shareRoute[2] && !shareRoute[3] && !shareRoute[4];
+  const wantPost = path !== "/v1/app/me" && path !== "/v1/app/robots" && path !== "/v1/app/delegations" && !(bareShares && method === "GET");
   if (method !== (wantPost ? "POST" : "GET")) return json({ error: "method_not_allowed" }, 405, { Allow: bareShares ? "GET, POST" : wantPost ? "POST" : "GET" });
+  // Off by default: unknown, before anything is verified or written.
+  if ((path === "/v1/app/delegations" || delegationPath) && !delegationEnabled(env)) return json({ error: "not_found" }, 404);
 
   const auth = await authenticate(request, env, url);
   if (auth instanceof Response) return auth;
@@ -509,6 +515,31 @@ export async function handleAppApi(request: Request, env: Env, url: URL): Promis
     // A concurrent sign-out may have won; either way this device is gone and its sessions ended.
     await signOutDevice(env, device.device_id, user.id);
     return json({ ok: true });
+  }
+
+  // AI agents (docs/agent-delegation.md): the app can list and revoke them, never approve or renew.
+  if (path === "/v1/app/delegations") {
+    if (!delegationAllowed(env, user.id)) return json({ delegations: [] });
+    const rows = await env.DB.prepare(
+      "SELECT delegation_id, name, scopes, expires_at, revoked_at, last_used_at FROM delegations WHERE user_id = ? ORDER BY created_at",
+    )
+      .bind(user.id)
+      .all<{ delegation_id: string; name: string; scopes: string; expires_at: number; revoked_at: number | null; last_used_at: number | null }>();
+    return json({
+      delegations: rows.results.map((d) => ({
+        delegateId: d.delegation_id,
+        name: d.name,
+        scopes: d.scopes.split(" "),
+        expiresAt: d.expires_at,
+        revokedAt: d.revoked_at,
+        lastUsedAt: d.last_used_at,
+      })),
+    });
+  }
+  if (delegationPath) {
+    const id = delegationPath[1]!;
+    if (!DELEGATE_ID.test(id)) return json({ error: "not_found" }, 404);
+    return (await revokeDelegation(env, id, user.id, "app")) ? json({ ok: true }) : json({ error: "not_found" }, 404);
   }
 
   if (path === "/v1/app/robots") {

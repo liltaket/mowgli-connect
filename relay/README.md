@@ -166,6 +166,7 @@ touching Cloudflare.
 | `TUNNEL_TOKEN_KEY` | **secret** | recommended | 32 random bytes, base64url (`node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`). Tunnel tokens are then stored AES-256-GCM encrypted and bound to their robot id; plain rows from before are sealed by the cron. Keep a copy: without it robots cannot get their token (unlink and pair again to recover). |
 | `ALERT_NTFY_URL` | **secret** | no | e.g. `https://ntfy.sh/<topic>`: operator alerts (cleanup failing or stuck, tunnel creation failing, registration cap hit, token key missing), at most one per kind every 6 hours. No personal data. |
 | `APP_REDIRECT_URIS` | var | no | private-use scheme callbacks `<bundle id>:/<path>` for free Apple teams (weaker; see docs/app-api.md). |
+| `DELEGATION_USERS` | var | no | comma list of `gh:<id>` (or `*`) who may let AI agents act for them ([docs/agent-delegation.md](../docs/agent-delegation.md)). Unset = off (404). |
 | `APP_IOS_APP_IDS` | var | no | comma list of `<TeamID>.<bundle id>`: turns on the native app API and serves `/.well-known/apple-app-site-association` for them ([docs/app-api.md](../docs/app-api.md)). Unset = off (404). |
 | `AGENT_IMAGE_REPO` | var | no | `owner/repo` whose successful `agent-image.yml` builds on `main` define the latest agent (default `liltaket/mowgli-connect`); robots on an older build show "Update available". |
 | `PROVISIONER` | var | no | `cloudflare` (default), `quick` ([zero-cost mode](#zero-cost-quick-tunnel-mode)) or `fake` |
@@ -238,7 +239,9 @@ Independent check: `python3 -c "import hashlib,base64;print(base64.b32encode(has
   `ALERT_NTFY_URL`.
 - **Recommended**: a Cloudflare WAF rate-limit rule on `/v1/robots/register` (unauthenticated: any
   key can create an `unclaimed` row; the relay also caps new robots at `MAX_NEW_ROBOTS_PER_HOUR`
-  overall and 5 per network per hour).
+  overall and 5 per network per hour). With delegations on, add `/v1/delegate/*` to it: a
+  delegation over its hourly limit writes nothing, but each refused call still costs a Worker
+  request and about 120 D1 row reads (docs/agent-delegation.md).
 - **Robot hostnames** are never cached by Cloudflare (Cache Rule, see Setup) and a released name
   rests 90 days before another robot can take it.
 
@@ -263,7 +266,7 @@ amend `docs/protocol.md`):
 7. **Epoch**: starts at 1, is bumped at claim (so 2 after first claim), unlink and sessions/revoke.
 8. **Extras**: `421` on a foreign Host; allowlist accepts `gh:<id>`; `unclaimed` robots
    silent for 7 days are garbage-collected; `GET /style.css` (CSP forbids inline style).
-9. Sharing (`/robots/:id/share`, roles `viewer` and `operator`) is described in [docs/sharing.md](../docs/sharing.md). Apply migration 0009 before deploying the Worker that uses it: that Worker writes `operator` members and `share_events` rows, which the older schema refuses. Migration 0009 adds a unique index allowing one owner per robot, so first check that the database has no robot with two owners; this must print no rows:
+9. Sharing (`/robots/:id/share`, roles `viewer` and `operator`) is described in [docs/sharing.md](../docs/sharing.md). Apply migration 0011 before deploying the Worker that uses it: that Worker writes `operator` members and `share_events` rows, which the older schema refuses. Migration 0009 adds a unique index allowing one owner per robot, so first check that the database has no robot with two owners; this must print no rows:
    ```sh
    npx wrangler d1 execute mowgli-connect-relay --remote --command "SELECT robot_id FROM members WHERE role='owner' GROUP BY robot_id HAVING COUNT(*)>1"
    ```

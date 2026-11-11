@@ -356,6 +356,46 @@ func TestViewerAndMembership(t *testing.T) {
 	}
 }
 
+// A delegate (docs/agent-delegation.md) is its own member, listed by the relay as a viewer: the
+// robot caps its session at viewer whatever the grant says, and drops it when the relay stops
+// listing it, without touching the person's own sessions.
+func TestDelegateMemberIsCappedAtViewer(t *testing.T) {
+	f := newFixture(t, MowgliPolicy{AllowTeleop: true})
+	f.state.Members["dlg:abcdefghijklmnop"] = RoleViewer
+	f.gw.UpdateState(f.state)
+	tok, _ := f.login(f.grant(func(c map[string]any) { c["sub"] = "dlg:abcdefghijklmnop"; c["role"] = RoleOwner }))
+	if tok == "" {
+		t.Fatal("delegate login failed")
+	}
+	own, _ := f.login(f.grant(nil))
+	h := map[string]string{"Cookie": cookie(tok), "Origin": "https://" + testHost}
+	if r := f.req("GET", "/_connect/whoami", h, ""); r.StatusCode != 200 {
+		t.Fatalf("whoami: %d", r.StatusCode)
+	} else if b, _ := io.ReadAll(r.Body); !strings.Contains(string(b), `"role":"viewer"`) {
+		t.Fatalf("delegate session not capped: %s", b)
+	}
+	if r := f.req("GET", "/api/system/info", h, ""); r.StatusCode != 200 {
+		t.Fatalf("delegate read: %d", r.StatusCode)
+	}
+	for _, p := range []string{"/api/mowglinext/call/start", "/api/mowglinext/call/blade_on", "/api/settings"} {
+		if r := f.req("POST", p, h, ""); r.StatusCode != 403 {
+			t.Errorf("delegate POST %s: %d", p, r.StatusCode)
+		}
+	}
+	if _, resp, err := f.dialWS("/api/mowglinext/publish/teleop", tok, "https://"+testHost); err == nil || resp == nil || resp.StatusCode != 403 {
+		t.Fatalf("delegate teleop socket must be refused even with teleop allowed: %v", err)
+	}
+
+	delete(f.state.Members, "dlg:abcdefghijklmnop")
+	f.gw.UpdateState(f.state)
+	if r := f.req("GET", "/api/system/info", h, ""); r.StatusCode != 401 {
+		t.Fatalf("revoked delegate still authorized: %d", r.StatusCode)
+	}
+	if r := f.req("GET", "/api/system/info", map[string]string{"Cookie": cookie(own)}, ""); r.StatusCode != 200 {
+		t.Fatalf("the person's own session must survive: %d", r.StatusCode)
+	}
+}
+
 func TestSessionExpiry(t *testing.T) {
 	f := newFixture(t, MowgliPolicy{})
 	tok, _ := f.login(f.grant(nil))

@@ -16,6 +16,7 @@
 #          --insecure-skip-verify (only with a custom --image: runs it unchecked, no auto-update),
 #          --allow-downgrade (take the release IMAGE's tag names even if it is older than one
 #          that ran here or failed here before; otherwise refused, as in automatic updates)
+#          --uninstall [--purge] (remove this installation; --purge also deletes its identity)
 set -eu
 # Docker Compose takes these from the environment before .env and compose.yaml.
 unset MC_IMAGE MC_RELAY_URL MC_ROBOT_NAME MC_ALLOW_TELEOP COMPOSE_FILE COMPOSE_ENV_FILES COMPOSE_PROJECT_NAME
@@ -32,6 +33,11 @@ TELEOP=""
 AUTOUPDATE=""
 DNS=auto
 YES=no
+UNINSTALL=no
+PURGE=no
+RELAY_SET=no
+IMAGE_SET=no
+DNS_SET=no
 
 die() {
 	echo "mowgli-connect: $*" >&2
@@ -41,20 +47,91 @@ die() {
 while [ $# -gt 0 ]; do
 	case $1 in
 	--dir) DIR=$2; shift 2 ;;
-	--relay) RELAY=$2; shift 2 ;;
+	--relay) RELAY=$2; RELAY_SET=yes; shift 2 ;;
 	--name) NAME=$2; shift 2 ;;
 	--teleop) TELEOP=$2; shift 2 ;;
 	--auto-update) AUTOUPDATE=$2; shift 2 ;;
-	--dns) DNS=$2; shift 2 ;;
-	--image) IMAGE=$2; shift 2 ;;
+	--dns) DNS=$2; DNS_SET=yes; shift 2 ;;
+	--image) IMAGE=$2; IMAGE_SET=yes; shift 2 ;;
 	--signer) SIGNER=$2; shift 2 ;;
 	--insecure-skip-verify) SKIP_VERIFY=yes; shift ;;
 	--allow-downgrade) DOWNGRADE=--allow-downgrade; shift ;;
 	--yes | -y) YES=yes; shift ;;
-	-h | --help) sed -n '2,18p' "$0"; exit 0 ;;
+	--uninstall) UNINSTALL=yes; shift ;;
+	--purge) PURGE=yes; shift ;;
+	-h | --help) sed -n '2,19p' "$0"; exit 0 ;;
 	*) die "unknown option $1 (see --help)" ;;
 	esac
 done
+
+# Remove only this installation's cron marker (including its legacy form).
+without_project_cron() {
+	crontab -l 2>/dev/null | awk -v marker="# mowgli-connect auto-update $DIR" -v directory="$DIR" '
+		index($0, marker) && substr($0, length($0)-length(marker)+1) == marker { next }
+		index($0, "# mowgli-connect auto-update") && index($0, "cd \047" directory "\047 &&") { next }
+		{ print }
+	' || true
+}
+
+if [ "$PURGE" = yes ] && [ "$UNINSTALL" != yes ]; then die "--purge requires --uninstall"; fi
+if [ "$UNINSTALL" = yes ]; then
+	[ -f "$DIR/compose.yaml" ] || die "no standalone installation at $DIR"
+	DIR=$(cd "$DIR" && pwd -P)
+	case $DIR in *[!A-Za-z0-9/._-]*) die "unsupported install directory" ;; esac
+	command -v docker >/dev/null 2>&1 || die "Docker is not installed"
+	if command -v crontab >/dev/null 2>&1; then
+		current=$(without_project_cron)
+		if [ -n "$current" ]; then printf '%s\n' "$current" | crontab -; else crontab -r 2>/dev/null || true; fi
+	fi
+	# No -v by default: disabling remote access must not silently delete identity.
+	if [ "$PURGE" = yes ]; then
+		docker compose --project-directory "$DIR" -f "$DIR/compose.yaml" --env-file "$DIR/.env" down --volumes
+	else
+		docker compose --project-directory "$DIR" -f "$DIR/compose.yaml" --env-file "$DIR/.env" down
+	fi
+	echo "Mowgli Connect removed; configuration kept. Identity is kept unless --purge was supplied."
+	exit 0
+fi
+
+# Match the identity already used by legacy cron jobs before inferring settings.
+if [ -d "$DIR" ]; then DIR=$(cd "$DIR" && pwd -P); fi
+
+# Read only the generated dotenv format. Never source a user-editable shell file.
+if [ -f "$DIR/.env" ]; then
+	while IFS= read -r saved || [ -n "$saved" ]; do
+		key=${saved%%=*}
+		value=${saved#*=}
+		case $value in
+		"'"*"'") value=${value#\'}; value=${value%\'} ;;
+		esac
+		case $key in
+		MC_RELAY_URL) [ "$RELAY_SET" = yes ] || RELAY=$value ;;
+		# Empty (nothing verified yet) or a digest pin (update.sh's verified result) is not the image
+		# to verify: keep the default (or --image) tag. The pin stays in .env until a new release
+		# has been verified. Anything else is a custom image, remembered as before.
+		MC_IMAGE) case $value in "" | *@sha256:*) ;; *) [ "$IMAGE_SET" = yes ] || IMAGE=$value ;; esac ;;
+		MC_ROBOT_NAME) [ -n "$NAME" ] || NAME=$value ;;
+		MC_ALLOW_TELEOP)
+			if [ -z "$TELEOP" ]; then
+				case $value in true) TELEOP=yes ;; false) TELEOP=no ;; *) TELEOP=$value ;; esac
+			fi
+			;;
+		MC_AUTO_UPDATE) [ -n "$AUTOUPDATE" ] || AUTOUPDATE=$value ;;
+		MC_DNS) [ "$DNS_SET" = yes ] || DNS=$value ;;
+		esac
+	done < "$DIR/.env"
+	# Legacy installations did not persist these two choices. Infer their
+	# current setting instead of silently enabling updates or changing DNS.
+	if [ -z "$AUTOUPDATE" ]; then
+		AUTOUPDATE=no
+		if command -v crontab >/dev/null 2>&1 && crontab -l 2>/dev/null | grep -F "cd '$DIR' &&" | grep -qF '# mowgli-connect auto-update'; then
+			AUTOUPDATE=yes
+		fi
+	fi
+	if [ "$DNS_SET" = no ] && ! grep -q '^MC_DNS=' "$DIR/.env"; then
+		if grep -q '^    dns:' "$DIR/compose.yaml" 2>/dev/null; then DNS=public; else DNS=system; fi
+	fi
+fi
 
 ask() { # ask VAR "question" default
 	if [ "$YES" = yes ] || [ ! -t 0 ]; then
@@ -159,26 +236,40 @@ if [ -f "$DIR/compose.yaml" ] && [ "$YES" != yes ] && [ -t 0 ]; then
 	case $reply in y | Y | yes) ;; *) die "nothing changed" ;; esac
 fi
 
-# Values are written to .env (quoted), never into the YAML itself. With verification, only
-# update.sh sets MC_IMAGE (to a verified digest); a rerun keeps the image that runs now until a
-# new one has been verified.
+# Update known settings atomically while retaining unrelated operator settings. Values are
+# written to .env (quoted), never into the YAML itself. With verification, only update.sh sets
+# MC_IMAGE (to a verified digest); a rerun keeps the image that runs now until a new one has been
+# verified.
 img=$IMAGE
 if [ "$SKIP_VERIFY" != yes ]; then
 	img=""
 	[ -f "$DIR/.env" ] && img=$(sed -n "s/^MC_IMAGE='\(.*\)'\$/\1/p" "$DIR/.env" | tail -1)
 fi
 umask 077
+env_stage=$(mktemp "$DIR/.env.XXXXXX")
+trap 'rm -f "$env_stage"' EXIT HUP INT TERM
+if [ -f "$DIR/.env" ]; then
+	while IFS= read -r line || [ -n "$line" ]; do
+		case $line in
+		MC_RELAY_URL=*|MC_ROBOT_NAME=*|MC_ALLOW_TELEOP=*|MC_IMAGE=*|MC_AUTO_UPDATE=*|MC_DNS=*) ;;
+		*) printf '%s\n' "$line" ;;
+		esac
+	done < "$DIR/.env" > "$env_stage"
+fi
 {
-	echo "MC_RELAY_URL='$RELAY'"
-	echo "MC_ROBOT_NAME='$NAME'"
-	echo "MC_ALLOW_TELEOP=$TELEOP"
-	echo "MC_IMAGE='$img'"
-} >"$DIR/.env"
+	printf "MC_RELAY_URL='%s'\n" "$RELAY"
+	printf "MC_ROBOT_NAME='%s'\n" "$NAME"
+	printf 'MC_ALLOW_TELEOP=%s\n' "$TELEOP"
+	printf "MC_IMAGE='%s'\n" "$img"
+	printf 'MC_AUTO_UPDATE=%s\nMC_DNS=%s\n' "$AUTOUPDATE" "$DNS"
+} >> "$env_stage"
+mv "$env_stage" "$DIR/.env"
+trap - EXIT HUP INT TERM
 umask 022
 cat >"$DIR/compose.yaml" <<'EOF'
 # Mowgli Connect agent. Generated by install.sh; settings live in .env next to this file.
 # Update: sh update.sh (verifies the signature first)   Status: sh update.sh status
-# Remove: docker compose down -v
+# Remove: sh install.sh --uninstall (keeps identity; --purge removes it)
 # Never mount this directory into the container: update.sh and update-policy decide which
 # images this robot trusts.
 name: mowgli-connect
@@ -706,10 +797,10 @@ UPDATER
 
 # Nightly update as a cron job of this user (who can already run docker), at a random minute so
 # robots do not all update at once. Marked, so a rerun replaces it and "no" removes it.
-MARK="# mowgli-connect auto-update"
+MARK="# mowgli-connect auto-update $DIR"
 cron_note=""
 if command -v crontab >/dev/null 2>&1; then
-	current=$(crontab -l 2>/dev/null | grep -vF "$MARK" || true)
+	current=$(without_project_cron)
 	if [ "$AUTOUPDATE" = yes ]; then
 		min=$(($(od -An -N1 -tu1 /dev/urandom) % 60))
 		# The path goes into a cron line (run by sh); $DIR has only plain path characters.

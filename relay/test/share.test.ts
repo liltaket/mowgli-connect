@@ -27,7 +27,7 @@ beforeEach(() => {
   vi.stubGlobal("fetch", async (input: string | Request) => {
     const url = typeof input === "string" ? input : input.url;
     if (url === "https://github.com/login/oauth/access_token") return Response.json({ access_token: "gho_fake" });
-    if (url === "https://api.github.com/user") return Response.json(signingIn.profile);
+    if (url === "https://api.github.com/user") return Response.json({ two_factor_authentication: true, ...signingIn.profile });
     const byLogin = /^https:\/\/api\.github\.com\/users\/([^/]+)$/.exec(url);
     const byId = /^https:\/\/api\.github\.com\/user\/(\d+)$/.exec(url);
     if (!byLogin && !byId) return new Response("unexpected", { status: 500 });
@@ -286,6 +286,31 @@ describe("sharing a robot", () => {
     // The owner cannot leave their own robot (they unlink it), and leaving twice finds nothing.
     expect((await post(`/robots/${ra.robotId}/leave`, a, {})).status).toBe(404);
     expect(await member(ra.robotId, a.id)).toEqual({ role: "owner" });
+  });
+
+  it("a guest's AI agents end with their last share, and an owner's are left alone", async () => {
+    const a = await invitedUser();
+    const ra = await ownedRobot(a);
+    const gh = { id: nextId(), login: "agent-guest" };
+    await share(a, ra, gh);
+    const guest = (await signIn(gh))!;
+    const now = nowSeconds();
+    const delegate = (id: string, user: string, key: string) =>
+      testEnv.DB.prepare(
+        `INSERT INTO delegations (delegation_id, user_id, public_key, name, scopes, ttl_seconds, created_at, approved_at, expires_at)
+         VALUES (?, ?, ?, 'agent', 'sessions:readonly', 3600, ?4, ?4, ?5)`,
+      )
+        .bind(id, user, key, now, now + 3600)
+        .run();
+    await delegate("1".repeat(16), guest.id, "guest-key");
+    await delegate("2".repeat(16), a.id, "owner-key");
+    expect((await post(`/robots/${ra.robotId}/leave`, guest, {})).headers.get("Location")).toBe("/?notice=left_last");
+    const rows = await testEnv.DB.prepare("SELECT delegation_id, revoked_at FROM delegations ORDER BY delegation_id").all<{ delegation_id: string; revoked_at: number | null }>();
+    const by = new Map(rows.results.map((r) => [r.delegation_id, r.revoked_at]));
+    expect(by.get("1".repeat(16))).not.toBeNull();
+    expect(by.get("2".repeat(16))).toBeNull();
+    const ev = await testEnv.DB.prepare("SELECT action, outcome FROM delegation_events WHERE delegation_id = ?").bind("1".repeat(16)).all();
+    expect(ev.results).toEqual([{ action: "revoke", outcome: "ok" }]);
   });
 });
 
@@ -736,7 +761,7 @@ describe("guests", () => {
   });
 });
 
-describe("migration 0009", () => {
+describe("migration 0011", () => {
   it("allows the three roles only, keeps the foreign keys and the user index", async () => {
     const owner = await newUser();
     const robot = (await newRobot()).robotId;
@@ -761,7 +786,7 @@ describe("migration 0009", () => {
   });
 
   it("keeps existing members when it rebuilds the table", async () => {
-    // Replay 0009 on a copy shaped like the old table, with rows in it.
+    // Replay 0011 on a copy shaped like the old table, with rows in it.
     const db = testEnv.DB;
     await db.batch([
       db.prepare("CREATE TABLE m9_users (id TEXT PRIMARY KEY)"),
@@ -769,7 +794,7 @@ describe("migration 0009", () => {
     ]);
     const old = "CREATE TABLE members (robot_id TEXT NOT NULL, user_id TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('owner', 'viewer')), label TEXT, created_at INTEGER NOT NULL, PRIMARY KEY (robot_id, user_id))";
     // @ts-expect-error -- a Vite raw import, which has no type declaration here
-    const sql = (await import("../migrations/0009_sharing.sql?raw")).default as string;
+    const sql = (await import("../migrations/0011_sharing.sql?raw")).default as string;
     const statements = (s: string) =>
       s
         .replace(/--.*$/gm, "")

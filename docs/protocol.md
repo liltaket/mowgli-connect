@@ -1,6 +1,8 @@
 # Mowgli Connect protocol (v0, prototype)
 
 The native app's API (sign-in, signed calls, grants for apps) is in [app-api.md](app-api.md).
+Delegations to AI agents (their signed API, and how robots see them) are in
+[agent-delegation.md](agent-delegation.md).
 
 Status: prototype contract between the robot **agent** (`agent/`, Go) and the **relay**
 (`relay/`, Cloudflare Worker + D1). Both sides MUST implement exactly this; change this file first.
@@ -54,7 +56,7 @@ Minted by the relay for one user → one robot, delivered to the browser as a UR
 |---|---|
 | `iss` | relay origin |
 | `aud` | `mc-robot:<robotId>` |
-| `sub` | relay user id (string) |
+| `sub` | relay user id (string), or `dlg:<delegate id>` for an AI agent's read-only session |
 | `name` | display name (informational) |
 | `role` | `owner`, `operator` or `viewer` (see Roles) |
 | `epoch` | robot `sessionEpoch` at mint time |
@@ -118,7 +120,11 @@ Assertion auth. Response `200`:
 `members` lists everyone who may open the robot now, with their role: the owner and the people it
 is shared with, by GitHub id. It is empty unless the robot is `claimed`, and also while the owner
 may no longer own robots (removed by the admin): access to a robot follows its owner's.
-`tunnelToken` and `hostname` only when `claimed`. If no `/self` call has succeeded within
+`tunnelToken` and `hostname` only when `claimed`. `members` can also list delegates
+(`{"userId": "dlg:<delegate id>", "role": "viewer"}`): AI agents with read-only sessions on this
+robot ([agent-delegation.md](agent-delegation.md)). They are only ever viewers, and the agent
+treats them like any other member: a grant's role is capped by the member's role, and a member
+that disappears loses its sessions. If no `/self` call has succeeded within
 `MC_MAX_STALE` (default 10 min), the agent rejects all sessions and grants until the next success. The relay runs on Workers
 Free, whose 100,000 requests/day are shared by the whole Cloudflare account, so the agent polls
 rarely: every `MC_POLL_INTERVAL` (default 3 min, 480 requests/day) while claimed; while unclaimed

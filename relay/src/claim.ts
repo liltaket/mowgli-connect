@@ -12,19 +12,28 @@ type Failure = { ok: false; status: number; message: string };
 export type ClaimResult = { ok: true; robotId: string } | Failure;
 
 /**
- * Reserves one guess from the person's hourly budget (CLAIM_FAILURES_PER_HOUR) in a single
+ * Whose hourly guess budget a claim attempt uses: the person's own by default. A delegate has its
+ * own, smaller one (docs/agent-delegation.md), so a misbehaving agent cannot lock its person out.
+ */
+export interface GuessBudget {
+  key: string;
+  perHour: number;
+}
+
+/**
+ * Reserves one guess from an hourly budget (CLAIM_FAILURES_PER_HOUR for a person) in a single
  * statement, so concurrent requests cannot all pass one count. The row stays as a failure unless
  * the attempt is released (a valid code, or a failure that was not a wrong guess). Returns null
  * when the budget is used up.
  */
-async function reserveAttempt(env: Env, userId: string): Promise<number | null> {
+async function reserveAttempt(env: Env, budget: GuessBudget): Promise<number | null> {
   const now = nowSeconds();
   const row = await env.DB.prepare(
     `INSERT INTO claim_failures (user_id, at)
      SELECT ?1, ?2 WHERE (SELECT COUNT(*) FROM claim_failures WHERE user_id = ?1 AND at > ?3) < ?4
      RETURNING id`,
   )
-    .bind(userId, now, now - 3600, CLAIM_FAILURES_PER_HOUR)
+    .bind(budget.key, now, now - 3600, budget.perHour)
     .first<{ id: number }>();
   return row?.id ?? null;
 }
@@ -34,8 +43,8 @@ async function releaseAttempt(env: Env, id: number): Promise<void> {
 }
 
 /** Runs one pairing-code attempt against the budget; only a wrong or used code keeps counting. */
-async function withAttempt<T extends { ok: boolean }>(env: Env, userId: string, attempt: () => Promise<T | Failure>): Promise<T | Failure> {
-  const id = await reserveAttempt(env, userId);
+async function withAttempt<T extends { ok: boolean }>(env: Env, budget: GuessBudget, attempt: () => Promise<T | Failure>): Promise<T | Failure> {
+  const id = await reserveAttempt(env, budget);
   if (id === null) return RATE_LIMITED;
   const res = await attempt();
   if (res !== INVALID) await releaseAttempt(env, id);
@@ -137,8 +146,9 @@ export async function previewClaim(
   env: Env,
   userId: string,
   rawCode: string,
+  budget: GuessBudget = { key: userId, perHour: CLAIM_FAILURES_PER_HOUR },
 ): Promise<{ ok: true; robotId: string; name: string | null } | Failure> {
-  return withAttempt(env, userId, () => lookupCode(env, rawCode));
+  return withAttempt(env, budget, () => lookupCode(env, rawCode));
 }
 
 async function lookupCode(env: Env, rawCode: string): Promise<{ ok: true; robotId: string; name: string | null } | Failure> {
@@ -161,8 +171,10 @@ export async function claimRobot(
   userId: string,
   rawCode: string,
   label: string | null,
+  budget: GuessBudget = { key: userId, perHour: CLAIM_FAILURES_PER_HOUR },
+  delegationId: string | null = null,
 ): Promise<ClaimResult> {
-  return withAttempt(env, userId, () => claimWithCode(env, provisioner, userId, rawCode, label));
+  return withAttempt(env, budget, () => claimWithCode(env, provisioner, userId, rawCode, label, delegationId));
 }
 
 async function claimWithCode(
@@ -171,6 +183,7 @@ async function claimWithCode(
   userId: string,
   rawCode: string,
   label: string | null,
+  delegationId: string | null,
 ): Promise<ClaimResult> {
   const code = normalizePairingCode(rawCode);
   if (!code) return INVALID;
@@ -231,15 +244,37 @@ async function claimWithCode(
          dns_record_id = ?3, tunnel_token = ?4, updated_at = ?5, claimed_at = ?5, first_online_at = NULL
        WHERE robot_id = ?6 AND status = 'unclaimed'
          AND (?7 IS NULL OR (SELECT COUNT(*) FROM members m JOIN robots o ON o.robot_id = m.robot_id
-                             WHERE m.user_id = ?8 AND m.role = 'owner' AND o.status = 'claimed') < ?7)`,
-    ).bind(tunnel.hostname, tunnel.tunnelId, tunnel.dnsRecordId, sealed, now, robotId, limit, userId),
+                             WHERE m.user_id = ?8 AND m.role = 'owner' AND o.status = 'claimed') < ?7)
+         -- A delegate's claim needs its delegation still active, with robots:claim, at this moment:
+         -- provisioning above takes seconds, so the expiry is compared with the time now (?10), not
+         -- with when the claim started (security review 14 and the final review).
+         AND (?9 IS NULL OR EXISTS (SELECT 1 FROM delegations WHERE delegation_id = ?9 AND user_id = ?8 AND revoked_at IS NULL
+                                      AND expires_at > ?10 AND (' ' || scopes || ' ') LIKE '% robots:claim %'))`,
+    ).bind(tunnel.hostname, tunnel.tunnelId, tunnel.dnsRecordId, sealed, now, robotId, limit, userId, delegationId, nowSeconds()),
     env.DB.prepare(
       "INSERT INTO members (robot_id, user_id, role, label, created_at) SELECT ?, ?, 'owner', ?, ? WHERE changes() > 0",
     ).bind(robotId, userId, label, now),
+    // A delegate's claim puts the robot in its set in the same transaction, only if this claim won
+    // (changes() of the member insert), so a late write cannot bring back a robot that was
+    // unlinked and added again meanwhile (security review 14).
+    env.DB.prepare(
+      "INSERT OR REPLACE INTO delegation_robots (delegation_id, robot_id, via, added_at) SELECT ?1, ?2, 'claim', ?3 WHERE ?1 IS NOT NULL AND changes() > 0",
+    ).bind(delegationId, robotId, now),
     env.DB.prepare("DELETE FROM pairing_codes WHERE robot_id = ?").bind(robotId),
   ]);
   if (upd?.meta.changes !== 1) {
     const still = await env.DB.prepare("SELECT status FROM robots WHERE robot_id = ?").bind(robotId).first<{ status: string }>();
+    if (still?.status === "unclaimed" && delegationId !== null) {
+      const active = await env.DB.prepare(
+        "SELECT 1 AS ok FROM delegations WHERE delegation_id = ? AND revoked_at IS NULL AND expires_at > ? AND (' ' || scopes || ' ') LIKE '% robots:claim %'",
+      )
+        .bind(delegationId, nowSeconds())
+        .first();
+      if (!active) {
+        await restoreCode(); // the person may still add it
+        return { ok: false, status: 403, message: "This agent's access ended while the robot was being added." };
+      }
+    }
     if (still?.status === "unclaimed") {
       // Another robot was added to this account at the same moment and filled its limit, or the
       // person lost access while the tunnel was being made (their limit is now 0). Keep the code
@@ -262,12 +297,23 @@ async function claimWithCode(
   return { ok: true, robotId };
 }
 
+/**
+ * What must still hold when the unlink commits, checked in the same statement: `ownerId` still
+ * owns the robot and, for a delegate, the delegation is active with robots:manage and still has the
+ * robot in its set. A request authorized earlier cannot unlink a robot that was unlinked and added
+ * again (by anyone) in the meantime (security review 14).
+ */
+export interface UnlinkGuard {
+  ownerId: string;
+  delegationId?: string;
+}
+
 /** Owner-only. Access is revoked in D1 first; Cloudflare cleanup failures are retried by the cron. */
 export async function unlinkRobot(
   env: Env,
   provisioner: TunnelProvisioner,
   robotId: string,
-  opts: { onlyIfOwnerNotInvited?: boolean } = {},
+  opts: { onlyIfOwnerNotInvited?: boolean; guard?: UnlinkGuard } = {},
 ): Promise<boolean> {
   const guests = await revokeRobot(env, provisioner, robotId, opts);
   if (guests === null) return false;
@@ -285,7 +331,7 @@ export async function revokeRobot(
   env: Env,
   provisioner: TunnelProvisioner,
   robotId: string,
-  opts: { onlyIfOwnerNotInvited?: boolean } = {},
+  opts: { onlyIfOwnerNotInvited?: boolean; guard?: UnlinkGuard } = {},
 ): Promise<string[] | null> {
   const now = nowSeconds();
   const before = await env.DB.prepare("SELECT hostname, tunnel_id, dns_record_id FROM robots WHERE robot_id = ? AND status = 'claimed'")
@@ -297,10 +343,19 @@ export async function revokeRobot(
       `UPDATE robots SET status = 'revoked', session_epoch = session_epoch + 1, tunnel_token = NULL, updated_at = ?1
        WHERE robot_id = ?2 AND status = 'claimed'
          AND (?3 = 0 OR NOT EXISTS (SELECT 1 FROM members m JOIN invites i ON i.user_id = m.user_id
-                                    WHERE m.robot_id = ?2 AND m.role = 'owner'))`,
-    ).bind(now, robotId, opts.onlyIfOwnerNotInvited ? 1 : 0),
+                                    WHERE m.robot_id = ?2 AND m.role = 'owner'))
+         AND (?4 IS NULL OR EXISTS (SELECT 1 FROM members WHERE robot_id = ?2 AND user_id = ?4 AND role = 'owner'))
+         AND (?5 IS NULL OR (EXISTS (SELECT 1 FROM delegation_robots WHERE delegation_id = ?5 AND robot_id = ?2)
+                             AND EXISTS (SELECT 1 FROM delegations WHERE delegation_id = ?5 AND user_id = ?4 AND revoked_at IS NULL
+                                           AND expires_at > ?1 AND (' ' || scopes || ' ') LIKE '% robots:manage %')))`,
+    ).bind(now, robotId, opts.onlyIfOwnerNotInvited ? 1 : 0, opts.guard?.ownerId ?? null, opts.guard?.delegationId ?? null),
     // In the same transaction, and only if the robot was just revoked.
     env.DB.prepare("DELETE FROM members WHERE robot_id = ? AND changes() > 0 RETURNING user_id, role").bind(robotId),
+    // No delegation keeps an unlinked robot in its robot set, so a robot added again later (by
+    // anyone) does not come back to an agent (docs/agent-delegation.md).
+    env.DB.prepare(
+      "DELETE FROM delegation_robots WHERE robot_id = ?1 AND EXISTS (SELECT 1 FROM robots WHERE robot_id = ?1 AND status = 'revoked')",
+    ).bind(robotId),
   ]);
   if (upd?.meta.changes !== 1) return null;
   await cleanupRevoked(env, provisioner, robotId, { robotId, ...camel(before) });

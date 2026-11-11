@@ -5,6 +5,7 @@ import { page, html, PAIR_JS, SECURITY_HEADERS, STYLE_CSS } from "./html";
 import { APPLE_TOUCH_PNG_B64, FAVICON_ICO_B64, ICON_SVG } from "./icons";
 import { alert, checkHealth } from "./alerts";
 import { appleAppSiteAssociation, DEVICE_IDLE_SECONDS, handleAppApi } from "./appApi";
+import { cleanupStatements, handleDelegateApi } from "./delegation";
 import { createProvisioner } from "./provisioner";
 import { sealStoredTokens } from "./tokenSeal";
 import { refreshLatestAgent } from "./updates";
@@ -53,6 +54,8 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
   const app = await handleAppApi(request, env, url);
   if (app) return app;
+  const delegate = await handleDelegateApi(request, env, url);
+  if (delegate) return delegate;
   if (url.pathname.startsWith("/v1/")) return json({ error: "not_found" }, 404);
 
   const res = await handleBrowser(request, env, url);
@@ -76,6 +79,7 @@ export async function runCleanup(env: Env): Promise<void> {
     env.DB.prepare("DELETE FROM users WHERE last_login_at = 0 AND NOT EXISTS (SELECT 1 FROM members WHERE user_id = users.id)"),
     // Registration spam: forget robots that never got claimed and stopped calling.
     env.DB.prepare("DELETE FROM robots WHERE status = 'unclaimed' AND last_seen_at < ?").bind(now - 7 * 86400),
+    ...cleanupStatements(env, now),
   ]);
 }
 

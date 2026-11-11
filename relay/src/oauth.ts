@@ -59,6 +59,9 @@ export async function startLogin(env: Env, returnTo: string | null): Promise<Res
   u.searchParams.set("code_challenge", challenge);
   u.searchParams.set("code_challenge_method", "S256");
   u.searchParams.set("allow_signup", "false");
+  // GET /user only reports two_factor_authentication to a token with this scope. It is used for
+  // that one field and the token is discarded right after the profile lookup.
+  u.searchParams.set("scope", "read:user");
   return new Response(null, {
     status: 302,
     headers: { Location: u.toString(), "Set-Cookie": oauthCookie(cookieValue, OAUTH_TTL_SECONDS), "Cache-Control": "no-store" },
@@ -78,6 +81,7 @@ interface GithubUser {
   id: number;
   login: string;
   name: string | null;
+  two_factor_authentication?: boolean | null;
 }
 
 export async function finishLogin(env: Env, url: URL, request: Request): Promise<Response> {
@@ -126,6 +130,15 @@ export async function finishLogin(env: Env, url: URL, request: Request): Promise
       `The GitHub account @${gh.login} has not been invited yet.`,
       403,
       html`<p class="muted">Mowgli Connect is invite-only while it is a prototype. Ask the person who runs it to add your account. If someone shared a robot with you, ask them to check that they shared it with this GitHub account. Signed in to GitHub with another account? Sign out on github.com first, then try again.</p>`,
+    );
+  }
+
+  // Fail closed: a missing field (scope not granted, API change) is treated like "off".
+  if (gh.two_factor_authentication !== true) {
+    return fail(
+      `Two-factor authentication is not turned on for the GitHub account @${gh.login}.`,
+      403,
+      html`<p class="muted">Mowgli Connect only signs in GitHub accounts that have two-factor authentication enabled, because a signed-in account can drive a robot. Turn it on at <a href="https://github.com/settings/security">github.com/settings/security</a>, then try again. If it is already on, make sure you approved the "read:user" permission on GitHub's consent screen.</p>`,
     );
   }
 

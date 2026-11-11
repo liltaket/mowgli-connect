@@ -1,6 +1,6 @@
 # Sharing a robot
 
-Status: implemented 2026-11-10 (relay migration 0009, agent with the `operator` role), operator role widened to running the mower 2026-11-11. Wire
+Status: implemented 2026-11-10 (relay migration 0011, agent with the `operator` role), operator role widened to running the mower 2026-11-11. Wire
 contract: [protocol.md](protocol.md). Independent code and security reviews on 2026-11-10; their
 verified findings are fixed and tested, but the fixes have not been reviewed again.
 
@@ -137,6 +137,11 @@ whoever it leaked to.
   GUI keeps map backups, but they are not a safeguard against an operator: it keeps only the
   newest 20 and an operator can create and restore them, so enough distinct backups followed by an
   empty map push the owner's copy out. Back up what matters outside the robot.
+- **AI agents** ([agent-delegation.md](agent-delegation.md)) are viewers on the robots they were
+  given, whatever role their person has there (a person who can control a robot still gives an
+  agent only a read-only session), and a robot's member list carries them as `dlg:<id>` viewers.
+  A guest's agents are revoked with the guest's last share, as are an admin-removed person's. The
+  consent page lists a shared robot with the person's own role.
 - **The generic profile** (any other app) cannot tell controls from settings, so there an
   operator has viewer rights (read-only).
 - **Old agents fail closed.** An agent from before this change ranks `operator` as an unknown role
@@ -236,7 +241,7 @@ query for who can still sign in, one batch for the rest; tested), which keeps an
   calls does on the robot (blade, emergency release, map replace, schedules), comes from the
   GUI and ROS source, not from a run on a robot. The GUI's own bodies for the map editor, the
   blade and schedules are passed on unchecked by the agent.
-- The `members` rebuild in migration 0009 was tested in the local D1 emulator (Miniflare's SQLite),
+- The `members` rebuild in migration 0011 was tested in the local D1 emulator (Miniflare's SQLite),
   including a replay on a table with rows, not on the production database.
 - GitHub's rate limit for the app-credential lookups was not measured.
 

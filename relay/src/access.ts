@@ -1,4 +1,5 @@
 import type { Env } from "./env";
+import { nowSeconds } from "./util";
 
 /** Robots a person may own unless the admin sets another limit for them. */
 export const DEFAULT_ROBOT_LIMIT = 3;
@@ -66,8 +67,8 @@ export async function canSignIn(env: Env, userId: string, login: string): Promis
   return maySignIn(env, userId, login, (await standings(env, [userId])).get(userId)!);
 }
 
-/** D1 binds at most 100 parameters per statement. */
-const MAX_PARAMS = 100;
+/** D1 binds at most 100 parameters per statement; one is kept for a timestamp. */
+const MAX_PARAMS = 99;
 
 function chunks<T>(items: T[]): T[][] {
   const out: T[][] = [];
@@ -132,9 +133,18 @@ export async function afterShareEnded(env: Env, userId: string): Promise<boolean
 export async function afterSharesEnded(env: Env, userIds: string[]): Promise<Set<string>> {
   const gone = new Set<string>();
   for (const [id, s] of await standings(env, userIds)) if (s.login === null || !maySignIn(env, id, s.login, s)) gone.add(id);
+  const now = nowSeconds();
   const steps = chunks([...gone]).flatMap((ids) => {
     const in_ = placeholders(ids.length);
     return [
+      // Their AI agents (docs/agent-delegation.md) go with their last way in; a person who is
+      // signed out has nothing to delegate.
+      env.DB.prepare(
+        `INSERT INTO delegation_events (delegation_id, at, actor, action, outcome, detail)
+         SELECT delegation_id, ?${ids.length + 1}, 'admin', 'revoke', 'ok', 'the person lost access to every robot' FROM delegations
+         WHERE user_id IN (${in_}) AND revoked_at IS NULL`,
+      ).bind(...ids, now),
+      env.DB.prepare(`UPDATE delegations SET revoked_at = ?${ids.length + 1} WHERE user_id IN (${in_}) AND revoked_at IS NULL`).bind(...ids, now),
       env.DB.prepare(`DELETE FROM sessions WHERE user_id IN (${in_})`).bind(...ids),
       env.DB.prepare(`DELETE FROM devices WHERE user_id IN (${in_})`).bind(...ids),
       env.DB.prepare(`DELETE FROM app_codes WHERE user_id IN (${in_})`).bind(...ids),

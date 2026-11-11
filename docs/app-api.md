@@ -117,6 +117,8 @@ owner still has access.
 | `POST /v1/app/robots/{robotId}/leave` | a person the robot is shared with leaves it: `{ok, signedOut}`; `signedOut` is true when that was their last share, which also signed this device out (the next call answers 401) |
 | `POST /v1/app/claim` | body `{code, label?, step: "preview"\|"confirm"}`: preview `{robotId, name, hostname}`, confirm `{robotId, hostname}`; same limits and guess budget as the web |
 | `POST /v1/app/sign-out` | deletes this device and, in the same transaction, signs everyone out of the robots its owner owns (their session epoch goes up, so robot sessions and unused grants from before stop working at the robot's next successful sync: normally within `MC_POLL_INTERVAL`, 3 minutes, and at the latest after `MC_MAX_STALE`, 10 minutes, when the robot stops accepting anything until it syncs); pending sign-ins of that key are cancelled; robots the person only views are not touched. A second call answers 401 `unknown_device` |
+| `GET /v1/app/delegations` | `{delegations: [{delegateId, name, scopes, expiresAt, revokedAt, lastUsedAt}]}`: the AI agents that may act for this person ([agent-delegation.md](agent-delegation.md)); empty when delegation is off for them |
+| `POST /v1/app/delegations/{delegateId}/revoke` | ends that delegation now (`{ok: true}`; 404 if it is not this person's or already revoked). The app can only list and revoke; approving and renewing happen in the browser |
 
 Share calls answer `404 not_found` to anyone who does not own the robot (a person it is shared
 with included), as for a robot that does not exist; `{userId}` is `gh:<numeric GitHub id>`.

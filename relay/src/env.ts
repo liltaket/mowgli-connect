@@ -23,6 +23,7 @@ export interface RelayEnv {
   APP_IOS_APP_IDS?: string; // <TeamID>.<bundle id>, comma list: enables the native app API (docs/app-api.md)
   APP_REDIRECT_URIS?: string; // optional private-use scheme callbacks, <bundle id>:/<path> (free Apple teams)
   TUNNEL_TOKEN_KEY?: string; // 32 bytes base64url: encrypts tunnel tokens at rest
+  DELEGATION_USERS?: string; // comma list of gh:<id> (or "*") who may delegate to AI agents (docs/agent-delegation.md); empty = off
 }
 
 declare global {

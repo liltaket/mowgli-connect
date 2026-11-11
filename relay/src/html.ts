@@ -249,6 +249,17 @@ input[type=number]{width:9rem;font:inherit;padding:.6rem .7rem;border:1px solid 
 .update{color:var(--amber);font-weight:600}
 .manage code.cmdline{color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:.4rem .55rem;margin:.35rem 0;display:block}
 .orphan-unlink{grid-column:1/-1;margin-top:.4rem}
+.person>.actions{grid-column:1/-1;margin:.4rem 0 0}
+.person>.actions form{display:inline}
+button.small{min-height:38px;padding:.4rem .9rem;font-size:.93rem}
+.consent{list-style:none;margin:0 0 1rem;padding:0;display:grid;gap:.5rem}
+.consent li{background:var(--fog);border:1px solid var(--line);border-radius:10px;padding:.6rem .8rem}
+.consent label{font-weight:400;margin:0}
+.consent p{margin:.2rem 0 0;font-size:.92rem}
+select{font:inherit;padding:.5rem .6rem;border:1px solid var(--line-strong);border-radius:8px;background:var(--paper);color:inherit}
+.table-wrap{overflow-x:auto}
+table.activity{border-collapse:collapse;width:100%;font-size:.9rem}
+table.activity th,table.activity td{text-align:left;padding:.35rem .5rem;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}
 .empty{display:grid;gap:.25rem}
 .empty strong{color:var(--ink)}
 .actions{display:flex;flex-wrap:wrap;gap:.6rem}
