@@ -99,7 +99,7 @@ sequenceDiagram
     participant Relay as connect.bronc.app
     participant Robot as <name>.bronc.app (robot agent)
     CLI->>CLI: init: Ed25519 key, file 600 outside any repository
-    CLI-->>Browser: prints /delegate/authorize?key=…&name=…&scopes=…&ttl=…
+    CLI-->>Browser: prints /delegate/authorize?key=…&req=… (signed: account, name, scopes, ttl)
     Browser->>Relay: GET consent page (no writes)
     Browser->>Relay: POST approve (Origin-checked, the person's choices)
     CLI->>Relay: GET /v1/delegate/self, signed: active
@@ -122,14 +122,20 @@ the private key.
 
 ### 2. Consent
 
-`mc-delegate request` prints a link:
+`mc-delegate request --account <GitHub login>` prints a link:
 
 ```text
-https://connect.bronc.app/delegate/authorize?key=<raw public key, base64url>&name=<agent name>&scopes=robots:read+robots:claim&ttl=86400
+https://connect.bronc.app/delegate/authorize?key=<raw public key, base64url>&req=<signed request>
 ```
 
-The link holds only public data, so the relay stores nothing until the person approves. Signed
-in, the person sees:
+`req` is a compact JWS signed with the delegate key, header
+`{"alg":"EdDSA","typ":"mc-delegate-request+jwt"}`, claims `iss` (the delegate id), `aud` (the
+relay origin), `account` (the GitHub login that may approve it), `name`, `scopes`
+(space-separated), `ttl` (seconds), `iat` and `exp` (at most 30 minutes later; the CLI uses 20).
+The relay checks the signature and the times, and shows the page only to the named account:
+whoever else sees the link cannot approve the key for their own account, and nobody can change
+the name, the scopes or the duration without the key (security review 14). The link holds no
+secret, and the relay stores nothing until the person approves. Signed in, the person sees:
 
 - the agent's name, marked as chosen by the agent, and the key fingerprint, with the instruction
   to compare it with the one the terminal shows;
@@ -141,7 +147,8 @@ in, the person sees:
 - the expiry: 1 hour, 8 hours, 24 hours (default), 7 days or 30 days;
 - a required checkbox, "I started this myself, just now, and the fingerprint matches";
 - if this key already has a delegation for this person, what it has now. Approving replaces its
-  scopes, its ticked robots and its expiry. Robots it added itself stay in its set.
+  scopes, its ticked robots and its expiry. Robots it added itself stay in its set. A key that was
+  revoked can never be approved again (see below).
 
 **Approve** posts the form. The relay checks the Origin like every browser form, validates every
 field again, and creates or replaces the delegation. A key that belongs to another person's
@@ -165,9 +172,10 @@ Every call carries `Authorization: MC-Delegate <jws>`: a compact JWS, header
 different pairing code or robot id. Bodies are at most 4 KB.
 
 Every call then checks, in this order: the signature and claims (an unknown key or a bad signature
-writes nothing); that the delegation is not revoked and has not expired; the jti (single use);
-that the person still has access and is still named in `DELEGATION_USERS`; the call's scope; and
-the per-delegation rate limit, in the same statement that writes the activity log entry.
+writes nothing); that the delegation is not revoked and has not expired; the hourly call limit
+(read only, so a delegation over it writes nothing); the jti (single use); that the person still
+has access and is still named in `DELEGATION_USERS`; the call's scope; and then one activity log
+entry, written in the same statement as the call limit and any per-action limit.
 
 ### 4. API
 
@@ -207,17 +215,22 @@ role (`minRole`), so:
 
 | Limit | Value | Where |
 |---|---|---|
-| Calls per delegation | 120 per hour, counted in the same statement that writes the activity entry | relay |
+| Calls per delegation | 120 per hour. Checked before anything is written (a delegation over its limit writes nothing, its replay record included), and counted by the activity entry every authenticated call writes, malformed ones included | relay |
+| Read-only grants per delegation and robot | 6 per hour, so a delegate cannot fill the robot's session table (1,024 sessions of 12 hours, shared by everyone); the CLI reuses a session for 11 hours | relay, one statement |
 | Robot claims (confirm) per delegation | 10 per hour, and at most 10 robots it added that are still linked | relay, one statement |
 | Wrong pairing codes | 5 per hour per delegation, separate from the person's own 10, so a misbehaving agent cannot lock the person out of adding robots | relay, existing guess budget |
 | Robots per person | the normal robot limit applies to robots a delegate adds | relay, existing |
 | Active delegations per person | 5 | relay |
 | Body size | 4 KB | relay |
-| Unauthenticated writes | none: the consent link holds only public data, and a bad or unknown signature writes nothing | relay |
+| Unauthenticated writes | none: the consent link is signed by the agent and stored nowhere until approved, and a bad or unknown signature writes nothing | relay |
 
-At 120 calls per hour, one delegation writes at most about 12,000 D1 rows a day (replay record,
-activity entry and the cron's deletions), well inside the free plan's 100,000. The existing
-per-IP WAF rule still covers the relay.
+At 120 calls per hour, one delegation writes at most about 20,000 D1 rows a day (a replay record,
+an activity entry and its index, an occasional outcome update, and the cron's deletions), a fifth
+of the free plan's 100,000. A delegation over its limit writes nothing more, but each refused call
+still costs a Worker request and reads about 120 rows to count the hour, so a stolen key that keeps
+calling until it is revoked could use up the free plan's 5 million daily reads after about 40,000
+calls. Revoke it, and add `/v1/delegate/*` to the recommended per-IP WAF rate-limit rule
+(relay/README.md).
 
 ## Revocation and renewal
 
@@ -231,7 +244,12 @@ per-IP WAF rule still covers the relay.
 - **Admin**: removing a person revokes all their delegations; access checks on every call also
   stop them at once.
 
-Revoked and expired delegations stay listed, with their activity, for 90 days.
+**Revoking is final for that key** (security review 14): a key is revoked when it may have been
+copied, so approving it again would hand the copy back. The relay keeps a revoked delegation as a
+record for good and refuses to approve its key again; the consent page and the CLI say to create
+a new key (`mc-delegate --profile <new name> init`). This holds for every revocation, including
+the agent's own `mc-delegate revoke`. Expired delegations can be renewed; they and all activity
+are deleted 90 days after they end. Revoked delegations stay listed for 90 days.
 
 ## Activity log
 
@@ -246,22 +264,25 @@ shown escaped, like everywhere else on the relay's pages.
 
 | Threat | Mitigation | Residual risk |
 |---|---|---|
-| **Stolen agent key** (malware on the machine, a backup, a copied home directory) | The key is useless without a live delegation; a delegation has short expiry, a scope set, a robot set and caps; it can be revoked at once from the robots page or the phone; every use is in the activity log with its outcome. The worst it can do: read the robot set's status, add robots with codes it knows, rename or unlink robots in the set (when `robots:manage` was granted), and look at those robots read-only. | Until revoked or expired, the thief has exactly the delegation's rights, and a viewer session already open on a robot lasts until that robot's next sync after revocation (normally 3, at most 10 minutes). A thief with the key and the person's browser is the person. |
+| **Stolen agent key** (malware on the machine, a backup, a copied home directory) | The key is useless without a live delegation; a delegation has short expiry, a scope set, a robot set and caps; it can be revoked at once from the robots page or the phone, and a revoked key can never be approved again, so the copy stays useless; every use is in the activity log with its outcome. The worst it can do: read the robot set's status, add robots with codes it knows, rename or unlink robots in the set (when `robots:manage` was granted), and look at those robots read-only. | Until revoked or expired, the thief has exactly the delegation's rights, and a viewer session already open on a robot lasts until that robot's next sync after revocation (normally 3, at most 10 minutes). A thief with the key and the person's browser is the person. |
 | **Leaked signed request** (logs, a proxy, a crash report) | Valid once, for at most 60 seconds, bound to method, URL and body hash. | None beyond the original request. |
-| **Prompt-injected agent** (instructions hidden in a web page, an issue, or a robot's own name or GUI data) | Scopes and the robot set bound what it can do; owner sessions do not exist; unlink is limited to the robot set and needs `robots:manage`; claims are capped; the MCP tools mark robot-supplied text as untrusted data and require an explicit `confirm: true` for unlink and claim; the agent cannot widen or renew its own delegation; the activity log shows `denied` attempts. | Within its scopes it can do damage: unlink a robot in the set (the robot then needs a new pairing on site), or add a robot whose code an attacker fed it. Do not tick real mowers together with `robots:manage` unless you need to. |
+| **Prompt-injected agent** (instructions hidden in a web page, an issue, or a robot's own name or GUI data) | Scopes and the robot set bound what it can do; owner sessions do not exist; unlink is limited to the robot set and needs `robots:manage`; claims are capped; the MCP tools mark robot-supplied text as untrusted data (the robot's answer, its headers reduced to a short media type, stays inside one delimited block) and make claim and unlink a deliberate second step (`confirm: true`); the agent cannot widen or renew its own delegation; the activity log shows `denied` attempts. `confirm` is chosen by the model, not by a person: the human check is Claude Code's own permission prompt for each MCP tool, so do not auto-allow `claim_robot` and `unlink_robot`. | Within its scopes it can do damage: unlink a robot in the set (the robot then needs a new pairing on site), or add a robot whose code an attacker fed it. Do not tick real mowers together with `robots:manage` unless you need to. |
 | **Agent drives the person's browser** (Claude in Chrome, a desktop-control tool) and approves its own consent page or a wider one | The consent page requires a ticked "I started this myself" box and shows the fingerprint; the delegate API cannot approve anything. | An agent that controls a browser signed in to Mowgli Connect can do anything the person can there. Do not give an agent control of a browser profile that is signed in to connect.bronc.app. A WebAuthn confirmation (passkey) on approval would close this; it is a possible later addition. |
-| **Phishing a consent link** (someone sends the person a link with their own key and a convincing name) | The page says that only a link from your own terminal, just now, should be approved, shows a fingerprint to compare, and needs the confirmation box; scopes are limited and expiry short; the delegation shows under AI agents. | A person who approves a stranger's link gives that stranger the approved rights until they revoke. |
+| **Phishing a consent link** (someone sends the person a link with their own key and a convincing name) | The page says that only a link from your own terminal, just now, should be approved, shows a fingerprint to compare, and needs the confirmation box; a link works for 30 minutes at most; scopes are limited and expiry short; the delegation shows under AI agents. | A person who approves a stranger's link gives that stranger the approved rights until they revoke. |
 | **Malicious robot** (a robot an agent added, or a robot in the set) | Its name and data are untrusted text: escaped on the relay's pages, marked as data in the MCP tool output and limited in size. A grant is bound to that robot (`aud`), lives 60 seconds and names the delegate, not the person, so the robot learns nothing it could use elsewhere. The robot can never get the agent's key. Robots the agent added are marked "added by <agent>" on the robots page. | A malicious robot can feed the agent false status, or instructions (see prompt injection), and its GUI could try to phish the person who opens it as owner in a browser. Unlink robots you do not recognise. |
 | **Replay** | Single-use `jti` stored until `exp` + skew, 60-second lifetime, `aud`, `htm`, `htu` and `bdh` bound. Grants are single-use on the robot as before. | None known. |
 | **CSRF on the consent page** | GET writes nothing; the POST requires the relay's Origin (or `Sec-Fetch-Site: same-origin`); the page cannot be framed (`frame-ancestors 'none'`); the approval re-validates every field and needs the confirmation box. | None known. |
 | **Privilege escalation via claim** | A claimed robot is the person's robot with the normal owner rights *for the person*, not for the agent: the agent still has only its scopes, viewer sessions and the robot set. The robot set is cleared when a robot is unlinked, so a robot the person later adds again by hand does not return to the agent. Claims share the existing code path: single-use codes, the robot limit and a guess budget. | A robot claimed by an agent appears on the person's robots page as theirs. |
 | **Escalation inside the robot** | The robot caps a delegate's session at viewer because the relay lists `dlg:<id>` as a viewer only; even a grant naming `owner` gets a viewer session. | The viewer policy for the MowgliNext GUI is an allow list, but it has not been checked against every screen of the real GUI (docs/architecture.md). |
-| **Denial of service through the agent** | Per-delegation call, claim and guess limits; a separate guess budget; no unauthenticated writes. | A delegation can use up its own limits and, at most, about an eighth of the relay's daily D1 writes. |
+| **Another person approves your agent's key** (several people in `DELEGATION_USERS` and one sees the link first; found by security review 14) | The link is signed by the key and names the one account that may approve it; the relay refuses everyone else, and `mc-delegate request --wait` refuses an approval by another account. | None known. |
+| **Denial of service through the agent** | Per-delegation call, claim, grant and guess limits, checked before writing; a separate guess budget; no unauthenticated writes. | A delegation can use up its own limits and, at most, a fifth of the relay's daily D1 writes; a stolen key used until revocation can cost D1 reads and Worker requests (see Rate limits). |
 | **A copy of the relay database** | Delegations hold only public keys, names and scopes. | None beyond the existing model. |
 | **Relay or Cloudflare account compromised** | Unchanged: the root of trust (SECURITY.md). | Unchanged. |
 
-A request that has already been authenticated when a revocation commits can still finish, for
-example an unlink that is a few milliseconds in. The activity log records it.
+Claims, unlinks, labels and grants re-check the delegation in the statement that commits them, so
+a revocation, an expiry or an unlink that commits first stops them, even when a claim has spent
+seconds creating the tunnel (security review 14). A list or status read already under way when a
+revocation commits can still answer; the activity log records it.
 
 ## Setup
 
@@ -272,12 +293,12 @@ example an unlink that is a few milliseconds in. The activity log records it.
    ```sh
    cd delegate && go build -o ~/.local/bin/mc-delegate ./cmd/mc-delegate
    mc-delegate init --relay https://connect.bronc.app
-   mc-delegate request --name "Claude (T3, laptop)" \
+   mc-delegate request --account <your GitHub login> --name "Claude (T3, laptop)" \
      --scopes robots:read,robots:claim,robots:manage,sessions:readonly --ttl 24h --wait
    ```
 
-   Open the printed link, check the fingerprint against the one in the terminal, tick the robots
-   you want it to see, and approve.
+   Open the printed link within 20 minutes, signed in as that account, check the fingerprint
+   against the one in the terminal, tick the robots you want it to see, and approve.
 3. Add the MCP server to Claude Code (user scope, so it is available in every project):
 
    ```sh
@@ -285,7 +306,8 @@ example an unlink that is a few milliseconds in. The activity log records it.
    ```
 
    Use `--profile <name>` on every command for a second identity, for example one for the
-   Simulation Farm.
+   Simulation Farm. Claude Code asks before each MCP tool call unless you allow it; keep asking
+   for `claim_robot` and `unlink_robot`.
 
 The MCP server offers `connect_status`, `list_robots`, `claim_robot`, `label_robot`,
 `unlink_robot` and `read_robot` (a read-only `GET` on the robot's GUI API through a viewer

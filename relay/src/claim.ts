@@ -244,8 +244,12 @@ async function claimWithCode(
          dns_record_id = ?3, tunnel_token = ?4, updated_at = ?5, claimed_at = ?5, first_online_at = NULL
        WHERE robot_id = ?6 AND status = 'unclaimed'
          AND (?7 IS NULL OR (SELECT COUNT(*) FROM members m JOIN robots o ON o.robot_id = m.robot_id
-                             WHERE m.user_id = ?8 AND m.role = 'owner' AND o.status = 'claimed') < ?7)`,
-    ).bind(tunnel.hostname, tunnel.tunnelId, tunnel.dnsRecordId, sealed, now, robotId, limit, userId),
+                             WHERE m.user_id = ?8 AND m.role = 'owner' AND o.status = 'claimed') < ?7)
+         -- A delegate's claim needs its delegation still active, with robots:claim, at this moment
+         -- (provisioning above takes seconds; security review 14).
+         AND (?9 IS NULL OR EXISTS (SELECT 1 FROM delegations WHERE delegation_id = ?9 AND user_id = ?8 AND revoked_at IS NULL
+                                      AND expires_at > ?5 AND (' ' || scopes || ' ') LIKE '% robots:claim %'))`,
+    ).bind(tunnel.hostname, tunnel.tunnelId, tunnel.dnsRecordId, sealed, now, robotId, limit, userId, delegationId),
     env.DB.prepare(
       "INSERT INTO members (robot_id, user_id, role, label, created_at) SELECT ?, ?, 'owner', ?, ? WHERE changes() > 0",
     ).bind(robotId, userId, label, now),
@@ -259,6 +263,17 @@ async function claimWithCode(
   ]);
   if (upd?.meta.changes !== 1) {
     const still = await env.DB.prepare("SELECT status FROM robots WHERE robot_id = ?").bind(robotId).first<{ status: string }>();
+    if (still?.status === "unclaimed" && delegationId !== null) {
+      const active = await env.DB.prepare(
+        "SELECT 1 AS ok FROM delegations WHERE delegation_id = ? AND revoked_at IS NULL AND expires_at > ? AND (' ' || scopes || ' ') LIKE '% robots:claim %'",
+      )
+        .bind(delegationId, nowSeconds())
+        .first();
+      if (!active) {
+        await restoreCode(); // the person may still add it
+        return { ok: false, status: 403, message: "This agent's access ended while the robot was being added." };
+      }
+    }
     if (still?.status === "unclaimed") {
       // Another robot was added to this account at the same moment and filled its limit. Keep the
       // code valid. The tunnel and the reserved name stay with the robot and are reused when it is

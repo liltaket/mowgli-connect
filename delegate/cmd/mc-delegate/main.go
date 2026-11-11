@@ -26,8 +26,8 @@ const usage = `Usage: mc-delegate [--profile NAME] <command> [arguments]
 
 Commands:
   init [--relay URL]                    create this profile's key (once)
-  request --name NAME --scopes LIST [--ttl 24h] [--wait]
-                                        print the link to approve, in your browser
+  request --account LOGIN --name NAME --scopes LIST [--ttl 24h] [--wait]
+                                        print the link that account approves, in its browser
   status                                show the delegation
   robots                                list the robots it may see
   claim CODE [--label NAME] [--preview] add a robot with its pairing code
@@ -126,7 +126,7 @@ func run(ctx context.Context, argv []string, stdin io.Reader, stdout, stderr io.
 		if err := c.Revoke(ctx); err != nil {
 			return explain(err)
 		}
-		fmt.Fprintln(stdout, "Revoked. This key can do nothing until it is approved again.")
+		fmt.Fprintln(stdout, "Revoked. This key can never be approved again; for new access, create a new key with --profile <new name> init.")
 		return nil
 	case "mcp":
 		return (&mcp.Server{API: c, Version: version}).Serve(ctx, stdin, stdout)
@@ -154,6 +154,7 @@ func cmdRequest(ctx context.Context, p *client.Profile, c *client.Client, rest [
 	fs := flag.NewFlagSet("request", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	host, _ := os.Hostname()
+	account := fs.String("account", p.Account, "your GitHub login: only this account can approve the link")
 	name := fs.String("name", "AI agent on "+host, "name shown on the consent page")
 	scopes := fs.String("scopes", "robots:read", "comma-separated scopes")
 	ttl := fs.String("ttl", "24h", "how long: 1h, 8h, 24h, 7d or 30d")
@@ -165,8 +166,17 @@ func cmdRequest(ctx context.Context, p *client.Profile, c *client.Client, rest [
 	if err != nil {
 		return err
 	}
+	if err := client.CheckAccount(*account); err != nil {
+		return err
+	}
+	if !strings.EqualFold(*account, p.Account) {
+		if err := p.SaveAccount(*account); err != nil {
+			return err
+		}
+	}
 	list := strings.FieldsFunc(*scopes, func(r rune) bool { return r == ',' || r == ' ' })
-	fmt.Fprintf(stdout, "Open this link in the browser where you are signed in to Mowgli Connect, check that it shows the fingerprint\n\n  %s\n\nand approve:\n\n%s\n\n", client.Fingerprint(p.ID()), client.ConsentURL(p.Relay, p.PublicKeyB64(), *name, list, d))
+	fmt.Fprintf(stdout, "Open this link in the browser where you are signed in to Mowgli Connect as @%s, check that it shows the fingerprint\n\n  %s\n\nand approve (the link works for %d minutes):\n\n%s\n\n",
+		*account, client.Fingerprint(p.ID()), int(client.RequestValidity/time.Minute), c.ConsentURL(*account, *name, list, d))
 	if !*wait {
 		return nil
 	}
@@ -174,6 +184,9 @@ func cmdRequest(ctx context.Context, p *client.Profile, c *client.Client, rest [
 	deadline := time.Now().Add(10 * time.Minute)
 	for time.Now().Before(deadline) {
 		s, err := c.Self(ctx)
+		if err == nil && !strings.EqualFold(s.Login, *account) {
+			return fmt.Errorf("the key was approved by @%s, not @%s: revoke it under AI agents on that account's robots page and start over with a new --profile", s.Login, *account)
+		}
 		if err == nil && s.ExpiresAt > time.Now().Unix() {
 			fmt.Fprintf(stdout, "Approved for @%s until %s: %s\n", s.Login, time.Unix(s.ExpiresAt, 0).UTC().Format(time.RFC3339), strings.Join(s.Scopes, " "))
 			return nil
@@ -250,7 +263,7 @@ func explain(err error) error {
 		case ae.Code == "delegation_expired":
 			return fmt.Errorf("%w; renew it under AI agents on the robots page, or run mc-delegate request", err)
 		case ae.Code == "delegation_revoked":
-			return fmt.Errorf("%w; run mc-delegate request to ask for access again", err)
+			return fmt.Errorf("%w; a revoked key can never be approved again: create a new one with mc-delegate --profile <new name> init", err)
 		}
 	}
 	return err

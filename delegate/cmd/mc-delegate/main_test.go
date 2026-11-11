@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -21,8 +23,14 @@ func TestInitAndRequestNeverPrintTheKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := run(context.Background(), []string{"--profile", "farm", "request", "--name", "Sim Farm", "--scopes", "robots:claim,robots:manage", "--ttl", "7d"}, nil, &out, &errOut); err != nil {
+	if err := run(context.Background(), []string{"--profile", "farm", "request", "--name", "Sim Farm", "--scopes", "robots:claim"}, nil, &out, &errOut); err == nil {
+		t.Fatal("request without --account accepted")
+	}
+	if err := run(context.Background(), []string{"--profile", "farm", "request", "--account", "Bruno", "--name", "Sim Farm", "--scopes", "robots:claim,robots:manage", "--ttl", "7d"}, nil, &out, &errOut); err != nil {
 		t.Fatal(err)
+	}
+	if cfg, _ := os.ReadFile(filepath.Join(home, "farm", "config.json")); !strings.Contains(string(cfg), `"account": "Bruno"`) {
+		t.Fatalf("account not remembered: %s", cfg)
 	}
 	all := out.String() + errOut.String()
 	if strings.Contains(all, strings.TrimSpace(string(seed))) {
@@ -34,8 +42,15 @@ func TestInitAndRequestNeverPrintTheKey(t *testing.T) {
 	}
 	u, _ := url.Parse(strings.Fields(all[i:])[0])
 	q := u.Query()
-	if q.Get("name") != "Sim Farm" || q.Get("scopes") != "robots:claim robots:manage" || q.Get("ttl") != "604800" || len(q.Get("key")) != 43 {
+	parts := strings.Split(q.Get("req"), ".")
+	if len(q.Get("key")) != 43 || len(parts) != 3 {
 		t.Fatalf("link %s", u)
+	}
+	var claims map[string]any
+	pb, _ := base64.RawURLEncoding.DecodeString(parts[1])
+	json.Unmarshal(pb, &claims)
+	if claims["name"] != "Sim Farm" || claims["scopes"] != "robots:claim robots:manage" || claims["ttl"] != 604800.0 || claims["account"] != "Bruno" {
+		t.Fatalf("request %v", claims)
 	}
 	if err := run(context.Background(), []string{"--profile", "farm", "init"}, nil, &out, &errOut); err == nil {
 		t.Fatal("init must not replace a key")

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -245,9 +246,36 @@ func TestKeyFiles(t *testing.T) {
 	}
 }
 
-func TestConsentURL(t *testing.T) {
-	u := ConsentURL("https://connect.bronc.app", "KEY", "Claude (T3)", []string{"robots:read", "robots:claim"}, 24*time.Hour)
-	if u != "https://connect.bronc.app/delegate/authorize?key=KEY&name=Claude+%28T3%29&scopes=robots%3Aread+robots%3Aclaim&ttl=86400" {
-		t.Fatal(u)
+func TestConsentURLIsSignedForOneAccount(t *testing.T) {
+	k := testKey()
+	c := &Client{Relay: "https://connect.bronc.app", Key: k, Now: func() time.Time { return time.Unix(1794000000, 0) }}
+	u, err := url.Parse(c.ConsentURL("bruno", "Claude (T3)", []string{"robots:read", "robots:claim"}, 24*time.Hour))
+	if err != nil || u.Path != "/delegate/authorize" || u.Query().Get("key") != b64.EncodeToString(k.Public().(ed25519.PublicKey)) {
+		t.Fatalf("%v %s", err, u)
+	}
+	parts := strings.Split(u.Query().Get("req"), ".")
+	sig, _ := b64.DecodeString(parts[2])
+	if len(parts) != 3 || !ed25519.Verify(k.Public().(ed25519.PublicKey), []byte(parts[0]+"."+parts[1]), sig) {
+		t.Fatal("request not signed by the key")
+	}
+	var h, claims map[string]any
+	hb, _ := b64.DecodeString(parts[0])
+	pb, _ := b64.DecodeString(parts[1])
+	json.Unmarshal(hb, &h)
+	json.Unmarshal(pb, &claims)
+	want := map[string]any{"iss": "mw3am46w5weex4a4", "aud": "https://connect.bronc.app", "account": "bruno", "name": "Claude (T3)",
+		"scopes": "robots:read robots:claim", "ttl": 86400.0, "iat": 1794000000.0, "exp": 1794001200.0}
+	if h["typ"] != "mc-delegate-request+jwt" || len(claims) != len(want) {
+		t.Fatalf("%v %v", h, claims)
+	}
+	for k, v := range want {
+		if claims[k] != v {
+			t.Errorf("%s = %v, want %v", k, claims[k], v)
+		}
+	}
+	for _, bad := range []string{"", "-bruno", "a b", "bruno--x", strings.Repeat("a", 40)} {
+		if CheckAccount(bad) == nil {
+			t.Errorf("account %q accepted", bad)
+		}
 	}
 }

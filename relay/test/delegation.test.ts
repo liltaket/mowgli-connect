@@ -3,7 +3,7 @@ import { b64urlEncode, deriveRobotId, signJws } from "../src/crypto";
 import { b64urlDecode } from "../src/crypto";
 import { bodyHash, fingerprint, verifyDelegateAssertion } from "../src/delegateAuth";
 import { unlinkRobot } from "../src/claim";
-import { CALLS_PER_HOUR, MAX_ACTIVE_DELEGATIONS, MAX_CLAIMED_ROBOTS, WRONG_CODES_PER_HOUR } from "../src/delegation";
+import { CALLS_PER_HOUR, GRANTS_PER_ROBOT_PER_HOUR, MAX_ACTIVE_DELEGATIONS, MAX_CLAIMED_ROBOTS, WRONG_CODES_PER_HOUR } from "../src/delegation";
 import { createProvisioner } from "../src/provisioner";
 import type { Env } from "../src/env";
 import { nowSeconds, randomToken } from "../src/util";
@@ -39,8 +39,23 @@ async function api(dl: Delegate, method: string, path: string, body?: unknown, e
   );
 }
 
-function consentQuery(dl: Delegate, scopes: string[], o: { name?: string; ttl?: number } = {}): URLSearchParams {
-  return new URLSearchParams({ key: dl.publicKey, name: o.name ?? "Test agent", scopes: scopes.join(" "), ttl: String(o.ttl ?? 86400) });
+async function loginOf(u: TestUser): Promise<string> {
+  return (await db.prepare("SELECT login FROM users WHERE id = ?").bind(u.id).first<{ login: string }>())!.login;
+}
+
+interface ConsentOptions {
+  name?: string;
+  ttl?: number;
+  claims?: Record<string, unknown>;
+  signWith?: CryptoKey;
+}
+
+/** The consent link's query, signed with the delegate key for `who`'s account, as the CLI does. */
+async function consentQuery(who: TestUser | string, dl: Delegate, scopes: string[], o: ConsentOptions = {}): Promise<URLSearchParams> {
+  const account = typeof who === "string" ? who : await loginOf(who);
+  const now = nowSeconds();
+  const claims = { iss: dl.id, aud: ORIGIN, account, name: o.name ?? "Test agent", scopes: scopes.join(" "), ttl: o.ttl ?? 86400, iat: now, exp: now + 1200, ...o.claims };
+  return new URLSearchParams({ key: dl.publicKey, req: await signJws({ alg: "EdDSA", typ: "mc-delegate-request+jwt" }, claims, o.signWith ?? dl.key) });
 }
 
 function getPage(path: string, user: TestUser | null, e: Env = env): Promise<Response> {
@@ -53,8 +68,15 @@ function postForm(path: string, user: TestUser, form: URLSearchParams, origin: s
   return call(path, { method: "POST", headers, body: form.toString(), redirect: "manual" }, e);
 }
 
-function approvalForm(dl: Delegate, scopes: string[], robots: string[] = [], o: { ttl?: number; requested?: string[]; confirm?: boolean; name?: string } = {}): URLSearchParams {
-  const f = consentQuery(dl, o.requested ?? scopes, { ttl: o.ttl, name: o.name });
+async function approvalForm(
+  who: TestUser | string,
+  dl: Delegate,
+  scopes: string[],
+  robots: string[] = [],
+  o: ConsentOptions & { requested?: string[]; confirm?: boolean } = {},
+): Promise<URLSearchParams> {
+  const f = await consentQuery(who, dl, o.requested ?? scopes, o);
+  f.set("ttl", String(o.ttl ?? 86400));
   for (const s of scopes) f.append("scope", s);
   for (const r of robots) f.append("robot", r);
   if (o.confirm !== false) f.set("confirm", "yes");
@@ -64,9 +86,9 @@ function approvalForm(dl: Delegate, scopes: string[], robots: string[] = [], o: 
 
 /** Runs the consent page and approves it. */
 async function approve(user: TestUser, dl: Delegate, scopes: string[], robots: string[] = [], o: { ttl?: number; name?: string } = {}): Promise<void> {
-  const page = await getPage(`/delegate/authorize?${consentQuery(dl, scopes, o)}`, user);
+  const page = await getPage(`/delegate/authorize?${await consentQuery(user, dl, scopes, o)}`, user);
   expect(page.status).toBe(200);
-  const res = await postForm("/delegate/authorize", user, approvalForm(dl, scopes, robots, o));
+  const res = await postForm("/delegate/authorize", user, await approvalForm(user, dl, scopes, robots, o));
   expect(res.status).toBe(200);
   expect(await res.text()).toContain("Approved");
 }
@@ -95,7 +117,7 @@ describe("delegation off by default", () => {
     const user = await newUser();
     const dl = await newDelegate();
     expect((await api(dl, "GET", "/v1/delegate/self", undefined, testEnv)).status).toBe(404);
-    expect((await getPage(`/delegate/authorize?${consentQuery(dl, ["robots:read"])}`, user, testEnv)).status).toBe(404);
+    expect((await getPage(`/delegate/authorize?${await consentQuery(user, dl, ["robots:read"])}`, user, testEnv)).status).toBe(404);
     expect(await (await getPage("/", user, testEnv)).text()).not.toContain("AI agents");
   });
 
@@ -104,10 +126,10 @@ describe("delegation off by default", () => {
     const other = await newUser();
     const e = { ...env, DELEGATION_USERS: ` ${user.id.toUpperCase()} ` };
     const dl = await newDelegate();
-    expect((await getPage(`/delegate/authorize?${consentQuery(dl, ["robots:read"])}`, other, e)).status).toBe(404);
+    expect((await getPage(`/delegate/authorize?${await consentQuery(other, dl, ["robots:read"])}`, other, e)).status).toBe(404);
     expect(await (await getPage("/", other, e)).text()).not.toContain("AI agents");
     expect(await (await getPage("/", user, e)).text()).toContain("AI agents");
-    expect((await getPage(`/delegate/authorize?${consentQuery(dl, ["robots:read"])}`, user, e)).status).toBe(200);
+    expect((await getPage(`/delegate/authorize?${await consentQuery(user, dl, ["robots:read"])}`, user, e)).status).toBe(200);
   });
 });
 
@@ -116,7 +138,7 @@ describe("consent", () => {
     const user = await newUser();
     const { robot } = await registerAndClaim(user, "Front Lawn");
     const dl = await newDelegate();
-    const res = await getPage(`/delegate/authorize?${consentQuery(dl, ["robots:read", "sessions:readonly"], { name: "Claude <b>laptop</b>" })}`, user);
+    const res = await getPage(`/delegate/authorize?${await consentQuery(user, dl, ["robots:read", "sessions:readonly"], { name: "Claude <b>laptop</b>" })}`, user);
     expect(res.status).toBe(200);
     expect(res.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
     const text = await res.text();
@@ -131,7 +153,7 @@ describe("consent", () => {
 
   it("sends a signed-out person through sign-in", async () => {
     const dl = await newDelegate();
-    const res = await getPage(`/delegate/authorize?${consentQuery(dl, ["robots:read"])}`, null);
+    const res = await getPage(`/delegate/authorize?${await consentQuery("nobody", dl, ["robots:read"])}`, null);
     expect(res.status).toBe(302);
     expect(res.headers.get("Location")).toMatch(/^\/login\?return_to=%2Fdelegate%2Fauthorize/);
   });
@@ -140,10 +162,11 @@ describe("consent", () => {
     const user = await newUser();
     const dl = await newDelegate();
     for (const scopes of [["robots:read", "robots:drive"], ["sessions:owner"], ["admin"], []]) {
-      expect((await getPage(`/delegate/authorize?${consentQuery(dl, scopes)}`, user)).status).toBe(400);
+      expect((await getPage(`/delegate/authorize?${await consentQuery(user, dl, scopes)}`, user)).status).toBe(400);
     }
-    expect((await getPage(`/delegate/authorize?key=abc&name=x&scopes=robots:read`, user)).status).toBe(400);
-    expect((await getPage(`/delegate/authorize?key=${dl.publicKey}&scopes=robots:read`, user)).status).toBe(400);
+    expect((await getPage(`/delegate/authorize?key=abc&req=x`, user)).status).toBe(400);
+    expect((await getPage(`/delegate/authorize?key=${dl.publicKey}`, user)).status).toBe(400);
+    expect((await getPage(`/delegate/authorize?${await consentQuery(user, dl, ["robots:read"], { name: "" })}`, user)).status).toBe(400);
   });
 
   it("needs our Origin, the confirmation box and only requested scopes and own robots", async () => {
@@ -152,13 +175,13 @@ describe("consent", () => {
     const { robot: theirs } = await registerAndClaim(stranger);
     const dl = await newDelegate();
     const count = async () => (await db.prepare("SELECT COUNT(*) AS n FROM delegations WHERE delegation_id = ?").bind(dl.id).first<{ n: number }>())!.n;
-    expect((await postForm("/delegate/authorize", user, approvalForm(dl, ["robots:read"]), "https://evil.test")).status).toBe(403);
-    expect((await postForm("/delegate/authorize", user, approvalForm(dl, ["robots:read"]), null)).status).toBe(403);
-    expect((await postForm("/delegate/authorize", user, approvalForm(dl, ["robots:read"], [], { confirm: false }))).status).toBe(400);
-    expect((await postForm("/delegate/authorize", user, approvalForm(dl, ["robots:read", "robots:manage"], [], { requested: ["robots:read"] }))).status).toBe(400);
-    expect((await postForm("/delegate/authorize", user, approvalForm(dl, ["robots:read"], [theirs.robotId]))).status).toBe(409);
-    expect((await postForm("/delegate/authorize", user, approvalForm(dl, ["robots:read"], [], { ttl: 99 * 86400 }))).status).toBe(400);
-    const deny = approvalForm(dl, ["robots:read"]);
+    expect((await postForm("/delegate/authorize", user, await approvalForm(user, dl, ["robots:read"]), "https://evil.test")).status).toBe(403);
+    expect((await postForm("/delegate/authorize", user, await approvalForm(user, dl, ["robots:read"]), null)).status).toBe(403);
+    expect((await postForm("/delegate/authorize", user, await approvalForm(user, dl, ["robots:read"], [], { confirm: false }))).status).toBe(400);
+    expect((await postForm("/delegate/authorize", user, await approvalForm(user, dl, ["robots:read", "robots:manage"], [], { requested: ["robots:read"] }))).status).toBe(400);
+    expect((await postForm("/delegate/authorize", user, await approvalForm(user, dl, ["robots:read"], [theirs.robotId]))).status).toBe(409);
+    expect((await postForm("/delegate/authorize", user, await approvalForm(user, dl, ["robots:read"], [], { ttl: 99 * 86400 }))).status).toBe(400);
+    const deny = await approvalForm(user, dl, ["robots:read"]);
     deny.set("decision", "deny");
     expect(await (await postForm("/delegate/authorize", user, deny)).text()).toContain("Nothing was changed");
     expect(await count()).toBe(0);
@@ -167,15 +190,15 @@ describe("consent", () => {
   it("snaps a requested duration down to an offered one", async () => {
     const user = await newUser();
     const dl = await newDelegate();
-    const text = await (await getPage(`/delegate/authorize?${consentQuery(dl, ["robots:read"], { ttl: 2 * 86400 })}`, user)).text();
+    const text = await (await getPage(`/delegate/authorize?${await consentQuery(user, dl, ["robots:read"], { ttl: 2 * 86400 })}`, user)).text();
     expect(text).toContain('<option value="86400" selected>');
   });
 
   it("a key belongs to one person", async () => {
     const { dl } = await delegated(["robots:read"]);
     const other = await newUser();
-    expect((await getPage(`/delegate/authorize?${consentQuery(dl, ["robots:read"])}`, other)).status).toBe(409);
-    expect((await postForm("/delegate/authorize", other, approvalForm(dl, ["robots:read"]))).status).toBe(409);
+    expect((await getPage(`/delegate/authorize?${await consentQuery(other, dl, ["robots:read"])}`, other)).status).toBe(409);
+    expect((await postForm("/delegate/authorize", other, await approvalForm(other, dl, ["robots:read"]))).status).toBe(409);
     expect((await db.prepare("SELECT COUNT(*) AS n FROM delegations WHERE user_id = ?").bind(other.id).first<{ n: number }>())!.n).toBe(0);
   });
 
@@ -183,7 +206,7 @@ describe("consent", () => {
     const user = await newUser();
     for (let i = 0; i < MAX_ACTIVE_DELEGATIONS; i++) await approve(user, await newDelegate(), ["robots:read"]);
     const extra = await newDelegate();
-    expect((await postForm("/delegate/authorize", user, approvalForm(extra, ["robots:read"]))).status).toBe(403);
+    expect((await postForm("/delegate/authorize", user, await approvalForm(user, extra, ["robots:read"]))).status).toBe(403);
   });
 
   it("approving again replaces the scopes, the ticked robots and the expiry", async () => {
@@ -458,10 +481,13 @@ describe("revocation, renewal and the activity log", () => {
     expect((await postForm(`/delegations/${dl.id}/revoke`, user, new URLSearchParams(), "https://evil.test")).status).toBe(403);
     expect(await (await api(dl, "POST", "/v1/delegate/revoke", {})).json()).toEqual({ ok: true });
     expect((await api(dl, "GET", "/v1/delegate/self")).status).toBe(401);
-    // A revoked delegation cannot be renewed, only approved again.
+    // A revoked key is revoked for good: no renewal, no new approval (security review 14).
     expect((await postForm(`/delegations/${dl.id}/renew`, user, new URLSearchParams())).status).toBe(404);
-    await approve(user, dl, ["robots:read"]);
-    expect((await api(dl, "GET", "/v1/delegate/self")).status).toBe(200);
+    const page = await getPage(`/delegate/authorize?${await consentQuery(user, dl, ["robots:read"])}`, user);
+    expect(page.status).toBe(409);
+    expect(await page.text()).toContain("can never be approved again");
+    expect((await postForm("/delegate/authorize", user, await approvalForm(user, dl, ["robots:read"]))).status).toBe(409);
+    expect((await api(dl, "GET", "/v1/delegate/self")).status).toBe(401);
   });
 
   it("shows the person what the agent did", async () => {
@@ -624,6 +650,60 @@ describe("security review 14", () => {
     expect((await api(dl, "POST", "/v1/delegate/robots/NOT-A-ROBOT/grant", {})).status).toBe(404);
     const outcomes = (await events(dl.id)).filter((e) => e.actor === "agent").map((e) => `${e.action}:${e.outcome}`);
     expect(outcomes).toEqual(["label:bad_request", "claim:bad_request", "grant:not_found"]);
+  });
+
+  it("only the account the agent named can approve its key, and nobody can change the request", async () => {
+    const alice = await newUser();
+    const mallory = await newUser();
+    const dl = await newDelegate();
+    // Mallory opens Alice's link before Alice does.
+    const page = await getPage(`/delegate/authorize?${await consentQuery(alice, dl, ["robots:claim"])}`, mallory);
+    expect(page.status).toBe(400);
+    expect(await page.text()).toContain("Only that account can approve it");
+    expect((await postForm("/delegate/authorize", mallory, await approvalForm(alice, dl, ["robots:claim"]))).status).toBe(400);
+    // Nor can she rewrite the link for herself, or widen it, without the key.
+    const stranger = await newDelegate();
+    expect((await getPage(`/delegate/authorize?${await consentQuery(mallory, dl, ["robots:claim"], { signWith: stranger.key })}`, mallory)).status).toBe(400);
+    const q = await consentQuery(alice, dl, ["robots:read"]);
+    const [h, , sig] = q.get("req")!.split(".");
+    const widened = b64urlEncode(new TextEncoder().encode(JSON.stringify({ ...decodeJws(q.get("req")!).payload, scopes: "robots:read robots:manage" })));
+    q.set("req", `${h}.${widened}.${sig}`);
+    expect((await getPage(`/delegate/authorize?${q}`, alice)).status).toBe(400);
+    for (const claims of [{ aud: "https://other.test" }, { iss: stranger.id }, { iat: nowSeconds() - 4000, exp: nowSeconds() - 2200 }, { exp: nowSeconds() + 7200 }]) {
+      expect((await getPage(`/delegate/authorize?${await consentQuery(alice, dl, ["robots:read"], { claims })}`, alice)).status).toBe(400);
+    }
+    expect((await db.prepare("SELECT COUNT(*) AS n FROM delegations WHERE delegation_id = ?").bind(dl.id).first<{ n: number }>())!.n).toBe(0);
+    await approve(alice, dl, ["robots:claim"]);
+    expect(await (await api(dl, "GET", "/v1/delegate/self")).json()).toMatchObject({ login: await loginOf(alice) });
+  });
+
+  it("caps read-only grants per robot, so a delegate cannot fill the robot's session table", async () => {
+    const { dl, owned } = await delegated(["sessions:readonly"], 2);
+    for (let i = 0; i < GRANTS_PER_ROBOT_PER_HOUR; i++) {
+      expect((await api(dl, "POST", `/v1/delegate/robots/${owned[0]!.robotId}/grant`, {})).status).toBe(200);
+    }
+    const res = await api(dl, "POST", `/v1/delegate/robots/${owned[0]!.robotId}/grant`, {});
+    expect(res.status).toBe(429);
+    expect(await res.json()).toMatchObject({ error: "grant_limit" });
+    expect((await api(dl, "POST", `/v1/delegate/robots/${owned[1]!.robotId}/grant`, {})).status).toBe(200);
+  });
+
+  it("a claim does not complete when the delegation is revoked while the robot is being added", async () => {
+    const { user, dl } = await delegated(["robots:claim"]);
+    const robot = await newRobot();
+    const { pairingCode } = (await (await register(robot)).json()) as { pairingCode: string };
+    const DB = pauseAt(
+      (sql) => sql.startsWith("SELECT status, name, hostname FROM robots"),
+      async () => {
+        await postForm(`/delegations/${dl.id}/revoke`, user, new URLSearchParams());
+      },
+    );
+    const res = await api(dl, "POST", "/v1/delegate/claim", { code: pairingCode, step: "confirm" }, { ...env, DB });
+    expect(res.status).toBe(403);
+    expect(await db.prepare("SELECT status FROM robots WHERE robot_id = ?").bind(robot.robotId).first()).toEqual({ status: "unclaimed" });
+    expect(await db.prepare("SELECT COUNT(*) AS n FROM delegation_robots WHERE delegation_id = ?").bind(dl.id).first()).toEqual({ n: 0 });
+    // The code still works for the person.
+    expect((await postForm("/claim", user, new URLSearchParams({ code: pairingCode }))).status).toBe(303);
   });
 
   it("the body hash covers the exact bytes: a BOM or invalid UTF-8 does not pass", async () => {

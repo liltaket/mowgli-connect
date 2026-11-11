@@ -8,7 +8,7 @@ drive a robot. Design, threat model and setup: [docs/agent-delegation.md](../doc
 ```sh
 go build -o ~/.local/bin/mc-delegate ./cmd/mc-delegate
 mc-delegate init
-mc-delegate request --name "Claude (T3, laptop)" --scopes robots:read,sessions:readonly --ttl 24h --wait
+mc-delegate request --account <your GitHub login> --name "Claude (T3, laptop)" --scopes robots:read,sessions:readonly --ttl 24h --wait
 claude mcp add --scope user mowgli-connect -- ~/.local/bin/mc-delegate mcp
 ```
 

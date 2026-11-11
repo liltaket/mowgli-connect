@@ -237,7 +237,9 @@ Independent check: `python3 -c "import hashlib,base64;print(base64.b32encode(has
   `ALERT_NTFY_URL`.
 - **Recommended**: a Cloudflare WAF rate-limit rule on `/v1/robots/register` (unauthenticated: any
   key can create an `unclaimed` row; the relay also caps new robots at `MAX_NEW_ROBOTS_PER_HOUR`
-  overall and 5 per network per hour).
+  overall and 5 per network per hour). With delegations on, add `/v1/delegate/*` to it: a
+  delegation over its hourly limit writes nothing, but each refused call still costs a Worker
+  request and about 120 D1 row reads (docs/agent-delegation.md).
 - **Robot hostnames** are never cached by Cloudflare (Cache Rule, see Setup) and a released name
   rests 90 days before another robot can take it.
 

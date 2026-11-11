@@ -1,6 +1,6 @@
 import { isUserAllowed } from "./access";
 import { claimRobot, limitMessage, planAddress, previewClaim, reachedLimit, unlinkRobot } from "./claim";
-import { b64urlDecode } from "./crypto";
+import { b64urlDecode, importEd25519Public, parseJws, verifyJws } from "./crypto";
 import { DELEGATE_ID, DelegateAuthError, deriveDelegateId, fingerprint, verifyDelegateAssertion } from "./delegateAuth";
 import type { Env } from "./env";
 import { GRANT_TTL_SECONDS, mintGrant } from "./grant";
@@ -40,7 +40,17 @@ export const CALLS_PER_HOUR = 120;
 export const CLAIMS_PER_HOUR = 10;
 export const MAX_CLAIMED_ROBOTS = 10;
 export const WRONG_CODES_PER_HOUR = 5;
-/** Revoked and expired delegations, and activity, are kept this long. */
+/**
+ * Read-only grants per delegation per robot and hour. Each becomes a 12-hour session on the robot,
+ * whose session table is shared by everyone (1,024), so a delegate must not be able to fill it and
+ * lock the owner out (security review 14). The CLI reuses a session for 11 hours.
+ */
+export const GRANTS_PER_ROBOT_PER_HOUR = 6;
+/**
+ * Expired delegations and activity are kept this long. A revoked delegation is kept for good, as
+ * a record that its key may never be approved again (security review 14): a key is revoked when
+ * it may have been copied.
+ */
 export const DELEGATION_RETENTION_SECONDS = 90 * 86400;
 const LAST_USED_REFRESH_SECONDS = 15 * 60;
 const EVENTS_SHOWN = 200;
@@ -138,8 +148,8 @@ export function cleanupStatements(env: Env, now: number): D1PreparedStatement[] 
   const before = now - DELEGATION_RETENTION_SECONDS;
   return [
     env.DB.prepare("DELETE FROM delegation_events WHERE at < ?").bind(before),
-    env.DB.prepare("DELETE FROM delegations WHERE (revoked_at IS NOT NULL AND revoked_at < ?1) OR expires_at < ?1").bind(before),
-    env.DB.prepare("DELETE FROM delegation_robots WHERE delegation_id NOT IN (SELECT delegation_id FROM delegations)"),
+    env.DB.prepare("DELETE FROM delegations WHERE revoked_at IS NULL AND expires_at < ?").bind(before),
+    env.DB.prepare("DELETE FROM delegation_robots WHERE delegation_id NOT IN (SELECT delegation_id FROM delegations WHERE revoked_at IS NULL)"),
   ];
 }
 
@@ -178,14 +188,24 @@ export async function addedByDelegate(env: Env, userId: string): Promise<Map<str
 
 interface ConsentParams {
   publicKey: string;
+  /** The signed request, carried through the form unchanged. */
+  request: string;
   delegateId: string;
   name: string;
   requested: Scope[];
   ttl: number;
 }
 
-/** The consent link's parameters, or a reason it is not valid. */
-async function readConsentParams(get: (k: string) => string | null): Promise<ConsentParams | string> {
+/** How long a consent link is valid after the CLI made it. */
+export const REQUEST_MAX_AGE_SECONDS = 30 * 60;
+
+/**
+ * The consent link's parameters, or a reason it is not valid. The link carries `key` and `req`, a
+ * request signed by that key naming the account it is for, the agent's name, the scopes and the
+ * duration (security review 14): nobody but that account can approve it, and nobody can change
+ * what it asks for without the key.
+ */
+async function readConsentParams(env: Env, get: (k: string) => string | null, user: SessionUser): Promise<ConsentParams | string> {
   const key = get("key") ?? "";
   let raw: Uint8Array;
   try {
@@ -194,14 +214,32 @@ async function readConsentParams(get: (k: string) => string | null): Promise<Con
     return "The link does not contain a valid key.";
   }
   if (raw.length !== 32) return "The link does not contain a valid key.";
-  const name = cleanLabel(get("name"), 40);
+  const delegateId = await deriveDelegateId(raw);
+  let c: Record<string, unknown>;
+  try {
+    const parsed = parseJws(get("req") ?? "");
+    if (parsed.header.alg !== "EdDSA" || parsed.header.typ !== "mc-delegate-request+jwt") throw new Error();
+    if (!(await verifyJws(parsed, await importEd25519Public(raw)))) throw new Error();
+    c = parsed.payload;
+  } catch {
+    return "The link is not signed by the agent's key. Run mc-delegate request again and use the new link.";
+  }
+  const now = nowSeconds();
+  if (c.iss !== delegateId || c.aud !== env.RELAY_ORIGIN) return "The link is not for this key or this site.";
+  if (typeof c.iat !== "number" || typeof c.exp !== "number" || c.exp - c.iat > REQUEST_MAX_AGE_SECONDS || c.iat > now + SKEW_SECONDS || c.exp + SKEW_SECONDS < now) {
+    return "The link has expired. Run mc-delegate request again and use the new link.";
+  }
+  if (typeof c.account !== "string" || c.account.toLowerCase() !== user.login.toLowerCase()) {
+    return `This link is for the account @${typeof c.account === "string" ? c.account.slice(0, 39) : "?"}, and you are signed in as @${user.login}. Only that account can approve it.`;
+  }
+  const name = cleanLabel(c.name, 40);
   if (!name) return "The link does not name the agent.";
-  const requested = parseScopes((get("scopes") ?? "").split(/[\s,]+/));
+  const requested = typeof c.scopes === "string" ? parseScopes(c.scopes.split(/[\s,]+/)) : null;
   if (requested === null) return "The link asks for a right that cannot be given to an agent. Only the rights listed in the documentation exist.";
   if (requested.length === 0) return "The link does not ask for any right.";
-  const t = Number(get("ttl") ?? DEFAULT_TTL);
-  const ttl = Number.isInteger(t) && t > 0 ? ([...TTL_CHOICES].reverse().find((c) => c <= t) ?? TTL_CHOICES[0]) : DEFAULT_TTL;
-  return { publicKey: key, delegateId: await deriveDelegateId(raw), name, requested, ttl };
+  const t = c.ttl ?? DEFAULT_TTL;
+  const ttl = typeof t === "number" && Number.isInteger(t) && t > 0 ? ([...TTL_CHOICES].reverse().find((x) => x <= t) ?? TTL_CHOICES[0]) : DEFAULT_TTL;
+  return { publicKey: key, request: get("req")!, delegateId, name, requested, ttl };
 }
 
 interface MemberRobot {
@@ -263,7 +301,7 @@ export async function handleDelegationBrowser(
   const pu = deps.pageUser(user);
 
   if (url.pathname === "/delegate/authorize") {
-    if (request.method === "GET") return consentPage(env, user, pu, await readConsentParams((k) => url.searchParams.get(k)));
+    if (request.method === "GET") return consentPage(env, user, pu, await readConsentParams(env, (k) => url.searchParams.get(k), user));
     if (request.method === "POST") return approve(env, request, user, pu);
     return new Response("Method Not Allowed", { status: 405, headers: { Allow: "GET, POST" } });
   }
@@ -277,6 +315,15 @@ export async function handleDelegationBrowser(
   return renew(env, user, pu, id, deps);
 }
 
+function revokedKeyPage(revokedAt: number, pu: PageUser): Response {
+  return errorPage(
+    "This key was revoked",
+    `This agent's key was revoked on ${when(revokedAt)}, and a revoked key can never be approved again, because it may have been copied. On the agent's machine, create a new key with mc-delegate --profile <new name> init, then request access with it.`,
+    409,
+    pu,
+  );
+}
+
 function errorPage(title: string, message: string, status: number, pu: PageUser): Response {
   return page(title, html`<h1>${title}</h1><p class="error">${message}</p><p><a href="/">Back to my robots</a></p>`, status, {}, pu);
 }
@@ -286,6 +333,7 @@ async function consentPage(env: Env, user: SessionUser, pu: PageUser, p: Consent
   const now = nowSeconds();
   const existing = await loadDelegation(env, p.delegateId);
   if (existing && existing.user_id !== user.id) return errorPage("This key belongs to another account", "Create a new key on the agent's machine (mc-delegate init with a new profile) and try again.", 409, pu);
+  if (existing?.revoked_at) return revokedKeyPage(existing.revoked_at, pu);
   if ((await activeCount(env, user.id, p.delegateId, now)) >= MAX_ACTIVE_DELEGATIONS) {
     return errorPage("Too many AI agents", `You have ${MAX_ACTIVE_DELEGATIONS} active AI agents already. Revoke one on your robots page first.`, 403, pu);
   }
@@ -304,7 +352,7 @@ async function consentPage(env: Env, user: SessionUser, pu: PageUser, p: Consent
 ${existing ? html`<p class="notice" role="status">This key already has access (${stateText(existing, now)}: ${scopeTitles(existing.scopes)}). Approving replaces its rights, its robots and its expiry.</p>` : ""}
 <p class="error">Only continue if you started this yourself, a moment ago, in your own terminal. If someone sent you this link, close this page.</p>
 <form method="post" action="/delegate/authorize">
-${hidden("key", p.publicKey)}${hidden("name", p.name)}${hidden("scopes", p.requested.join(" "))}
+${hidden("key", p.publicKey)}${hidden("req", p.request)}
 <h2>What it may do</h2>
 <ul class="consent">${p.requested.map(
       (s) => html`<li><label><input type="checkbox" name="scope" value="${s}" checked> <strong>${SCOPE_TEXT[s].title}</strong> <code>${s}</code></label><p class="muted">${SCOPE_TEXT[s].text}</p></li>`,
@@ -342,7 +390,7 @@ async function approve(env: Env, request: Request, user: SessionUser, pu: PageUs
   if (form.get("decision") !== "allow") {
     return page("Not approved", html`<h1>Not approved</h1><p>Nothing was changed. The agent has no new access.</p><p><a href="/">Back to my robots</a></p>`, 200, {}, pu);
   }
-  const p = await readConsentParams((k) => form.get(k));
+  const p = await readConsentParams(env, (k) => form.get(k), user);
   if (typeof p === "string") return errorPage("Not approved", p, 400, pu);
   if (form.get("confirm") !== "yes") return errorPage("Not approved", "Tick the box that says you started this yourself.", 400, pu);
   const ttl = Number(form.get("ttl"));
@@ -362,14 +410,14 @@ async function approve(env: Env, request: Request, user: SessionUser, pu: PageUs
   const stored = "EXISTS (SELECT 1 FROM delegations WHERE delegation_id = ?1 AND user_id = ?2 AND approved_at = ?3 AND revoked_at IS NULL)";
   const steps = [
     // At most MAX_ACTIVE_DELEGATIONS active per person, and a key belongs to one person, in the
-    // same statement. Approving a revoked key again makes it active.
+    // same statement. A revoked key is never approved again.
     env.DB.prepare(
       `INSERT INTO delegations (delegation_id, user_id, public_key, name, scopes, ttl_seconds, created_at, approved_at, expires_at)
        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8
        WHERE (SELECT COUNT(*) FROM delegations WHERE user_id = ?2 AND delegation_id != ?1 AND revoked_at IS NULL AND expires_at > ?7) < ?9
        ON CONFLICT(delegation_id) DO UPDATE SET name = excluded.name, scopes = excluded.scopes, ttl_seconds = excluded.ttl_seconds,
-         approved_at = excluded.approved_at, expires_at = excluded.expires_at, revoked_at = NULL
-       WHERE delegations.user_id = excluded.user_id AND delegations.public_key = excluded.public_key`,
+         approved_at = excluded.approved_at, expires_at = excluded.expires_at
+       WHERE delegations.user_id = excluded.user_id AND delegations.public_key = excluded.public_key AND delegations.revoked_at IS NULL`,
     ).bind(id, user.id, p.publicKey, p.name, scopes.join(" "), ttl, now, now + ttl, MAX_ACTIVE_DELEGATIONS),
     env.DB.prepare(`DELETE FROM delegation_robots WHERE delegation_id = ?1 AND via = 'consent' AND ${stored}`).bind(id, user.id, now),
     ...robots.map((r) =>
@@ -387,6 +435,7 @@ async function approve(env: Env, request: Request, user: SessionUser, pu: PageUs
   const [ins] = await env.DB.batch(steps);
   if (ins?.meta.changes !== 1) {
     const owner = await loadDelegation(env, id);
+    if (owner?.user_id === user.id && owner.revoked_at) return revokedKeyPage(owner.revoked_at, pu);
     return owner && owner.user_id !== user.id
       ? errorPage("Not approved", "This key belongs to another account.", 409, pu)
       : errorPage("Not approved", `You have ${MAX_ACTIVE_DELEGATIONS} active AI agents already. Revoke one on your robots page first.`, 403, pu);
@@ -456,9 +505,9 @@ export async function delegationsHtml(env: Env, user: SessionUser): Promise<Safe
   if (!delegationEnabled(env) || !delegationAllowed(env, user.id)) return "";
   const rows = await env.DB.prepare(
     `SELECT d.*, (SELECT COUNT(*) FROM delegation_robots dr WHERE dr.delegation_id = d.delegation_id) AS robots
-     FROM delegations d WHERE d.user_id = ? ORDER BY d.created_at`,
+     FROM delegations d WHERE d.user_id = ? AND (d.revoked_at IS NULL OR d.revoked_at > ?) ORDER BY d.created_at`,
   )
-    .bind(user.id)
+    .bind(user.id, nowSeconds() - DELEGATION_RETENTION_SECONDS)
     .all<DelegationRow & { robots: number }>();
   const now = nowSeconds();
   return html`<h2>AI agents</h2>
@@ -736,8 +785,22 @@ export async function handleDelegateApi(request: Request, env: Env, url: URL): P
   }
 
   // grant (sessions:readonly): a viewer grant for the delegate's own identity.
-  const ev = await record(env, a, "grant", robot.robot_id, "pending");
-  if (ev === null) return RATE_LIMITED();
+  const ev = await record(
+    env,
+    a,
+    "grant",
+    robot.robot_id,
+    "pending",
+    null,
+    `AND (SELECT COUNT(*) FROM delegation_events WHERE delegation_id = ?1 AND action = 'grant' AND robot_id = ?4 AND outcome IN ('ok', 'pending') AND at > ?2 - 3600) < ${GRANTS_PER_ROBOT_PER_HOUR}`,
+  );
+  if (ev === null) {
+    return json(
+      { error: "grant_limit", message: `At most ${GRANTS_PER_ROBOT_PER_HOUR} read-only sessions an hour per robot. Reuse the session you have.` },
+      429,
+      { "Retry-After": "600" },
+    );
+  }
   const now = nowSeconds();
   // The epoch is read together with proof that the delegation is still active and still has the
   // robot (security review 13): a revocation that commits first leaves nothing to read.
