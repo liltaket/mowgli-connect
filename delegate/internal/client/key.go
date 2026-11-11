@@ -25,11 +25,21 @@ const DefaultRelay = "https://connect.bronc.app"
 type Profile struct {
 	Dir   string
 	Relay string
-	Key   ed25519.PrivateKey
+	// Account is the GitHub login this key asks access from (set by request).
+	Account string
+	Key     ed25519.PrivateKey
 }
 
 type profileConfig struct {
-	Relay string `json:"relay"`
+	Relay   string `json:"relay"`
+	Account string `json:"account,omitempty"`
+}
+
+// SaveAccount remembers which account this key asks access from.
+func (p *Profile) SaveAccount(account string) error {
+	p.Account = account
+	cfg, _ := json.MarshalIndent(profileConfig{Relay: p.Relay, Account: account}, "", "  ")
+	return os.WriteFile(filepath.Join(p.Dir, "config.json"), append(cfg, '\n'), 0o600)
 }
 
 // ProfileDir is $MC_DELEGATE_HOME/<profile>, else <user config dir>/mowgli-connect-delegate/<profile>.
@@ -177,7 +187,7 @@ func Load(dir string) (*Profile, error) {
 	if b, err := os.ReadFile(filepath.Join(abs, "config.json")); err == nil {
 		var c profileConfig
 		if json.Unmarshal(b, &c) == nil && c.Relay != "" {
-			p.Relay = c.Relay
+			p.Relay, p.Account = c.Relay, c.Account
 		}
 	}
 	if err := validRelay(p.Relay); err != nil {

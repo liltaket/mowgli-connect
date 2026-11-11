@@ -373,12 +373,32 @@ func (c *Client) session(ctx context.Context, robot string) (robotSession, error
 	return s, nil
 }
 
-// ConsentURL is the link the person opens to approve this key.
-func ConsentURL(relay, publicKey, name string, scopes []string, ttl time.Duration) string {
+// RequestValidity is how long a consent link works (the relay accepts at most 30 minutes).
+const RequestValidity = 20 * time.Minute
+
+// ConsentURL is the link the person opens to approve this key. What it asks for, and the only
+// account that may approve it, are signed with the key, so nobody can change them or approve
+// the key for another account.
+func (c *Client) ConsentURL(account, name string, scopes []string, ttl time.Duration) string {
+	pub := c.Key.Public().(ed25519.PublicKey)
+	now := c.now().Unix()
+	req := signJWS(c.Key, "mc-delegate-request+jwt", map[string]any{
+		"iss": DelegateID(pub), "aud": c.Relay, "account": account, "name": name,
+		"scopes": strings.Join(scopes, " "), "ttl": int64(ttl / time.Second),
+		"iat": now, "exp": now + int64(RequestValidity/time.Second),
+	})
 	q := url.Values{}
-	q.Set("key", publicKey)
-	q.Set("name", name)
-	q.Set("scopes", strings.Join(scopes, " "))
-	q.Set("ttl", fmt.Sprint(int64(ttl/time.Second)))
-	return relay + "/delegate/authorize?" + q.Encode()
+	q.Set("key", b64.EncodeToString(pub))
+	q.Set("req", req)
+	return c.Relay + "/delegate/authorize?" + q.Encode()
+}
+
+var githubLogin = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9]|-(?:[A-Za-z0-9])){0,38}$`)
+
+// CheckAccount accepts a GitHub login.
+func CheckAccount(login string) error {
+	if !githubLogin.MatchString(login) {
+		return fmt.Errorf("--account must be your GitHub login, like octocat")
+	}
+	return nil
 }
