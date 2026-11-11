@@ -806,3 +806,25 @@ async function signBytes(dl: Delegate, method: string, path: string, body: Uint8
   const claims = { iss: dl.id, aud: ORIGIN, htm: method, htu: `${ORIGIN}${path}`, bdh: await bodyHash(body), iat: now, exp: now + 60, jti: randomToken(16) };
   return `MC-Delegate ${await signJws({ alg: "EdDSA", typ: "mc-delegate+jwt" }, claims, dl.key)}`;
 }
+
+describe("delegations under the emergency stop", () => {
+  it("get no grant and no read, the robot lists no delegates, and revoking still works", async () => {
+    const { dl, owned } = await delegated(ALL, 1);
+    const robot = owned[0]!;
+    expect((await api(dl, "POST", `/v1/delegate/robots/${robot.robotId}/grant`, {})).status).toBe(200);
+    expect((await members(robot)).some((m) => m.userId.startsWith("dlg:"))).toBe(true);
+
+    await db.prepare("INSERT INTO settings (key, value) VALUES ('kill_switch', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+    try {
+      for (const [method, path, body] of [["POST", `/v1/delegate/robots/${robot.robotId}/grant`, {}], ["GET", "/v1/delegate/self", undefined], ["GET", "/v1/delegate/robots", undefined]] as const) {
+        const res = await api(dl, method, path, body);
+        expect(res.status).toBe(503);
+        expect(await res.json()).toEqual({ error: "paused" });
+      }
+      expect(await members(robot)).toEqual([]);
+      expect((await api(dl, "POST", "/v1/delegate/revoke", {})).status).toBe(200);
+    } finally {
+      await db.prepare("DELETE FROM settings WHERE key = 'kill_switch'").run();
+    }
+  });
+});

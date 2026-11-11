@@ -594,3 +594,26 @@ describe("robots shared with an app user", () => {
     expect((await api(dev, "GET", "/v1/app/robots", undefined, genv)).status).toBe(401);
   });
 });
+
+describe("app API under the emergency stop", () => {
+  it("refuses everything but sign-out, and works again when it is lifted", async () => {
+    const { dev } = await signedIn();
+    const robot = await newRobot();
+    const { pairingCode } = (await (await register(robot, "kill-bot")).json()) as { pairingCode: string };
+    expect((await api(dev, "POST", "/v1/app/claim", { code: pairingCode, step: "confirm" })).status).toBe(200);
+    expect((await api(dev, "POST", `/v1/app/robots/${robot.robotId}/grant`)).status).toBe(200);
+
+    await testEnv.DB.prepare("INSERT INTO settings (key, value) VALUES ('kill_switch', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+    try {
+      for (const [method, path] of [["POST", `/v1/app/robots/${robot.robotId}/grant`], ["GET", "/v1/app/robots"], ["GET", "/v1/app/me"]] as const) {
+        const res = await api(dev, method, path);
+        expect(res.status).toBe(503);
+        expect(await res.json()).toEqual({ error: "paused" });
+      }
+    } finally {
+      await testEnv.DB.prepare("DELETE FROM settings WHERE key = 'kill_switch'").run();
+    }
+    expect((await api(dev, "POST", `/v1/app/robots/${robot.robotId}/grant`)).status).toBe(200);
+    expect((await api(dev, "POST", "/v1/app/sign-out")).status).toBe(200);
+  });
+});

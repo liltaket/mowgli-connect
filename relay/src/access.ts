@@ -20,7 +20,11 @@ function list(v: string | undefined): string[] {
  * of robots.
  */
 export function isAdmin(env: Env, userId: string): boolean {
-  return list(env.ADMIN_GITHUB_IDS).some((id) => GITHUB_USER_ID.test(id) && id === userId.toLowerCase());
+  return adminIds(env).includes(userId.toLowerCase());
+}
+
+export function adminIds(env: Env): string[] {
+  return list(env.ADMIN_GITHUB_IDS).filter((id) => GITHUB_USER_ID.test(id));
 }
 
 /** ALLOWED_GITHUB_LOGINS: logins or `gh:<id>` entries, `*` = any GitHub account. */

@@ -4,6 +4,7 @@ import { b64urlDecode, importEd25519Public, parseJws, verifyJws } from "./crypto
 import { DELEGATE_ID, DelegateAuthError, deriveDelegateId, fingerprint, verifyDelegateAssertion } from "./delegateAuth";
 import type { Env } from "./env";
 import { GRANT_TTL_SECONDS, mintGrant } from "./grant";
+import { killSwitchSince } from "./killSwitch";
 import { html, page, type PageUser, type SafeHtml } from "./html";
 import { createProvisioner } from "./provisioner";
 import { json } from "./robotApi";
@@ -694,6 +695,10 @@ export async function handleDelegateApi(request: Request, env: Env, url: URL): P
   const route = robotPath ? ROUTES[robotPath[2]!] : Object.hasOwn(ROUTES, url.pathname) ? ROUTES[url.pathname] : undefined;
   if (!route) return json({ error: "not_found" }, 404);
   if (request.method !== route.method) return json({ error: "method_not_allowed" }, 405, { Allow: route.method });
+
+  // The emergency stop (killSwitch.ts): agents get nothing, not even a read, before it is lifted.
+  // Revoking still works, so a person can end a delegation meanwhile.
+  if (route.action !== "revoke" && (await killSwitchSince(env)) !== null) return json({ error: "paused" }, 503, { "Retry-After": "300" });
 
   // Revoking itself works even over the call limit; afterwards the key can do nothing.
   const a = await authenticate(request, env, url, { skipLimit: route.action === "revoke" });

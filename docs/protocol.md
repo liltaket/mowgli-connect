@@ -114,7 +114,8 @@ Assertion auth. Response `200`:
   "tunnelToken": "<cloudflared connector token>" | null,
   "relayKeys": [{"kid":"k1","publicKey":"<b64url>"}],
   "sessionEpoch": 1,
-  "members": [{"userId":"gh:123","role":"owner"}, {"userId":"gh:456","role":"operator"}]
+  "members": [{"userId":"gh:123","role":"owner"}, {"userId":"gh:456","role":"operator"}],
+  "paused": true            // only while the emergency stop is on
 }
 ```
 `members` lists everyone who may open the robot now, with their role: the owner and the people it
@@ -124,7 +125,9 @@ may no longer own robots (removed by the admin): access to a robot follows its o
 (`{"userId": "dlg:<delegate id>", "role": "viewer"}`): AI agents with read-only sessions on this
 robot ([agent-delegation.md](agent-delegation.md)). They are only ever viewers, and the agent
 treats them like any other member: a grant's role is capped by the member's role, and a member
-that disappears loses its sessions. If no `/self` call has succeeded within
+that disappears loses its sessions. While the emergency stop is on
+([kill-switch.md](kill-switch.md)) the relay answers `tunnelToken: null`, `members: []` and
+`paused: true`, so the agent stops its tunnel and accepts nobody. If no `/self` call has succeeded within
 `MC_MAX_STALE` (default 10 min), the agent rejects all sessions and grants until the next success. The relay runs on Workers
 Free, whose 100,000 requests/day are shared by the whole Cloudflare account, so the agent polls
 rarely: every `MC_POLL_INTERVAL` (default 3 min, 480 requests/day) while claimed; while unclaimed
