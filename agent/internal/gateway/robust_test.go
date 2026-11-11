@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,7 +21,12 @@ import (
 // normalizing it, and the teleop prefix must stay blocked for every spelling of it.
 func FuzzCanonicalPathPolicy(f *testing.F) {
 	for _, s := range []string{"/", "/api/mowglinext/publish/x", "/api//mowglinext/publish/x", "/api/./mowglinext/publish/x",
-		"/api/x/../mowglinext/publish/x", "/api/mowglinext/publish/", "/api/mowglinext/publish", "/%2e%2e/api", "/a%2Fb", "/api/mowglinext/publish%2Fx"} {
+		"/api/x/../mowglinext/publish/x", "/api/mowglinext/publish/", "/api/mowglinext/publish", "/%2e%2e/api", "/a%2Fb", "/api/mowglinext/publish%2Fx",
+		"/api/mowglinext/call/high_level_control", "/api/mowglinext/call/high_level_control/", "/api/mowglinext/call/../call/emergency",
+		"/api/settings", "/api/config/keys/get", "/api/config/keys/get/", "/api/config/keys/../keys/get", "/tiles", "/tiles/", "/tiles/1/2/3", "/tiles/1/2/3.png",
+		"/tiles/1/2/3.png?x=1", "/tiles/1/2/3.png?", "/tiles/1%2F2/3", "/tiles/1/2/%33.png", "/tiles/../api/settings", "/tiles/1/2/3.png/", "/tiles/a/b/c",
+		"/api/schedules", "/api/schedules/1", "/api/schedules/1/", "/api/schedules/../settings", "/api/map-backups", "/api/map-backups/areas-20261111T092748.000Z.dat/restore",
+		"/api/mowglinext/map", "/api/mowglinext/map/", "/api/mowglinext/call/set_datum", "/api/mowglinext/call/blade_control/"} {
 		f.Add(s)
 	}
 	pol := MowgliPolicy{}
@@ -44,6 +50,80 @@ func FuzzCanonicalPathPolicy(f *testing.F) {
 		}
 		if pol.Allow(RoleViewer, "GET", u.Path, true) && !strings.HasPrefix(u.Path, "/api/mowglinext/multiplex") && !strings.HasPrefix(u.Path, "/api/mowglinext/subscribe/") {
 			t.Fatalf("viewer socket allowed for %q", u.Path)
+		}
+		if pol.Allow(RoleOperator, "GET", u.Path, true) != pol.Allow(RoleViewer, "GET", u.Path, true) {
+			t.Fatalf("operator and viewer sockets differ for %q", u.Path)
+		}
+		// An operator reaches the mower's own routes (and the one config read) and nothing else,
+		// whatever the method; a viewer reaches no write but the config read.
+		for _, m := range []string{"POST", "PUT", "DELETE", "PATCH"} {
+			if pol.Allow(RoleOperator, m, u.Path, false) && !operatorRoute(m, u.Path) && !(m == "POST" && u.Path == configKeysGet) {
+				t.Fatalf("operator %s allowed for %q", m, u.Path)
+			}
+			if m != "POST" && pol.Allow(RoleViewer, m, u.Path, false) {
+				t.Fatalf("viewer %s allowed for %q", m, u.Path)
+			}
+		}
+		if operatorRoute("POST", u.Path) && !strings.HasPrefix(u.Path, "/api/mowglinext/") && !strings.HasPrefix(u.Path, "/api/schedules") && !strings.HasPrefix(u.Path, "/api/map-backups") {
+			t.Fatalf("operator route outside the mower's own: %q", u.Path)
+		}
+		if cmd, ok := strings.CutPrefix(u.Path, callPrefix); ok && operatorRoute("POST", u.Path) && !mowgliOperatorCalls[cmd] {
+			t.Fatalf("operator call %q not on the list", u.Path)
+		}
+		for _, p := range []string{"/api/settings", "/api/config/keys/set", "/api/mowglinext/call/set_datum", "/api/mowglinext/call/reboot_board", "/api/system/reboot"} {
+			if operatorRoute("POST", p) {
+				t.Fatalf("operator route for owner-only %q", p)
+			}
+		}
+		for _, role := range []string{RoleViewer, RoleOperator} {
+			if pol.Allow(role, "POST", u.Path, false) && !(role == RoleOperator && operatorRoute("POST", u.Path)) {
+				// The config store's read, by body only: refused without one or with a key not on the list.
+				if role == RoleViewer && u.Path != configKeysGet {
+					t.Fatalf("viewer POST allowed for %q", u.Path)
+				}
+				for _, body := range []string{"", "{}", `{"system.homekit.pincode":""}`, `{"gui.map.offset.x":"","system.homekit.pincode":""}`} {
+					if pol.AllowRequest(role, httptest.NewRequest("POST", u.Path, strings.NewReader(body))) {
+						t.Fatalf("%s POST %q allowed with body %q", role, u.Path, body)
+					}
+				}
+				if !pol.AllowRequest(role, httptest.NewRequest("POST", u.Path, strings.NewReader(`{"gui.map.offset.x":""}`))) {
+					t.Fatalf("%s POST %q refused with a readable key", role, u.Path)
+				}
+			}
+			if pol.Allow(role, "GET", u.Path, false) && hasAnyPrefix(u.Path, []string{tilesPrefix}) {
+				if !tilePath.MatchString(u.Path) {
+					t.Fatalf("%s tile path allowed for %q", role, u.Path)
+				}
+				// What the tile server is sent, spelled as on the wire, is the same plain shape.
+				if pol.AllowRequest(role, &http.Request{Method: "GET", URL: u}) && !tilePath.MatchString(u.RequestURI()) {
+					t.Fatalf("%s tile request allowed for %q", role, u.RequestURI())
+				}
+			}
+		}
+	})
+}
+
+// Whatever POST /api/config/keys/get body a viewer gets through, the GUI's decoder reads from it
+// only readable keys, at least one, each with no value.
+func FuzzReadableConfigKeysBody(f *testing.F) {
+	for _, s := range []string{`{"gui.map.offset.x":""}`, `{"gui.map.offset.x":"","map.obstacleOriginals":""}`, `{"gui.map.offset.x":"","gui.map.offset.x":""}`,
+		`{"system.homekit.pincode":""}`, `{"gui.map.offset.x":"x"}`, `{"gui.map.offset.x":""}{}`, `{"gui.map.offset.x":"",}`, `{"GUI.MAP.OFFSET.X":""}`,
+		`{"gui.map.offset.x":"\u0000"}`, `{"gui.map.offset\u002ex":""}`, `{}`, ``, ` {"gui.map.offset.x":""} `} {
+		f.Add(s)
+	}
+	pol := MowgliPolicy{}
+	f.Fuzz(func(t *testing.T, body string) {
+		if !pol.AllowRequest(RoleViewer, httptest.NewRequest("POST", configKeysGet, strings.NewReader(body))) {
+			return
+		}
+		var keys map[string]string
+		if err := json.Unmarshal([]byte(body), &keys); err != nil || len(keys) == 0 {
+			t.Fatalf("allowed body %q decodes to %v (%v)", body, keys, err)
+		}
+		for k, v := range keys {
+			if !mowgliReadableKeys[k] || v != "" {
+				t.Fatalf("allowed body %q reads %q = %q", body, k, v)
+			}
 		}
 	})
 }

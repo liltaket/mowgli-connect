@@ -1,6 +1,6 @@
-import { defaultRobotLimit, GITHUB_USER_ID, isAdmin, isUserAllowed, MAX_ROBOT_LIMIT, parseRobotLimit } from "./access";
+import { afterSharesEnded, canOwn, defaultRobotLimit, GITHUB_USER_ID, isAdmin, MAX_ROBOT_LIMIT, parseRobotLimit } from "./access";
 import type { Env } from "./env";
-import { unlinkRobot } from "./claim";
+import { revokeRobot, unlinkRobot } from "./claim";
 import { revokeAllStatements } from "./delegation";
 import { GITHUB_LOGIN, lookupGithubUser } from "./github";
 import { html, page } from "./html";
@@ -18,7 +18,7 @@ import { isRobotId, nowSeconds, readBodyText } from "./util";
 const NOTICES: Record<string, string> = {
   invited: "Invitation added. They can sign in now.",
   already: "That account was already invited.",
-  removed: "Access removed. Their sessions here have ended, and their robots stop accepting them within a few minutes.",
+  removed: "Access removed, including robots others shared with them. Their sessions here have ended, and their robots stop accepting them within a few minutes.",
   unlinked: "Robot unlinked. Its tunnel is being deleted.",
   removed_unlinked: "Access removed and their robots unlinked. Their sessions here have ended.",
   removed_config:
@@ -285,15 +285,18 @@ export async function handleAdmin(request: Request, env: Env, url: URL, user: Se
   // remove
   const del = await env.DB.prepare("DELETE FROM invites WHERE user_id = ?").bind(target).run();
   if (del.meta.changes !== 1) return notFound(); // only invited people, never an admin
+  const login = await env.DB.prepare("SELECT login FROM users WHERE id = ?").bind(target).first<{ login: string }>();
+  const still = await canOwn(env, target, login?.login ?? "");
   await env.DB.batch([
     env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(target),
     env.DB.prepare("DELETE FROM devices WHERE user_id = ?").bind(target), // their app sign-ins too
+    // And the robots others shared with them, or they could go on signing in as a guest; but not
+    // while the configuration still lets them in anyway.
+    ...(still ? [] : [env.DB.prepare("DELETE FROM members WHERE user_id = ? AND role != 'owner'").bind(target)]),
     ...revokeAllStatements(env, target, nowSeconds()), // and their AI agents
   ]);
   console.log("admin: removed", target, "by", user.id);
   // Say so when the configuration still lets them in, instead of promising what did not happen.
-  const login = await env.DB.prepare("SELECT login FROM users WHERE id = ?").bind(target).first<{ login: string }>();
-  const still = await isUserAllowed(env, target, login?.login ?? "");
   if (still) return redirect("/admin?notice=removed_config");
   if (form.get("unlink") === "1") {
     const owned = await env.DB.prepare(
@@ -303,14 +306,18 @@ export async function handleAdmin(request: Request, env: Env, url: URL, user: Se
       .bind(target)
       .all<{ robot_id: string }>();
     const prov = createProvisioner(env);
-    for (const r of owned.results) await unlinkRobot(env, prov, r.robot_id, { onlyIfOwnerNotInvited: true });
+    // Every tunnel first, then the guests of all of them at once: a constant number of D1 calls
+    // for the guests, however many robots and shares.
+    const guests: string[] = [];
+    for (const r of owned.results) guests.push(...((await revokeRobot(env, prov, r.robot_id, { onlyIfOwnerNotInvited: true })) ?? []));
+    await afterSharesEnded(env, guests);
     console.log("admin: unlinked", owned.results.length, "robots of", target, "by", user.id);
     return redirect("/admin?notice=removed_unlinked");
   }
   return redirect("/admin?notice=removed");
 }
 
-function lookupError(reason: "not_found" | "not_a_user" | "unavailable", login?: string): string {
+export function lookupError(reason: "not_found" | "not_a_user" | "unavailable", login?: string): string {
   if (reason === "not_found") return login ? `There is no GitHub account called ${login}.` : "That GitHub account no longer exists.";
   if (reason === "not_a_user") return "That is an organization or a bot, not a person's account.";
   return "GitHub did not answer. Try again in a moment.";
@@ -339,7 +346,7 @@ async function orphanedRobots(env: Env): Promise<OrphanRow[]> {
   ).all<OrphanRow>();
   const out: OrphanRow[] = [];
   for (const r of rows.results) {
-    if (!(await isUserAllowed(env, r.user_id, r.login ?? ""))) out.push(r);
+    if (!(await canOwn(env, r.user_id, r.login ?? ""))) out.push(r);
   }
   return out;
 }

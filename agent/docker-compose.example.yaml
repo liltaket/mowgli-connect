@@ -1,8 +1,13 @@
 # Add to MowgliNext's docker/stack-overrides.yaml (gitignored, merged by installer-stack and
 # kept across updates). No MowgliNext file is edited. Do not add garden.mowgli.update.* labels.
+# Nothing here verifies the image (site/install.sh does, see docs/updates.md): check the
+# signature yourself and pin the digest it prints:
+#   cosign verify --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     --certificate-identity-regexp '^https://github\.com/liltaket/mowgli-connect/\.github/workflows/agent-image\.yml@refs/(heads/main|tags/agent-v[0-9A-Za-z._+-]+)$' \
+#     --certificate-github-workflow-repository liltaket/mowgli-connect ghcr.io/liltaket/mowgli-connect-agent:latest
 services:
   mowgli-connect:
-    image: ghcr.io/liltaket/mowgli-connect-agent:latest # amd64 + arm64; or build: ../mowgli-connect/agent
+    image: ghcr.io/liltaket/mowgli-connect-agent@sha256:<verified digest> # amd64 + arm64; or build: ../mowgli-connect/agent
     container_name: mowgli-connect
     restart: unless-stopped
     # Own network namespace (not host): entrypoint.sh locks egress so cloudflared can reach only

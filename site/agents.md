@@ -47,7 +47,8 @@ installer must run with sudo), and ask how they want to proceed.
    the robot." Use `no` unless the owner says yes.
 3. **Automatic updates.** Explain: "Once a night the robot fetches a newer Mowgli Connect agent if
    there is one and restarts it, which interrupts remote access for a few seconds. Security fixes
-   then arrive by themselves." Use `yes` unless the owner says no.
+   then arrive by themselves. Only releases signed by the project's release workflow are
+   installed, and one that does not start is rolled back." Use `yes` unless the owner says no.
 
 ## 3. Read the installer, then run it
 
@@ -59,8 +60,11 @@ curl -fsSL https://bronc.app/install.sh -o install.sh
 Read `install.sh` and tell the owner in one or two sentences what it does: it writes
 `~/mowgli-connect/.env` and `~/mowgli-connect/compose.yaml`, optionally adds a nightly update job
 to the user's crontab, checks whether the network's DNS is slow (then the container uses public
-resolvers first), pulls `ghcr.io/liltaket/mowgli-connect-agent`, starts a container named
-`mowgli-connect` and prints a pairing code. Then run it with the owner's answers:
+resolvers first), checks the signature of `ghcr.io/liltaket/mowgli-connect-agent` with cosign,
+writes `update.sh` and `update-policy` for verified updates, starts a container named
+`mowgli-connect` and prints a pairing code. Then run it with the owner's answers. Never add
+`--insecure-skip-verify` or `--allow-downgrade`; if the installer reports "no valid signature" or
+refuses an older release, stop and tell the owner:
 
 ```sh
 sh install.sh --name "ROBOT NAME" --teleop no --auto-update yes --yes
@@ -110,13 +114,15 @@ connection" meanwhile, which is normal.
 | The robot's address does not load on one computer, but works on a phone | That computer cached "name not found". Wait up to 30 minutes, or flush its DNS cache. |
 | Everything is slow to start | The network's DNS server may not answer. The installer detects this and works around it for Mowgli Connect (it says so); tell the owner, since it slows MowgliNext too. |
 | Change the joystick or update choice later | `sh install.sh --name "ROBOT NAME" --teleop no --auto-update yes --yes`. Pairing is kept. |
+| An update failed or was rolled back | `sh ~/mowgli-connect/update.sh status` says why; the last good version keeps running. |
 
 More detail: https://github.com/liltaket/mowgli-connect/blob/main/docs/install.md
 
 ## Update and uninstall
 
 ```sh
-cd ~/mowgli-connect && docker compose pull && docker compose up -d   # update
+sh ~/mowgli-connect/update.sh                                        # update (verified)
+sh ~/mowgli-connect/update.sh status                                 # what runs, last check
 cd ~/mowgli-connect && docker compose down -v                        # uninstall (deletes the robot key)
 ```
 

@@ -164,6 +164,8 @@ label{display:block;font-weight:600;margin:0 0 .35rem}
 @media (min-width:40rem){.fields{grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) auto;align-items:end}}
 input[type=text]{width:100%;font:inherit;padding:.65rem .75rem;border:1px solid var(--line-strong);border-radius:8px;background:var(--paper);color:inherit}
 input[type=text]:focus-visible{outline-offset:1px}
+select{font:inherit;padding:.6rem .7rem;min-height:44px;border:1px solid var(--line-strong);border-radius:8px;background:var(--paper);color:inherit}
+@media (min-width:40rem){.fields select{width:100%}}
 input.code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:1.05rem;letter-spacing:.01em}
 .hint{margin:.9rem 0 0;font-size:.92rem}
 button,.btn{font:inherit;font-weight:600;padding:.6rem 1.1rem;border:1px solid var(--line-strong);border-radius:8px;background:var(--paper);color:inherit;cursor:pointer;text-decoration:none;display:inline-block;text-align:center;white-space:nowrap;min-height:44px}

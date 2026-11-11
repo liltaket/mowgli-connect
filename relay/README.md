@@ -229,9 +229,11 @@ Independent check: `python3 -c "import hashlib,base64;print(base64.b32encode(has
   link loaded by another page does not). Provisioning failure restores the code so the user can
   retry.
 - **Access**: admins (`ADMIN_GITHUB_IDS`), invites from `/admin` (D1 `invites`, by id) and
-  `ALLOWED_GITHUB_LOGINS` are checked at login and on every session lookup. Removing someone ends
-  their relay sessions at once, and their robots drop them at the next sync (members are filtered
-  by access). Robot limits are checked before a pairing code is used and again atomically when the
+  `ALLOWED_GITHUB_LOGINS` decide who may own robots (`canOwn`); guests, people a robot is shared
+  with while its owner may own robots, may also sign in (`canSignIn`) but own nothing (robot limit
+  0). Both are checked at login and on every session lookup. Removing someone ends their relay
+  sessions at once, and their robots drop them at the next sync (a robot's members follow its
+  owner's access). Sharing: [docs/sharing.md](../docs/sharing.md). Robot limits are checked before a pairing code is used and again atomically when the
   robot is claimed.
 - **Tunnel tokens** are encrypted at rest with `TUNNEL_TOKEN_KEY`, and cron problems alert via
   `ALERT_NTFY_URL`.
@@ -264,7 +266,11 @@ amend `docs/protocol.md`):
 7. **Epoch**: starts at 1, is bumped at claim (so 2 after first claim), unlink and sessions/revoke.
 8. **Extras**: `421` on a foreign Host; allowlist accepts `gh:<id>`; `unclaimed` robots
    silent for 7 days are garbage-collected; `GET /style.css` (CSP forbids inline style).
-9. Members/viewer UI is not built; the schema and grant role support it (tests insert a viewer directly).
+9. Sharing (`/robots/:id/share`, roles `viewer` and `operator`) is described in [docs/sharing.md](../docs/sharing.md). Apply migration 0011 (named `0009_sharing.sql` in earlier revisions of this branch: a database that ran that file must have 0011 marked as applied by hand, not run again) before deploying the Worker that uses it: that Worker writes `operator` members and `share_events` rows, which the older schema refuses. Migration 0011 adds a unique index allowing one owner per robot, so first check that the database has no robot with two owners; this must print no rows:
+   ```sh
+   npx wrangler d1 execute mowgli-connect-relay --remote --command "SELECT robot_id FROM members WHERE role='owner' GROUP BY robot_id HAVING COUNT(*)>1"
+   ```
+   Then `npx wrangler d1 migrations apply mowgli-connect-relay --remote`, then `npm run deploy`.
 
 ### Unverified Cloudflare API details
 

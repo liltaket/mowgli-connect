@@ -1,6 +1,6 @@
 import type { Env } from "./env";
 import { page, html, type SafeHtml } from "./html";
-import { isAdmin, isUserAllowed } from "./access";
+import { canSignIn, isAdmin } from "./access";
 import { killSwitchSince } from "./killSwitch";
 import { createSession, sessionCookie } from "./session";
 import { b64urlDecode, b64urlEncode } from "./crypto";
@@ -126,11 +126,11 @@ export async function finishLogin(env: Env, url: URL, request: Request): Promise
   }
 
   const userId = `gh:${gh.id}`;
-  if (!(await isUserAllowed(env, userId, gh.login))) {
+  if (!(await canSignIn(env, userId, gh.login))) {
     return fail(
       `The GitHub account @${gh.login} has not been invited yet.`,
       403,
-      html`<p class="muted">Mowgli Connect is invite-only while it is a prototype. Ask the person who runs it to add your account. Signed in to GitHub with another account? Sign out on github.com first, then try again.</p>`,
+      html`<p class="muted">Mowgli Connect is invite-only while it is a prototype. Ask the person who runs it to add your account. If someone shared a robot with you, ask them to check that they shared it with this GitHub account. Signed in to GitHub with another account? Sign out on github.com first, then try again.</p>`,
     );
   }
 

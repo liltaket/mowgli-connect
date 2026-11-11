@@ -1,4 +1,4 @@
-import { isUserAllowed } from "./access";
+import { canSignIn } from "./access";
 import { claimRobot, limitMessage, planAddress, previewClaim, reachedLimit, unlinkRobot } from "./claim";
 import { b64urlDecode, importEd25519Public, parseJws, verifyJws } from "./crypto";
 import { DELEGATE_ID, DelegateAuthError, deriveDelegateId, fingerprint, verifyDelegateAssertion } from "./delegateAuth";
@@ -369,7 +369,7 @@ ${
     : html`<ul class="consent">${robots.map((r) =>
         set.get(r.robot_id) === "claim"
           ? html`<li><span><strong>${r.label ?? r.name ?? r.robot_id}</strong> <span class="muted">added by this agent; stays until it is unlinked</span></span></li>`
-          : html`<li><label><input type="checkbox" name="robot" value="${r.robot_id}"${set.get(r.robot_id) === "consent" ? html` checked` : ""}> <strong>${r.label ?? r.name ?? r.robot_id}</strong> <span class="muted">${r.role === "owner" ? "Owner" : "Viewer"} · ${r.robot_id}</span></label></li>`,
+          : html`<li><label><input type="checkbox" name="robot" value="${r.robot_id}"${set.get(r.robot_id) === "consent" ? html` checked` : ""}> <strong>${r.label ?? r.name ?? r.robot_id}</strong> <span class="muted">${r.role === "owner" ? "Owner" : r.role === "operator" ? "Can control" : "View only"} · ${r.robot_id}</span></label></li>`,
       )}</ul>`
 }
 <p class="muted">None is ticked unless you tick it. Robots it adds itself are always included.${p.requested.includes("robots:manage") ? " With Rename and unlink robots, it can unlink every robot you tick that you own: only tick a real mower if you need to." : ""}</p>
@@ -579,7 +579,7 @@ async function authenticate(request: Request, env: Env, url: URL, opts: { skipLi
   if (d.expires_at <= now) return json({ error: "delegation_expired" }, 401);
   // Everything that can refuse the call reads before the first write (final security review).
   const user = await env.DB.prepare("SELECT id, login, name FROM users WHERE id = ?").bind(d.user_id).first<SessionUser>();
-  if (!user || !delegationAllowed(env, user.id) || !(await isUserAllowed(env, user.id, user.login))) return json({ error: "no_access" }, 403);
+  if (!user || !delegationAllowed(env, user.id) || !(await canSignIn(env, user.id, user.login))) return json({ error: "no_access" }, 403);
   const overLimit = async () =>
     !opts.skipLimit &&
     ((
@@ -649,7 +649,7 @@ interface SetRobot {
   first_online_at: number | null;
   allow_teleop: number | null;
   agent_version: string | null;
-  role: "owner" | "viewer";
+  role: "owner" | "operator" | "viewer";
   label: string | null;
   via: "consent" | "claim";
 }
@@ -750,7 +750,8 @@ export async function handleDelegateApi(request: Request, env: Env, url: URL): P
           hostname: r.hostname,
           role: r.role,
           online,
-          joystick: r.allow_teleop === null ? null : r.allow_teleop === 1,
+          // The robot's own configuration is its owner's business, as in the app and on the web.
+          joystick: r.role !== "owner" || r.allow_teleop === null ? null : r.allow_teleop === 1,
           updateAvailable: r.role === "owner" ? updateAvailable(r.agent_version, latest) : null,
           addedByDelegate: r.via === "claim",
         };

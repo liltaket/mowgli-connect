@@ -1,4 +1,4 @@
-import { isUserAllowed } from "./access";
+import { canSignIn } from "./access";
 import type { Env } from "./env";
 import { nowSeconds, parseCookies, randomToken, sha256Hex } from "./util";
 
@@ -30,7 +30,7 @@ export async function getSessionUser(env: Env, request: Request): Promise<Sessio
     .bind(await sha256Hex(token), nowSeconds())
     .first<SessionUser>();
   if (!row) return null;
-  if (!(await isUserAllowed(env, row.id, row.login))) return null; // allowlist changes take effect immediately
+  if (!(await canSignIn(env, row.id, row.login))) return null; // access changes (and a last share ending) take effect immediately
   return row;
 }
 

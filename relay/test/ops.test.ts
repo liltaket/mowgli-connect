@@ -123,6 +123,8 @@ describe("agent updates", () => {
     await testEnv.DB.prepare("UPDATE robots SET agent_version = 'main-2222222222222' WHERE robot_id = ?").bind(robot.robotId).run();
     const page = await (await call("/", { headers: { Cookie: user.cookie } })).text();
     expect(page).toContain("Update available");
+    expect(page).toContain("sh ~/mowgli-connect/update.sh");
+    expect(page).not.toContain("docker compose pull");
     await testEnv.DB.prepare("UPDATE robots SET agent_version = 'main-1111111' WHERE robot_id = ?").bind(robot.robotId).run();
     expect(await (await call("/", { headers: { Cookie: user.cookie } })).text()).not.toContain("Update available");
   });

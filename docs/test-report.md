@@ -161,8 +161,14 @@ Open / by design:
    real grid size must be measured on a robot. Cloudflare does not charge for it, but a robot on
    weak Wi-Fi/4G uplink may struggle. Option (not built): an opt-in per-topic rate cap in the agent
    for remote viewers (safe for full-snapshot topics).
-5. **Viewer role breaks the GUI**: on load it calls `/api/config/keys/get` and
-   `/api/settings/yaml`, which the viewer policy denies. Prototype is owner-only.
+5. **Shared users see settings errors in the GUI**: on every page it loads the settings
+   (`GET /api/settings`, `GET /api/settings/yaml` and a `/api/config/keys/get` read of every
+   `system.*` key, the HomeKit PIN among them), which the viewer and operator policies deny
+   because they hold credentials, so a shared user gets "failed to load" toasts and settings-based
+   values fall back to the GUI's defaults. The map page's own display settings (offset, bearing,
+   obstacle outlines) are allowed by a strict key check; the tile layer is not shown (its address
+   comes from the owner-only `/api/config/envs`). Read from the GUI source at `8d78819`
+   ([sharing.md](sharing.md)), not tried on a running GUI or a real robot.
 6. **Deep link lost on re-login** (always lands on `/`).
 7. Quick Tunnels: no SSE (firmware flash progress — do flashing locally anyway), 200 in-flight
    requests, hostname changes on restart (re-login, localStorage prefs reset), no SLA.

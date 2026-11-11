@@ -1,4 +1,4 @@
-import { isUserAllowed, ownedRobots, robotLimit } from "./access";
+import { afterSharesEnded, canOwn, ownedRobots, robotLimit } from "./access";
 import { alert } from "./alerts";
 import type { Env } from "./env";
 import { sealToken, tokenKeyUsable } from "./tokenSeal";
@@ -276,19 +276,21 @@ async function claimWithCode(
       }
     }
     if (still?.status === "unclaimed") {
-      // Another robot was added to this account at the same moment and filled its limit. Keep the
-      // code valid. The tunnel and the reserved name stay with the robot and are reused when it is
-      // added again: deleting them here could race with somebody else claiming the same robot
-      // under a new code, and take down their tunnel.
+      // Another robot was added to this account at the same moment and filled its limit, or the
+      // person lost access while the tunnel was being made (their limit is now 0). Keep the code
+      // valid. The tunnel (named after the robot id) and the reserved name stay with the robot
+      // row and are reused when it is added again: deleting them here could race with somebody
+      // else claiming the same robot under a new code, and take down their tunnel.
       await restoreCode();
       return limitReached((await robotLimit(env, userId)) ?? 0);
     }
     // Lost a race; the tunnel (idempotent by name) now belongs to the winner, so leave it alone.
     return INVALID;
   }
-  // Access removed while the robot was being added: do not leave it owned by nobody usable.
+  // Access removed between reading the limit and here: do not leave the robot owned by nobody
+  // usable. Unlinking deletes its tunnel (retried by the cron).
   const who = await env.DB.prepare("SELECT login FROM users WHERE id = ?").bind(userId).first<{ login: string }>();
-  if (!who || !(await isUserAllowed(env, userId, who.login))) {
+  if (!who || !(await canOwn(env, userId, who.login))) {
     await unlinkRobot(env, provisioner, robotId);
     return { ok: false, status: 403, message: "Your account no longer has access." };
   }
@@ -313,12 +315,30 @@ export async function unlinkRobot(
   robotId: string,
   opts: { onlyIfOwnerNotInvited?: boolean; guard?: UnlinkGuard } = {},
 ): Promise<boolean> {
+  const guests = await revokeRobot(env, provisioner, robotId, opts);
+  if (guests === null) return false;
+  // The people it was shared with lost that share like any other: for a guest's last one, end
+  // their relay sessions and app devices now, so they do not come back with a later share.
+  await afterSharesEnded(env, guests);
+  return true;
+}
+
+/**
+ * unlinkRobot without the guests' cleanup, for unlinking many robots at once: returns the people
+ * it was shared with (for afterSharesEnded), or null when it was not unlinked.
+ */
+export async function revokeRobot(
+  env: Env,
+  provisioner: TunnelProvisioner,
+  robotId: string,
+  opts: { onlyIfOwnerNotInvited?: boolean; guard?: UnlinkGuard } = {},
+): Promise<string[] | null> {
   const now = nowSeconds();
   const before = await env.DB.prepare("SELECT hostname, tunnel_id, dns_record_id FROM robots WHERE robot_id = ? AND status = 'claimed'")
     .bind(robotId)
     .first<{ hostname: string | null; tunnel_id: string | null; dns_record_id: string | null }>();
-  if (!before) return false;
-  const [upd] = await env.DB.batch([
+  if (!before) return null;
+  const [upd, del] = await env.DB.batch<{ user_id: string; role: string }>([
     env.DB.prepare(
       `UPDATE robots SET status = 'revoked', session_epoch = session_epoch + 1, tunnel_token = NULL, updated_at = ?1
        WHERE robot_id = ?2 AND status = 'claimed'
@@ -330,16 +350,16 @@ export async function unlinkRobot(
                                            AND expires_at > ?1 AND (' ' || scopes || ' ') LIKE '% robots:manage %')))`,
     ).bind(now, robotId, opts.onlyIfOwnerNotInvited ? 1 : 0, opts.guard?.ownerId ?? null, opts.guard?.delegationId ?? null),
     // In the same transaction, and only if the robot was just revoked.
-    env.DB.prepare("DELETE FROM members WHERE robot_id = ? AND changes() > 0").bind(robotId),
+    env.DB.prepare("DELETE FROM members WHERE robot_id = ? AND changes() > 0 RETURNING user_id, role").bind(robotId),
     // No delegation keeps an unlinked robot in its robot set, so a robot added again later (by
     // anyone) does not come back to an agent (docs/agent-delegation.md).
     env.DB.prepare(
       "DELETE FROM delegation_robots WHERE robot_id = ?1 AND EXISTS (SELECT 1 FROM robots WHERE robot_id = ?1 AND status = 'revoked')",
     ).bind(robotId),
   ]);
-  if (upd?.meta.changes !== 1) return false;
+  if (upd?.meta.changes !== 1) return null;
   await cleanupRevoked(env, provisioner, robotId, { robotId, ...camel(before) });
-  return true;
+  return (del?.results ?? []).filter((m) => m.role !== "owner").map((m) => m.user_id);
 }
 
 function camel(r: { hostname: string | null; tunnel_id: string | null; dns_record_id: string | null }) {

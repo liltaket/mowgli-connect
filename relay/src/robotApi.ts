@@ -1,4 +1,4 @@
-import { isUserAllowed } from "./access";
+import { canOwn } from "./access";
 import { alert } from "./alerts";
 import { killSwitchSince } from "./killSwitch";
 import type { Env } from "./env";
@@ -273,12 +273,13 @@ async function selfResponse(env: Env, robotId: string, robot: RobotRow): Promise
   )
     .bind(robotId)
     .all<{ user_id: string; role: string; login: string | null }>();
-  // Someone whose access was removed is no member as far as the robot is concerned, so their open
-  // sessions on it end at its next sync.
-  const members = [];
-  for (const m of rows.results) {
-    if (m.login !== null && (await isUserAllowed(env, m.user_id, m.login))) members.push(m);
-  }
+  // Everyone's access to a robot follows its owner's: when the owner may no longer own robots
+  // (removed by the admin), the robot accepts nobody, the people it is shared with included, and
+  // their open sessions on it end at its next sync. Shares the admin removed are gone from the
+  // table. One check per poll, and no writes (the poll is the relay's busiest path).
+  const owner = rows.results.find((m) => m.role === "owner");
+  const ownerOk = owner !== undefined && owner.login !== null && (await canOwn(env, owner.user_id, owner.login));
+  const members = ownerOk ? rows.results.filter((m) => m.login !== null) : [];
   // Delegates with read-only sessions on this robot are listed as viewers of their own
   // (docs/agent-delegation.md), so the robot caps their sessions and drops them when they end.
   const claimed = robot.status === "claimed";
