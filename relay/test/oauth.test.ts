@@ -15,7 +15,7 @@ async function startLogin(returnTo?: string) {
   return { res, loc, state, cookie };
 }
 
-function stubGithub(profile: { id: number; login: string; name?: string | null }) {
+function stubGithub(profile: { id: number; login: string; name?: string | null; two_factor_authentication?: boolean | null }) {
   const calls: { url: string; body?: any }[] = [];
   const usedCodes = new Set<string>();
   vi.stubGlobal("fetch", async (input: string | Request, init?: RequestInit) => {
@@ -28,7 +28,7 @@ function stubGithub(profile: { id: number; login: string; name?: string | null }
       usedCodes.add(body.code);
       return Response.json({ access_token: "gho_fake" });
     }
-    if (url === "https://api.github.com/user") return Response.json(profile);
+    if (url === "https://api.github.com/user") return Response.json({ two_factor_authentication: true, ...profile });
     return new Response("unexpected", { status: 500 });
   });
   return calls;
@@ -43,6 +43,7 @@ describe("GitHub OAuth login", () => {
     expect(loc.searchParams.get("redirect_uri")).toBe(`${ORIGIN}/auth/github/callback`);
     expect(loc.searchParams.get("code_challenge_method")).toBe("S256");
     expect(loc.searchParams.get("code_challenge")!.length).toBe(43);
+    expect(loc.searchParams.get("scope")).toBe("read:user");
     expect(state.length).toBeGreaterThanOrEqual(43);
     const cookie = setCookies(res)[0]!;
     expect(cookie).toContain(`__Host-mcr_oauth=${state}`);
@@ -124,6 +125,18 @@ describe("GitHub OAuth login", () => {
     expect(res.status).toBe(403);
     expect(setCookies(res).some((c) => c.startsWith("__Host-mcr_session=") && !c.includes("Max-Age=0"))).toBe(false);
     expect(await testEnv.DB.prepare("SELECT 1 FROM users WHERE id = 'gh:777001'").first()).toBeNull();
+  });
+
+  it("refuses accounts without two-factor authentication, or where GitHub does not report it, and creates no session", async () => {
+    for (const [i, tfa] of ([false, null, undefined] as const).entries()) {
+      const { state, cookie } = await startLogin();
+      stubGithub({ id: 777100 + i, login: "no-2fa", two_factor_authentication: tfa });
+      const res = await call(`/auth/github/callback?code=abc&state=${state}`, { headers: { Cookie: cookie }, redirect: "manual" });
+      expect(res.status).toBe(403);
+      expect(await res.text()).toContain("Two-factor authentication");
+      expect(setCookies(res).some((c) => c.startsWith("__Host-mcr_session=") && !c.includes("Max-Age=0"))).toBe(false);
+      expect(await testEnv.DB.prepare("SELECT 1 FROM users WHERE id = ?").bind(`gh:${777100 + i}`).first()).toBeNull();
+    }
   });
 
   it("does not follow open-redirect return_to values", async () => {

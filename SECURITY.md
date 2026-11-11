@@ -58,6 +58,10 @@ Out of scope: vulnerabilities in MowgliNext itself, in Cloudflare or GitHub, and
 - Who may sign in is decided by GitHub **id**, never by login: the admin (`ADMIN_GITHUB_IDS`) and
   the people they invite from the relay's admin page. Removing someone ends their relay sessions at
   once; their robots stop accepting them at the next sync, within a few minutes.
+- The GitHub account must have two-factor authentication turned on. The relay asks GitHub for the
+  `read:user` scope, reads `two_factor_authentication` from `GET /user` and refuses the sign-in
+  unless it is `true` (a missing field also refuses). It checks the account setting, not that this
+  particular sign-in used a second factor, and the token is discarded right after.
 - **Updates are a root of trust too.** The robot runs the image `ghcr.io/liltaket/mowgli-connect-agent`
   it pulls, and automatic updates (on by default) pull `:latest` every night. Whoever can publish
   that image (the GitHub account, this repository's Actions, or GHCR) could ship one that skips the
