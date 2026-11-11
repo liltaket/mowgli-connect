@@ -195,10 +195,34 @@ interface ConsentParams {
   name: string;
   requested: Scope[];
   ttl: number;
+  /** When the link stops working (the request's `exp`). */
+  expiresAt: number;
+}
+
+/**
+ * Why a consent link cannot be shown or approved, for the consent page and the app alike: a code
+ * for the app, the HTTP status and the message the page shows. `title` replaces the page's own.
+ */
+export interface ConsentRefusal {
+  error: string;
+  status: number;
+  message: string;
+  title?: string;
+  revokedAt?: number;
+}
+
+function refused(error: string, status: number, message: string, title?: string): ConsentRefusal {
+  return { error, status, message, ...(title ? { title } : {}) };
+}
+
+function isRefusal<T extends object>(v: T | ConsentRefusal): v is ConsentRefusal {
+  return "error" in v;
 }
 
 /** How long a consent link is valid after the CLI made it. */
 export const REQUEST_MAX_AGE_SECONDS = 30 * 60;
+/** Approvals per person and hour, on the page and in the app together (each replaces its rows). */
+export const APPROVALS_PER_HOUR = 30;
 
 /**
  * The consent link's parameters, or a reason it is not valid. The link carries `key` and `req`, a
@@ -206,15 +230,16 @@ export const REQUEST_MAX_AGE_SECONDS = 30 * 60;
  * duration (security review 14): nobody but that account can approve it, and nobody can change
  * what it asks for without the key.
  */
-async function readConsentParams(env: Env, get: (k: string) => string | null, user: SessionUser): Promise<ConsentParams | string> {
+async function readConsentParams(env: Env, get: (k: string) => string | null, user: SessionUser): Promise<ConsentParams | ConsentRefusal> {
+  const invalid = (message: string) => refused("invalid_link", 400, message);
   const key = get("key") ?? "";
   let raw: Uint8Array;
   try {
     raw = b64urlDecode(key);
   } catch {
-    return "The link does not contain a valid key.";
+    return invalid("The link does not contain a valid key.");
   }
-  if (raw.length !== 32) return "The link does not contain a valid key.";
+  if (raw.length !== 32) return invalid("The link does not contain a valid key.");
   const delegateId = await deriveDelegateId(raw);
   let c: Record<string, unknown>;
   try {
@@ -223,26 +248,30 @@ async function readConsentParams(env: Env, get: (k: string) => string | null, us
     if (!(await verifyJws(parsed, await importEd25519Public(raw)))) throw new Error();
     c = parsed.payload;
   } catch {
-    return "The link is not signed by the agent's key. Run mc-delegate request again and use the new link.";
+    return invalid("The link is not signed by the agent's key. Run mc-delegate request again and use the new link.");
   }
   const now = nowSeconds();
-  if (c.iss !== delegateId || c.aud !== env.RELAY_ORIGIN) return "The link is not for this key or this site.";
+  if (c.iss !== delegateId || c.aud !== env.RELAY_ORIGIN) return invalid("The link is not for this key or this site.");
   if (typeof c.iat !== "number" || typeof c.exp !== "number" || c.exp - c.iat > REQUEST_MAX_AGE_SECONDS || c.iat > now + SKEW_SECONDS || c.exp + SKEW_SECONDS < now) {
-    return "The link has expired. Run mc-delegate request again and use the new link.";
+    return refused("link_expired", 400, "The link has expired. Run mc-delegate request again and use the new link.");
   }
   // Bound to the account's immutable id, not its login: GitHub gives a login that was given up to
   // whoever takes it next (final security review). `account` is the login, for messages only.
   if (typeof c.uid !== "string" || c.uid !== user.id) {
-    return `This link is for the account @${typeof c.account === "string" ? c.account.slice(0, 39) : "?"}${typeof c.uid === "string" ? ` (${c.uid.slice(0, 24)})` : ""}, and you are signed in as @${user.login} (${user.id}). Only that account can approve it.`;
+    return refused(
+      "wrong_account",
+      400,
+      `This link is for the account @${typeof c.account === "string" ? c.account.slice(0, 39) : "?"}${typeof c.uid === "string" ? ` (${c.uid.slice(0, 24)})` : ""}, and you are signed in as @${user.login} (${user.id}). Only that account can approve it.`,
+    );
   }
   const name = cleanLabel(c.name, 40);
-  if (!name) return "The link does not name the agent.";
+  if (!name) return invalid("The link does not name the agent.");
   const requested = typeof c.scopes === "string" ? parseScopes(c.scopes.split(/[\s,]+/)) : null;
-  if (requested === null) return "The link asks for a right that cannot be given to an agent. Only the rights listed in the documentation exist.";
-  if (requested.length === 0) return "The link does not ask for any right.";
+  if (requested === null) return invalid("The link asks for a right that cannot be given to an agent. Only the rights listed in the documentation exist.");
+  if (requested.length === 0) return invalid("The link does not ask for any right.");
   const t = c.ttl ?? DEFAULT_TTL;
   const ttl = typeof t === "number" && Number.isInteger(t) && t > 0 ? ([...TTL_CHOICES].reverse().find((x) => x <= t) ?? TTL_CHOICES[0]) : DEFAULT_TTL;
-  return { publicKey: key, request: get("req")!, delegateId, name, requested, ttl };
+  return { publicKey: key, request: get("req")!, delegateId, name, requested, ttl, expiresAt: c.exp };
 }
 
 interface MemberRobot {
@@ -319,17 +348,22 @@ export async function handleDelegationBrowser(
   return renew(env, user, pu, id, deps);
 }
 
-function revokedKeyPage(revokedAt: number, pu: PageUser): Response {
-  return errorPage(
-    "This key was revoked",
-    `This agent's key was revoked on ${when(revokedAt)}, and a revoked key can never be approved again, because it may have been copied. On the agent's machine, create a new key with mc-delegate --profile <new name> init, then request access with it.`,
-    409,
-    pu,
-  );
+function revokedKey(revokedAt: number): ConsentRefusal {
+  return {
+    error: "key_revoked",
+    status: 409,
+    title: "This key was revoked",
+    message: `This agent's key was revoked on ${when(revokedAt)}, and a revoked key can never be approved again, because it may have been copied. On the agent's machine, create a new key with mc-delegate --profile <new name> init, then request access with it.`,
+    revokedAt,
+  };
 }
 
 function errorPage(title: string, message: string, status: number, pu: PageUser): Response {
   return outcomePage(title, "stop", html`<p>${message}</p>`, status, pu);
+}
+
+function refusalPage(r: ConsentRefusal, title: string, pu: PageUser): Response {
+  return errorPage(r.title ?? title, r.message, r.status, pu);
 }
 
 const OUTCOME_ICONS = {
@@ -357,23 +391,48 @@ const NEVER = ["Drive a robot or start mowing", "Change a robot's settings or ma
 
 const TTL_SHORT: Record<number, string> = { 3600: "1 hour", 28800: "8 hours", 86400: "1 day", 604800: "7 days", 2592000: "30 days" };
 
+const CLAIM_LIMITS = `At most ${CLAIMS_PER_HOUR} new robots an hour, and ${MAX_CLAIMED_ROBOTS} it added linked at a time. Your own robot limit still applies.`;
+const NO_ROBOTS = "You have no robots yet. Robots the agent adds itself are included automatically.";
+const ADDED_BY_AGENT = "Added by this agent. Stays included until it is unlinked.";
+
 function roleText(role: string): string {
   return role === "owner" ? "You own it" : role === "operator" ? "Shared with you: can control" : "Shared with you: view only";
 }
 
-async function consentPage(env: Env, user: SessionUser, pu: PageUser, p: ConsentParams | string): Promise<Response> {
-  if (typeof p === "string") return errorPage("This link is not valid", p, 400, pu);
+function robotsNote(requested: Scope[]): string {
+  return `Nothing is ticked unless you tick it.${requested.includes("robots:manage") ? " It may unlink every robot you tick that you own, so tick a real mower only if it needs one." : ""}`;
+}
+
+/** Everything the consent screen shows, read without writing anything; the page and the app share it. */
+interface ConsentView {
+  p: ConsentParams;
+  existing: DelegationRow | null;
+  robots: MemberRobot[];
+  set: Map<string, "consent" | "claim">;
+  now: number;
+}
+
+async function consentView(env: Env, user: SessionUser, p: ConsentParams | ConsentRefusal): Promise<ConsentView | ConsentRefusal> {
+  if (isRefusal(p)) return p;
   const now = nowSeconds();
   const existing = await loadDelegation(env, p.delegateId);
-  if (existing && existing.user_id !== user.id) return errorPage("This key belongs to another account", "Create a new key on the agent's machine (mc-delegate init with a new profile) and try again.", 409, pu);
-  if (existing?.revoked_at) return revokedKeyPage(existing.revoked_at, pu);
+  if (existing && existing.user_id !== user.id) {
+    return refused("key_other_account", 409, "Create a new key on the agent's machine (mc-delegate init with a new profile) and try again.", "This key belongs to another account");
+  }
+  if (existing?.revoked_at) return revokedKey(existing.revoked_at);
   if ((await activeCount(env, user.id, p.delegateId, now)) >= MAX_ACTIVE_DELEGATIONS) {
-    return errorPage("Too many AI agents", `You have ${MAX_ACTIVE_DELEGATIONS} active AI agents already. Revoke one on your robots page first.`, 403, pu);
+    return refused("too_many_agents", 403, `You have ${MAX_ACTIVE_DELEGATIONS} active AI agents already. Revoke one on your robots page first.`, "Too many AI agents");
   }
   const robots = await memberRobots(env, user.id);
   const set = existing ? await robotSet(env, p.delegateId) : new Map<string, "consent" | "claim">();
+  return { p, existing, robots, set, now };
+}
+
+async function consentPage(env: Env, user: SessionUser, pu: PageUser, params: ConsentParams | ConsentRefusal): Promise<Response> {
+  const v = await consentView(env, user, params);
+  if (isRefusal(v)) return refusalPage(v, "This link is not valid", pu);
+  const { p, existing, robots, set, now } = v;
   const hidden = (k: string, v: string) => html`<input type="hidden" name="${k}" value="${v}">`;
-  const manage = p.requested.includes("robots:manage");
   return page(
     "Let an AI agent act for you",
     html`<div class="consent-page">
@@ -388,26 +447,26 @@ async function consentPage(env: Env, user: SessionUser, pu: PageUser, p: Consent
 <p>This must match the fingerprint in your terminal exactly.</p>
 <p class="warn">Only continue if you ran <code>mc-delegate request</code> yourself, a moment ago. If someone sent you this link, close this page.</p>
 </section>
-${existing ? html`<p class="notice" role="status">This key already has access (${stateText(existing, now)}: ${scopeTitles(existing.scopes)}). Approving replaces its rights, its robots and its expiry.</p>` : ""}
+${existing ? html`<p class="notice" role="status">${existingNotice(existing, now)}</p>` : ""}
 
 <form method="post" action="/delegate/authorize" class="consent-form">
 ${hidden("key", p.publicKey)}${hidden("req", p.request)}
 <h2>What it may do</h2>
 <ul class="choices">${p.requested.map(
-      (s) => html`<li><label class="choice"><input type="checkbox" name="scope" value="${s}" checked><span class="choice-text"><span class="choice-title">${SCOPE_TEXT[s].title}</span><span class="choice-detail">${SCOPE_TEXT[s].text}</span>${s === "robots:claim" ? html`<span class="choice-detail">At most ${CLAIMS_PER_HOUR} new robots an hour, and ${MAX_CLAIMED_ROBOTS} it added linked at a time. Your own robot limit still applies.</span>` : ""}</span><code class="scope">${s}</code></label></li>`,
+      (s) => html`<li><label class="choice"><input type="checkbox" name="scope" value="${s}" checked><span class="choice-text"><span class="choice-title">${SCOPE_TEXT[s].title}</span><span class="choice-detail">${SCOPE_TEXT[s].text}</span>${s === "robots:claim" ? html`<span class="choice-detail">${CLAIM_LIMITS}</span>` : ""}</span><code class="scope">${s}</code></label></li>`,
     )}</ul>
 <div class="never"><p class="never-title">It can never</p><ul>${NEVER.map((n) => html`<li>${n}</li>`)}</ul></div>
 
 <h2>Which robots it may see</h2>
 ${
   robots.length === 0
-    ? html`<p class="empty">You have no robots yet. Robots the agent adds itself are included automatically.</p>`
+    ? html`<p class="empty">${NO_ROBOTS}</p>`
     : html`<ul class="choices">${robots.map((r) =>
         set.get(r.robot_id) === "claim"
-          ? html`<li><div class="choice fixed"><span class="tick-fixed" aria-hidden="true"></span><span class="choice-text"><span class="choice-title">${r.label ?? r.name ?? r.robot_id}${simulatorBadge(r.simulator)}</span><span class="choice-detail">Added by this agent. Stays included until it is unlinked.</span></span></div></li>`
+          ? html`<li><div class="choice fixed"><span class="tick-fixed" aria-hidden="true"></span><span class="choice-text"><span class="choice-title">${r.label ?? r.name ?? r.robot_id}${simulatorBadge(r.simulator)}</span><span class="choice-detail">${ADDED_BY_AGENT}</span></span></div></li>`
           : html`<li><label class="choice"><input type="checkbox" name="robot" value="${r.robot_id}"${set.get(r.robot_id) === "consent" ? html` checked` : ""}><span class="choice-text"><span class="choice-title">${r.label ?? r.name ?? r.robot_id}${simulatorBadge(r.simulator)}</span><span class="choice-detail">${roleText(r.role)}</span></span><code class="scope">${r.robot_id}</code></label></li>`,
       )}</ul>
-<p class="muted small-print">Nothing is ticked unless you tick it.${manage ? " It may unlink every robot you tick that you own, so tick a real mower only if it needs one." : ""}</p>`
+<p class="muted small-print">${robotsNote(p.requested)}</p>`
 }
 
 <fieldset class="duration"><legend>Access ends after</legend>
@@ -427,43 +486,64 @@ ${
   );
 }
 
-async function approve(env: Env, request: Request, user: SessionUser, pu: PageUser): Promise<Response> {
-  const ct = request.headers.get("Content-Type") ?? "";
-  const text = ct.startsWith("application/x-www-form-urlencoded") ? await readBodyText(request, 8192) : null;
-  if (text === null) return errorPage("Not approved", "The form was not filled in correctly.", 400, pu);
-  const form = new URLSearchParams(text);
-  if (form.get("decision") !== "allow") {
-    return outcomePage("Not approved", "none", html`<p>Nothing was changed. The agent has no new access. You can close this page.</p>`, 200, pu);
-  }
-  const p = await readConsentParams(env, (k) => form.get(k), user);
-  if (typeof p === "string") return errorPage("Not approved", p, 400, pu);
-  if (form.get("confirm") !== "yes") return errorPage("Not approved", "Tick the box that says you started this yourself.", 400, pu);
-  const ttl = Number(form.get("ttl"));
-  if (!(TTL_CHOICES as readonly number[]).includes(ttl)) return errorPage("Not approved", "Choose how long the access lasts.", 400, pu);
-  const chosen = parseScopes(form.getAll("scope"));
+function existingNotice(existing: DelegationRow, now: number): string {
+  return `This key already has access (${stateText(existing, now)}: ${scopeTitles(existing.scopes)}). Approving replaces its rights, its robots and its expiry.`;
+}
+
+/** What the person chose on the consent screen, as the page's form or the app's JSON sent it. */
+interface ConsentChoice {
+  confirm: boolean;
+  ttl: number;
+  scopes: string[];
+  robots: string[];
+}
+
+interface Approved {
+  delegateId: string;
+  name: string;
+  scopes: Scope[];
+  robots: { robotId: string; name: string }[];
+  expiresAt: number;
+}
+
+/**
+ * Approves a consent link with the person's choices, for the page and the app: validates every
+ * field again and creates or replaces the delegation in one transaction.
+ */
+async function approveConsent(env: Env, user: SessionUser, get: (k: string) => string | null, choice: ConsentChoice, actor: "person" | "app"): Promise<Approved | ConsentRefusal> {
+  const p = await readConsentParams(env, get, user);
+  if (isRefusal(p)) return p;
+  const badForm = () => refused("bad_request", 400, "The form was not filled in correctly.");
+  if (!choice.confirm) return refused("confirm_required", 400, "Tick the box that says you started this yourself.");
+  const ttl = choice.ttl;
+  if (!(TTL_CHOICES as readonly number[]).includes(ttl)) return refused("bad_ttl", 400, "Choose how long the access lasts.");
+  const chosen = parseScopes(choice.scopes);
   const scopes = chosen?.filter((s) => p.requested.includes(s)) ?? [];
-  if (chosen === null || scopes.length !== chosen.length) return errorPage("Not approved", "The form was not filled in correctly.", 400, pu);
-  if (scopes.length === 0) return errorPage("Not approved", "Tick at least one thing the agent may do, or press Cancel.", 400, pu);
-  const robots = [...new Set(form.getAll("robot"))];
-  if (robots.length > 100 || !robots.every(isRobotId)) return errorPage("Not approved", "The form was not filled in correctly.", 400, pu);
+  if (chosen === null || scopes.length !== chosen.length) return badForm();
+  if (scopes.length === 0) return refused("no_scopes", 400, "Tick at least one thing the agent may do, or press Cancel.");
+  const robots = [...new Set(choice.robots)];
+  if (robots.length > 100 || !robots.every(isRobotId)) return badForm();
   const mine = new Map((await memberRobots(env, user.id)).map((r) => [r.robot_id, r.label ?? r.name ?? r.robot_id]));
-  if (!robots.every((r) => mine.has(r))) return errorPage("Not approved", "One of the robots is not yours any more. Load the page again.", 409, pu);
+  if (!robots.every((r) => mine.has(r))) return refused("robot_not_yours", 409, "One of the robots is not yours any more. Load the page again.");
 
   const now = nowSeconds();
   const id = p.delegateId;
   // Every statement after the first runs only if this approval was stored (the same approved_at).
   const stored = "EXISTS (SELECT 1 FROM delegations WHERE delegation_id = ?1 AND user_id = ?2 AND approved_at = ?3 AND revoked_at IS NULL)";
+  const approvalsThisHour = (u: string, t: string) => `SELECT COUNT(*) AS n FROM delegation_events e JOIN delegations o ON o.delegation_id = e.delegation_id
+    WHERE o.user_id = ${u} AND e.action = 'approve' AND e.at > ${t} - 3600`;
   const steps = [
     // At most MAX_ACTIVE_DELEGATIONS active per person, and a key belongs to one person, in the
-    // same statement. A revoked key is never approved again.
+    // same statement. A revoked key is never approved again. At most APPROVALS_PER_HOUR approvals.
     env.DB.prepare(
       `INSERT INTO delegations (delegation_id, user_id, public_key, name, scopes, ttl_seconds, created_at, approved_at, expires_at)
        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8
        WHERE (SELECT COUNT(*) FROM delegations WHERE user_id = ?2 AND delegation_id != ?1 AND revoked_at IS NULL AND expires_at > ?7) < ?9
+         AND (${approvalsThisHour("?2", "?7")}) < ?10
        ON CONFLICT(delegation_id) DO UPDATE SET name = excluded.name, scopes = excluded.scopes, ttl_seconds = excluded.ttl_seconds,
          approved_at = excluded.approved_at, expires_at = excluded.expires_at
        WHERE delegations.user_id = excluded.user_id AND delegations.public_key = excluded.public_key AND delegations.revoked_at IS NULL`,
-    ).bind(id, user.id, p.publicKey, p.name, scopes.join(" "), ttl, now, now + ttl, MAX_ACTIVE_DELEGATIONS),
+    ).bind(id, user.id, p.publicKey, p.name, scopes.join(" "), ttl, now, now + ttl, MAX_ACTIVE_DELEGATIONS, APPROVALS_PER_HOUR),
     env.DB.prepare(`DELETE FROM delegation_robots WHERE delegation_id = ?1 AND via = 'consent' AND ${stored}`).bind(id, user.id, now),
     ...robots.map((r) =>
       env.DB.prepare(
@@ -474,32 +554,121 @@ async function approve(env: Env, request: Request, user: SessionUser, pu: PageUs
     ),
     env.DB.prepare(
       `INSERT INTO delegation_events (delegation_id, at, actor, action, outcome, detail)
-       SELECT ?1, ?3, 'person', 'approve', 'ok', ?4 WHERE ${stored}`,
-    ).bind(id, user.id, now, `${scopes.join(" ")}; ${robots.length} robots ticked; ${ttlText(ttl)}`),
+       SELECT ?1, ?3, ?5, 'approve', 'ok', ?4 WHERE ${stored}`,
+    ).bind(id, user.id, now, `${scopes.join(" ")}; ${robots.length} robots ticked; ${ttlText(ttl)}`, actor),
   ];
   const [ins] = await env.DB.batch(steps);
   if (ins?.meta.changes !== 1) {
     const owner = await loadDelegation(env, id);
-    if (owner?.user_id === user.id && owner.revoked_at) return revokedKeyPage(owner.revoked_at, pu);
-    return owner && owner.user_id !== user.id
-      ? errorPage("Not approved", "This key belongs to another account.", 409, pu)
-      : errorPage("Not approved", `You have ${MAX_ACTIVE_DELEGATIONS} active AI agents already. Revoke one on your robots page first.`, 403, pu);
+    if (owner?.user_id === user.id && owner.revoked_at) return revokedKey(owner.revoked_at);
+    if (owner && owner.user_id !== user.id) return refused("key_other_account", 409, "This key belongs to another account.");
+    const n = await env.DB.prepare(approvalsThisHour("?1", "?2")).bind(user.id, now).first<{ n: number }>();
+    if ((n?.n ?? 0) >= APPROVALS_PER_HOUR) return refused("rate_limited", 429, "Too many approvals in the last hour. Try again later.");
+    return refused("too_many_agents", 403, `You have ${MAX_ACTIVE_DELEGATIONS} active AI agents already. Revoke one on your robots page first.`);
   }
-  console.log("delegation: approved", id, "for", user.id, scopes.join(" "));
+  console.log("delegation: approved", id, "for", user.id, "in the", actor === "app" ? "app" : "browser", scopes.join(" "));
+  // Only robots the transaction stored (a robot unlinked meanwhile is left out).
+  const set = await robotSet(env, id);
+  return { delegateId: id, name: p.name, scopes, robots: robots.filter((r) => set.get(r) === "consent").map((r) => ({ robotId: r, name: mine.get(r) ?? r })), expiresAt: now + ttl };
+}
+
+async function approve(env: Env, request: Request, user: SessionUser, pu: PageUser): Promise<Response> {
+  const ct = request.headers.get("Content-Type") ?? "";
+  const text = ct.startsWith("application/x-www-form-urlencoded") ? await readBodyText(request, 8192) : null;
+  if (text === null) return errorPage("Not approved", "The form was not filled in correctly.", 400, pu);
+  const form = new URLSearchParams(text);
+  if (form.get("decision") !== "allow") {
+    return outcomePage("Not approved", "none", html`<p>Nothing was changed. The agent has no new access. You can close this page.</p>`, 200, pu);
+  }
+  const a = await approveConsent(
+    env,
+    user,
+    (k) => form.get(k),
+    { confirm: form.get("confirm") === "yes", ttl: Number(form.get("ttl")), scopes: form.getAll("scope"), robots: form.getAll("robot") },
+    "person",
+  );
+  if (isRefusal(a)) return refusalPage(a, "Not approved", pu);
   return outcomePage(
     "Approved",
     "ok",
-    html`<p><strong>${p.name}</strong> can now act for you. Go back to your terminal.</p>
+    html`<p><strong>${a.name}</strong> can now act for you. Go back to your terminal.</p>
 <dl class="summary">
-<div><dt>It may</dt><dd>${scopeTitles(scopes.join(" "))}</dd></div>
-<div><dt>Robots you ticked</dt><dd>${robots.length === 0 ? "None" : robots.map((r) => mine.get(r) ?? r).join(", ")}</dd></div>
-<div><dt>Access ends</dt><dd>${when(now + ttl)}</dd></div>
-<div><dt>Key</dt><dd><code>${fingerprint(id)}</code></dd></div>
+<div><dt>It may</dt><dd>${scopeTitles(a.scopes.join(" "))}</dd></div>
+<div><dt>Robots you ticked</dt><dd>${a.robots.length === 0 ? "None" : a.robots.map((r) => r.name).join(", ")}</dd></div>
+<div><dt>Access ends</dt><dd>${when(a.expiresAt)}</dd></div>
+<div><dt>Key</dt><dd><code>${fingerprint(a.delegateId)}</code></dd></div>
 </dl>`,
     200,
     pu,
-    html`<a class="btn" href="/delegations/${id}">See its activity</a><a class="btn primary" href="/">Back to my robots</a>`,
+    html`<a class="btn" href="/delegations/${a.delegateId}">See its activity</a><a class="btn primary" href="/">Back to my robots</a>`,
   );
+}
+
+// --- The app: the same consent, from the phone (docs/app-api.md) ------------------------------
+
+/**
+ * POST /v1/app/delegations/consent for a signed-in app device: `step` "preview" answers what the
+ * consent screen shows (writes nothing), "approve" approves with the person's choices through the
+ * same validation and transaction as the page, "decline" changes nothing. The caller has checked
+ * the device signature, the person's access and the emergency stop.
+ */
+export async function appConsent(env: Env, user: SessionUser, body: Record<string, unknown>): Promise<Response> {
+  const fail = (r: ConsentRefusal) => json({ error: r.error, message: r.message, ...(r.revokedAt ? { revokedAt: r.revokedAt } : {}) }, r.status);
+  if (!delegationAllowed(env, user.id)) return json({ error: "not_found" }, 404);
+  if (typeof body.key !== "string" || typeof body.req !== "string") return json({ error: "bad_request" }, 400);
+  const link: Record<string, string> = { key: body.key, req: body.req };
+  const get = (k: string) => (Object.hasOwn(link, k) ? link[k]! : null);
+
+  if (body.step === "decline") return json({ approved: false });
+
+  if (body.step === "preview") {
+    const v = await consentView(env, user, await readConsentParams(env, get, user));
+    if (isRefusal(v)) return fail(v);
+    const { p, existing, robots, set, now } = v;
+    return json({
+      delegateId: p.delegateId,
+      fingerprint: fingerprint(p.delegateId),
+      name: p.name,
+      login: user.login,
+      linkExpiresAt: p.expiresAt,
+      scopes: p.requested.map((s) => ({ scope: s, title: SCOPE_TEXT[s].title, text: SCOPE_TEXT[s].text, limits: s === "robots:claim" ? CLAIM_LIMITS : null })),
+      never: NEVER,
+      robots: robots.map((r) => {
+        const via = set.get(r.robot_id);
+        return {
+          robotId: r.robot_id,
+          name: r.label ?? r.name ?? r.robot_id,
+          role: r.role,
+          detail: via === "claim" ? ADDED_BY_AGENT : roleText(r.role),
+          // The robot's own claim (MC_SIMULATOR): display only, never for access.
+          simulator: r.simulator === 1,
+          ticked: via === "consent",
+          addedByAgent: via === "claim",
+        };
+      }),
+      robotsNote: robotsNote(p.requested),
+      noRobots: NO_ROBOTS,
+      ttl: { choices: TTL_CHOICES.map((t) => ({ seconds: t, label: TTL_SHORT[t] ?? ttlText(t) })), default: p.ttl },
+      existing: existing
+        ? { active: existing.expires_at > now, expiresAt: existing.expires_at, scopes: existing.scopes.split(" "), notice: existingNotice(existing, now) }
+        : null,
+    });
+  }
+
+  if (body.step !== "approve") return json({ error: "bad_request" }, 400);
+  const strings = (v: unknown): v is string[] => Array.isArray(v) && v.length <= 100 && v.every((s) => typeof s === "string");
+  if (!strings(body.scopes) || !strings(body.robots) || typeof body.ttl !== "number" || typeof body.confirm !== "boolean") return json({ error: "bad_request" }, 400);
+  const a = await approveConsent(env, user, get, { confirm: body.confirm, ttl: body.ttl, scopes: body.scopes, robots: body.robots }, "app");
+  if (isRefusal(a)) return fail(a);
+  return json({
+    approved: true,
+    delegateId: a.delegateId,
+    fingerprint: fingerprint(a.delegateId),
+    name: a.name,
+    scopes: a.scopes.map((s) => ({ scope: s, title: SCOPE_TEXT[s].title })),
+    robots: a.robots,
+    expiresAt: a.expiresAt,
+  });
 }
 
 async function renew(env: Env, user: SessionUser, pu: PageUser, id: string, deps: DelegationPageDeps): Promise<Response> {

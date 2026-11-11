@@ -3,7 +3,7 @@ import { b64urlEncode, deriveRobotId, signJws } from "../src/crypto";
 import { b64urlDecode } from "../src/crypto";
 import { bodyHash, fingerprint, verifyDelegateAssertion } from "../src/delegateAuth";
 import { unlinkRobot } from "../src/claim";
-import { CALLS_PER_HOUR, GRANTS_PER_ROBOT_PER_HOUR, MAX_ACTIVE_DELEGATIONS, MAX_CLAIMED_ROBOTS, WRONG_CODES_PER_HOUR } from "../src/delegation";
+import { APPROVALS_PER_HOUR, CALLS_PER_HOUR, GRANTS_PER_ROBOT_PER_HOUR, MAX_ACTIVE_DELEGATIONS, MAX_CLAIMED_ROBOTS, WRONG_CODES_PER_HOUR } from "../src/delegation";
 import { createProvisioner } from "../src/provisioner";
 import type { Env } from "../src/env";
 import { nowSeconds, randomToken } from "../src/util";
@@ -547,14 +547,14 @@ describe("revocation, renewal and the activity log", () => {
   });
 });
 
-describe("the app can list and revoke delegations", () => {
+describe("the app: list, approve and revoke delegations", () => {
   const APP_ID = "ABCDE12345.garden.mowgli.app";
   const appEnv: Env = { ...env, APP_IOS_APP_IDS: APP_ID };
   const enc = new TextEncoder();
+  const CONSENT = "/v1/app/delegations/consent";
 
-  it("lists them and revokes one, signed by the device", async () => {
-    const { user, dl } = await delegated(["robots:read"]);
-    // A device for this person, inserted directly (the sign-in flow is covered in app.test.ts).
+  /** A signed-in app device for this person, inserted directly (the sign-in flow is covered in app.test.ts). */
+  async function appDevice(user: TestUser) {
     const pair = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
     const j = (await crypto.subtle.exportKey("jwk", pair.publicKey)) as JsonWebKey;
     const jwk = { kty: "EC", crv: "P-256", x: j.x!, y: j.y! };
@@ -562,13 +562,31 @@ describe("the app can list and revoke delegations", () => {
     await db.prepare("INSERT INTO devices (device_id, user_id, name, public_jwk, created_at, last_used_at) VALUES (?, ?, 'Phone', ?, ?, ?)")
       .bind(tp, user.id, JSON.stringify(jwk), nowSeconds(), nowSeconds())
       .run();
-    const signed = async (method: string, path: string) => {
+    return async (method: string, path: string, body?: unknown, e: Env = appEnv) => {
       const now = nowSeconds();
       const h = b64urlEncode(enc.encode(JSON.stringify({ alg: "ES256", typ: "mc-device+jwt" })));
       const p = b64urlEncode(enc.encode(JSON.stringify({ iss: tp, aud: ORIGIN, htm: method, htu: `${ORIGIN}${path}`, iat: now, exp: now + 60, jti: randomToken(16) })));
       const sig = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, pair.privateKey, enc.encode(`${h}.${p}`)));
-      return call(path, { method, headers: { Authorization: `MC-Device ${h}.${p}.${b64urlEncode(sig)}` } }, appEnv);
+      const headers: Record<string, string> = { Authorization: `MC-Device ${h}.${p}.${b64urlEncode(sig)}` };
+      if (body !== undefined) headers["Content-Type"] = "application/json";
+      return call(path, { method, headers, body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body) }, e);
     };
+  }
+
+  /** The consent link's two parameters, as the app reads them from the pasted or opened link. */
+  async function link(who: TestUser | string, dl: Delegate, scopes: string[], o: ConsentOptions = {}) {
+    const q = await consentQuery(who, dl, scopes, o);
+    return { key: q.get("key")!, req: q.get("req")! };
+  }
+
+  const rows = async (id: string) => ({
+    delegations: (await db.prepare("SELECT COUNT(*) AS n FROM delegations WHERE delegation_id = ?").bind(id).first<{ n: number }>())!.n,
+    events: (await events(id)).length,
+  });
+
+  it("lists them and revokes one, signed by the device", async () => {
+    const { user, dl } = await delegated(["robots:read"]);
+    const signed = await appDevice(user);
     expect(await (await signed("GET", "/v1/app/delegations")).json()).toEqual({
       delegations: [expect.objectContaining({ delegateId: dl.id, name: "Test agent", scopes: ["robots:read"], revokedAt: null })],
     });
@@ -576,6 +594,185 @@ describe("the app can list and revoke delegations", () => {
     expect((await signed("POST", `/v1/app/delegations/${dl.id}/revoke`)).status).toBe(404);
     expect((await events(dl.id)).at(-1)).toMatchObject({ actor: "app", action: "revoke" });
     expect((await api(dl, "GET", "/v1/delegate/self")).status).toBe(401);
+  });
+
+  it("previews what the consent page shows, and writes nothing", async () => {
+    const user = await newUser();
+    const { robot: mower } = await registerAndClaim(user, "Back Lawn");
+    const { robot: sim } = await registerAndClaim(user, "Farm robot");
+    await db.prepare("UPDATE robots SET simulator = 1 WHERE robot_id = ?").bind(sim.robotId).run();
+    const signed = await appDevice(user);
+    const dl = await newDelegate();
+    const res = await signed("POST", CONSENT, { step: "preview", ...(await link(user, dl, ["robots:read", "robots:claim", "robots:manage"], { name: "Claude <b>laptop</b>", ttl: 2 * 86400 })) });
+    expect(res.status).toBe(200);
+    const v = (await res.json()) as Record<string, any>;
+    expect(v).toMatchObject({
+      delegateId: dl.id,
+      fingerprint: fingerprint(dl.id),
+      name: "Claude <b>laptop</b>", // JSON, shown as text by the app
+      login: await loginOf(user),
+      never: ["Drive a robot or start mowing", "Change a robot's settings or maps", "Share robots or invite people", "Give itself more access"],
+      ttl: {
+        choices: [
+          { seconds: 3600, label: "1 hour" },
+          { seconds: 28800, label: "8 hours" },
+          { seconds: 86400, label: "1 day" },
+          { seconds: 604800, label: "7 days" },
+          { seconds: 2592000, label: "30 days" },
+        ],
+        default: 86400, // 2 days snapped down, as on the page
+      },
+      existing: null,
+    });
+    expect(v.linkExpiresAt).toBeGreaterThan(nowSeconds());
+    expect(v.scopes.map((s: { scope: string }) => s.scope)).toEqual(["robots:read", "robots:claim", "robots:manage"]);
+    expect(v.scopes[0]).toEqual({ scope: "robots:read", title: "See robots", text: expect.stringContaining("List the robots"), limits: null });
+    expect(v.scopes[1].limits).toContain("At most 10 new robots an hour");
+    expect(v.robotsNote).toContain("It may unlink every robot you tick that you own");
+    expect(v.robots).toEqual([
+      { robotId: mower.robotId, name: "Back Lawn", role: "owner", detail: "You own it", simulator: false, ticked: false, addedByAgent: false },
+      { robotId: sim.robotId, name: "Farm robot", role: "owner", detail: "You own it", simulator: true, ticked: false, addedByAgent: false },
+    ]);
+    // The page shows the same texts.
+    const text = await (await getPage(`/delegate/authorize?${await consentQuery(user, dl, ["robots:read", "robots:claim", "robots:manage"])}`, user)).text();
+    for (const s of v.scopes) expect(text).toContain(s.text.replace(/'/g, "&#39;"));
+    expect(text).toContain(v.robotsNote);
+    expect(await rows(dl.id)).toEqual({ delegations: 0, events: 0 });
+  });
+
+  it("approves with the person's choices, through the same checks as the page", async () => {
+    const user = await newUser();
+    const { robot: a } = await registerAndClaim(user, "Front");
+    const { robot: b } = await registerAndClaim(user, "Back");
+    const signed = await appDevice(user);
+    const dl = await newDelegate();
+    const l = await link(user, dl, ["robots:read", "robots:manage", "sessions:readonly"]);
+    const res = await signed("POST", CONSENT, { step: "approve", ...l, scopes: ["robots:read", "sessions:readonly"], robots: [b.robotId], ttl: 3600, confirm: true });
+    expect(res.status).toBe(200);
+    const done = (await res.json()) as Record<string, any>;
+    expect(done).toMatchObject({
+      approved: true,
+      delegateId: dl.id,
+      fingerprint: fingerprint(dl.id),
+      name: "Test agent",
+      scopes: [{ scope: "robots:read", title: "See robots" }, { scope: "sessions:readonly", title: "Look at a robot's own app, read-only" }],
+      robots: [{ robotId: b.robotId, name: "Back" }],
+    });
+    expect(done.expiresAt).toBeLessThanOrEqual(nowSeconds() + 3600);
+    expect((await events(dl.id)).at(-1)).toMatchObject({ actor: "app", action: "approve", outcome: "ok" });
+    const self = (await (await api(dl, "GET", "/v1/delegate/self")).json()) as { scopes: string[]; robots: string[] };
+    expect(self).toMatchObject({ scopes: ["robots:read", "sessions:readonly"], robots: [b.robotId] });
+    // The activity page says it was the app.
+    expect(await (await getPage(`/delegations/${dl.id}`, user)).text()).toContain("you, in the app");
+
+    // Previewing again shows what it has now and the robot it may see.
+    const again = (await (await signed("POST", CONSENT, { step: "preview", ...(await link(user, dl, ["robots:read"])) })).json()) as Record<string, any>;
+    expect(again.existing).toMatchObject({ active: true, scopes: ["robots:read", "sessions:readonly"], notice: expect.stringContaining("This key already has access") });
+    expect(again.robots.map((r: { robotId: string; ticked: boolean }) => [r.robotId, r.ticked])).toEqual([[a.robotId, false], [b.robotId, true]]);
+  });
+
+  it("refuses what the page refuses, and stores nothing", async () => {
+    const user = await newUser();
+    const stranger = await newUser();
+    const { robot: theirs } = await registerAndClaim(stranger);
+    const signed = await appDevice(user);
+    const dl = await newDelegate();
+    const other = await newDelegate();
+    const l = await link(user, dl, ["robots:read"]);
+    const approveWith = async (over: Record<string, unknown>, ln: { key: string; req: string } = l) =>
+      signed("POST", CONSENT, { step: "approve", ...ln, scopes: ["robots:read"], robots: [], ttl: 86400, confirm: true, ...over });
+    const refused = async (res: Response, status: number, error: string) => {
+      expect(res.status).toBe(status);
+      expect(await res.json()).toMatchObject({ error, message: expect.any(String) });
+    };
+    await refused(await approveWith({ confirm: false }), 400, "confirm_required");
+    await refused(await approveWith({ scopes: ["robots:read", "robots:manage"] }), 400, "bad_request"); // not requested
+    await refused(await approveWith({ scopes: ["sessions:owner"] }), 400, "bad_request");
+    await refused(await approveWith({ scopes: [] }), 400, "no_scopes");
+    await refused(await approveWith({ robots: [theirs.robotId] }), 409, "robot_not_yours");
+    await refused(await approveWith({ ttl: 99 * 86400 }), 400, "bad_ttl");
+    await refused(await approveWith({}, await link(stranger, dl, ["robots:read"])), 400, "wrong_account");
+    await refused(await approveWith({}, await link(user, dl, ["robots:read"], { claims: { iat: nowSeconds() - 3600, exp: nowSeconds() - 1800 } })), 400, "link_expired");
+    await refused(await approveWith({}, { key: l.key, req: (await link(user, other, ["robots:read"])).req }), 400, "invalid_link"); // another key's request
+    await refused(await approveWith({}, await link(user, dl, ["robots:read", "robots:drive"])), 400, "invalid_link");
+    for (const bad of [{ confirm: "yes" }, { ttl: "86400" }, { scopes: "robots:read" }, { robots: [1] }, { step: "allow" }, { key: 1 }]) {
+      expect((await approveWith(bad)).status).toBe(400);
+    }
+    expect((await signed("POST", CONSENT, "{")).status).toBe(400);
+    expect((await signed("POST", CONSENT, { step: "approve", ...l, scopes: ["robots:read"], robots: [], ttl: 86400, confirm: true, pad: "x".repeat(9000) })).status).toBe(400);
+    expect(await (await signed("POST", CONSENT, { step: "decline", ...l })).json()).toEqual({ approved: false });
+    expect((await signed("GET", CONSENT)).status).toBe(405);
+    expect(await rows(dl.id)).toEqual({ delegations: 0, events: 0 });
+  });
+
+  it("never approves a revoked key, or another person's key, again", async () => {
+    const { user, dl } = await delegated(["robots:read"]);
+    const signed = await appDevice(user);
+    expect((await signed("POST", `/v1/app/delegations/${dl.id}/revoke`)).status).toBe(200);
+    for (const step of ["preview", "approve"]) {
+      const res = await signed("POST", CONSENT, { step, ...(await link(user, dl, ["robots:read"])), scopes: ["robots:read"], robots: [], ttl: 86400, confirm: true });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ error: "key_revoked", revokedAt: expect.any(Number) });
+    }
+    const other = await newUser();
+    const theirs = await delegated(["robots:read"]);
+    const otherSigned = await appDevice(other);
+    for (const step of ["preview", "approve"]) {
+      const res = await otherSigned("POST", CONSENT, { step, ...(await link(other, theirs.dl, ["robots:read"])), scopes: ["robots:read"], robots: [], ttl: 86400, confirm: true });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ error: "key_other_account" });
+    }
+  });
+
+  it(`keeps to ${MAX_ACTIVE_DELEGATIONS} active delegations and ${APPROVALS_PER_HOUR} approvals an hour`, async () => {
+    const user = await newUser();
+    const signed = await appDevice(user);
+    const approveNew = async (dl: Delegate) => signed("POST", CONSENT, { step: "approve", ...(await link(user, dl, ["robots:read"])), scopes: ["robots:read"], robots: [], ttl: 3600, confirm: true });
+    const first = await newDelegate();
+    for (let i = 0; i < MAX_ACTIVE_DELEGATIONS; i++) expect((await approveNew(i === 0 ? first : await newDelegate())).status).toBe(200);
+    const extra = await newDelegate();
+    const prev = await signed("POST", CONSENT, { step: "preview", ...(await link(user, extra, ["robots:read"])) });
+    expect([prev.status, ((await prev.json()) as { error: string }).error]).toEqual([403, "too_many_agents"]);
+    expect([(await approveNew(extra)).status]).toEqual([403]);
+    // Approving one of them again works, until the hourly approvals are used up (the page counts too).
+    for (let i = MAX_ACTIVE_DELEGATIONS; i < APPROVALS_PER_HOUR; i++) expect((await approveNew(first)).status).toBe(200);
+    const limited = await approveNew(first);
+    expect([limited.status, ((await limited.json()) as { error: string }).error]).toEqual([429, "rate_limited"]);
+    expect((await postForm("/delegate/authorize", user, await approvalForm(user, first, ["robots:read"]))).status).toBe(429);
+  });
+
+  it("is only for the people DELEGATION_USERS names, and stops under the emergency stop", async () => {
+    const user = await newUser();
+    const signed = await appDevice(user);
+    const dl = await newDelegate();
+    const body = { step: "preview", ...(await link(user, dl, ["robots:read"])) };
+    expect((await signed("POST", CONSENT, body, { ...appEnv, DELEGATION_USERS: "" })).status).toBe(404);
+    expect((await signed("POST", CONSENT, body, { ...appEnv, DELEGATION_USERS: "gh:1" })).status).toBe(404);
+    expect((await signed("POST", CONSENT, body, { ...appEnv, DELEGATION_USERS: user.id })).status).toBe(200);
+    await db.prepare("INSERT INTO settings (key, value) VALUES ('kill_switch', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+    try {
+      for (const step of ["preview", "approve"]) {
+        const res = await signed("POST", CONSENT, { ...body, step, scopes: ["robots:read"], robots: [], ttl: 3600, confirm: true });
+        expect([res.status, await res.json()]).toEqual([503, { error: "paused" }]);
+      }
+    } finally {
+      await db.prepare("DELETE FROM settings WHERE key = 'kill_switch'").run();
+    }
+    expect(await rows(dl.id)).toEqual({ delegations: 0, events: 0 });
+  });
+
+  it("needs a signed call that works once", async () => {
+    const user = await newUser();
+    const dl = await newDelegate();
+    const body = JSON.stringify({ step: "preview", ...(await link(user, dl, ["robots:read"])) });
+    expect((await call(CONSENT, { method: "POST", headers: { "Content-Type": "application/json" }, body }, appEnv)).status).toBe(401);
+  });
+
+  it("lists the consent link in apple-app-site-association only with delegation on", async () => {
+    const paths = async (e: Env) =>
+      ((await (await call("/.well-known/apple-app-site-association", {}, e)).json()) as { applinks: { details: { components: { "/": string }[] }[] } }).applinks.details[0]!.components.map((c) => c["/"]);
+    expect(await paths(appEnv)).toEqual(["/app/callback", "/delegate/authorize"]);
+    expect(await paths({ ...appEnv, DELEGATION_USERS: "" })).toEqual(["/app/callback"]);
   });
 });
 
