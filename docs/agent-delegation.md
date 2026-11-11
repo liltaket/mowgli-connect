@@ -99,7 +99,7 @@ sequenceDiagram
     participant Relay as connect.bronc.app
     participant Robot as <name>.bronc.app (robot agent)
     CLI->>CLI: init: Ed25519 key, file 600 outside any repository
-    CLI-->>Browser: prints /delegate/authorize?key=…&req=… (signed: account, name, scopes, ttl)
+    CLI-->>Browser: prints /delegate/authorize?key=…&req=… (signed: uid, account, name, scopes, ttl)
     Browser->>Relay: GET consent page (no writes)
     Browser->>Relay: POST approve (Origin-checked, the person's choices)
     CLI->>Relay: GET /v1/delegate/self, signed: active
@@ -122,7 +122,8 @@ the private key.
 
 ### 2. Consent
 
-`mc-delegate request --account <GitHub login>` prints a link:
+`mc-delegate request --account <GitHub login>` looks up that login's immutable account id on
+GitHub (`GET https://api.github.com/users/<login>`, public) and prints a link:
 
 ```text
 https://connect.bronc.app/delegate/authorize?key=<raw public key, base64url>&req=<signed request>
@@ -130,11 +131,13 @@ https://connect.bronc.app/delegate/authorize?key=<raw public key, base64url>&req
 
 `req` is a compact JWS signed with the delegate key, header
 `{"alg":"EdDSA","typ":"mc-delegate-request+jwt"}`, claims `iss` (the delegate id), `aud` (the
-relay origin), `account` (the GitHub login that may approve it), `name`, `scopes`
+relay origin), `uid` (the id of the one account that may approve it, `gh:<number>`), `account`
+(its login, for messages only), `name`, `scopes`
 (space-separated), `ttl` (seconds), `iat` and `exp` (at most 30 minutes later; the CLI uses 20).
-The relay checks the signature and the times, and shows the page only to the named account:
-whoever else sees the link cannot approve the key for their own account, and nobody can change
-the name, the scopes or the duration without the key (security review 14). The link holds no
+The relay checks the signature and the times, and shows the page only to the account with that
+id: whoever else sees the link cannot approve the key for their own account, and nobody can change
+the name, the scopes or the duration without the key (security review 14). It is the id and not
+the login, because GitHub gives a login that was given up to whoever takes it next (final review). The link holds no
 secret, and the relay stores nothing until the person approves. Signed in, the person sees:
 
 - the agent's name, marked as chosen by the agent, and the key fingerprint, with the instruction
@@ -181,7 +184,7 @@ entry, written in the same statement as the call limit and any per-action limit.
 
 | Call | Scope | Result |
 |---|---|---|
-| `GET /v1/delegate/self` | none | `{delegateId, name, login, scopes, robots, expiresAt}` |
+| `GET /v1/delegate/self` | none | `{delegateId, name, userId, login, scopes, robots, expiresAt}` |
 | `GET /v1/delegate/robots` | `robots:read` | `{robots: [{robotId, name, hostname, role, online, joystick, updateAvailable, addedByDelegate}]}` |
 | `POST /v1/delegate/claim` | `robots:claim` | body `{code, label?, step: "preview"\|"confirm"}`, as the app API |
 | `POST /v1/delegate/robots/{id}/label` | `robots:manage` | body `{label}` (empty clears it) |
@@ -215,7 +218,7 @@ role (`minRole`), so:
 
 | Limit | Value | Where |
 |---|---|---|
-| Calls per delegation | 120 per hour. Checked before anything is written (a delegation over its limit writes nothing, its replay record included), and counted by the activity entry every authenticated call writes, malformed ones included | relay |
+| Calls per delegation | 120 per hour. Checked before anything is written, and again in the statement that writes the replay record (a delegation over its limit, or whose person lost access, writes nothing), and counted by the activity entry every authenticated call writes, malformed ones and refusals by the caps below included | relay |
 | Read-only grants per delegation and robot | 6 per hour, so a delegate cannot fill the robot's session table (1,024 sessions of 12 hours, shared by everyone); the CLI reuses a session for 11 hours | relay, one statement |
 | Robot claims (confirm) per delegation | 10 per hour, and at most 10 robots it added that are still linked | relay, one statement |
 | Wrong pairing codes | 5 per hour per delegation, separate from the person's own 10, so a misbehaving agent cannot lock the person out of adding robots | relay, existing guess budget |
@@ -274,7 +277,7 @@ shown escaped, like everywhere else on the relay's pages.
 | **CSRF on the consent page** | GET writes nothing; the POST requires the relay's Origin (or `Sec-Fetch-Site: same-origin`); the page cannot be framed (`frame-ancestors 'none'`); the approval re-validates every field and needs the confirmation box. | None known. |
 | **Privilege escalation via claim** | A claimed robot is the person's robot with the normal owner rights *for the person*, not for the agent: the agent still has only its scopes, viewer sessions and the robot set. The robot set is cleared when a robot is unlinked, so a robot the person later adds again by hand does not return to the agent. Claims share the existing code path: single-use codes, the robot limit and a guess budget. | A robot claimed by an agent appears on the person's robots page as theirs. |
 | **Escalation inside the robot** | The robot caps a delegate's session at viewer because the relay lists `dlg:<id>` as a viewer only; even a grant naming `owner` gets a viewer session. | The viewer policy for the MowgliNext GUI is an allow list, but it has not been checked against every screen of the real GUI (docs/architecture.md). |
-| **Another person approves your agent's key** (several people in `DELEGATION_USERS` and one sees the link first; found by security review 14) | The link is signed by the key and names the one account that may approve it; the relay refuses everyone else, and `mc-delegate request --wait` refuses an approval by another account. | None known. |
+| **Another person approves your agent's key** (several people in `DELEGATION_USERS` and one sees the link first; found by security review 14) | The link is signed by the key and names the id of the one account that may approve it (not its login, which GitHub hands on after a rename; final review); the relay refuses everyone else, and `mc-delegate request --wait` refuses an approval by another account id. | The CLI trusts GitHub's API (over TLS) to map the login to the right id. |
 | **Denial of service through the agent** | Per-delegation call, claim, grant and guess limits, checked before writing; a separate guess budget; no unauthenticated writes. | A delegation can use up its own limits and, at most, a fifth of the relay's daily D1 writes; a stolen key used until revocation can cost D1 reads and Worker requests (see Rate limits). |
 | **A copy of the relay database** | Delegations hold only public keys, names and scopes. | None beyond the existing model. |
 | **Relay or Cloudflare account compromised** | Unchanged: the root of trust (SECURITY.md). | Unchanged. |

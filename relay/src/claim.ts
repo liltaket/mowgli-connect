@@ -245,11 +245,12 @@ async function claimWithCode(
        WHERE robot_id = ?6 AND status = 'unclaimed'
          AND (?7 IS NULL OR (SELECT COUNT(*) FROM members m JOIN robots o ON o.robot_id = m.robot_id
                              WHERE m.user_id = ?8 AND m.role = 'owner' AND o.status = 'claimed') < ?7)
-         -- A delegate's claim needs its delegation still active, with robots:claim, at this moment
-         -- (provisioning above takes seconds; security review 14).
+         -- A delegate's claim needs its delegation still active, with robots:claim, at this moment:
+         -- provisioning above takes seconds, so the expiry is compared with the time now (?10), not
+         -- with when the claim started (security review 14 and the final review).
          AND (?9 IS NULL OR EXISTS (SELECT 1 FROM delegations WHERE delegation_id = ?9 AND user_id = ?8 AND revoked_at IS NULL
-                                      AND expires_at > ?5 AND (' ' || scopes || ' ') LIKE '% robots:claim %'))`,
-    ).bind(tunnel.hostname, tunnel.tunnelId, tunnel.dnsRecordId, sealed, now, robotId, limit, userId, delegationId),
+                                      AND expires_at > ?10 AND (' ' || scopes || ' ') LIKE '% robots:claim %'))`,
+    ).bind(tunnel.hostname, tunnel.tunnelId, tunnel.dnsRecordId, sealed, now, robotId, limit, userId, delegationId, nowSeconds()),
     env.DB.prepare(
       "INSERT INTO members (robot_id, user_id, role, label, created_at) SELECT ?, ?, 'owner', ?, ? WHERE changes() > 0",
     ).bind(robotId, userId, label, now),

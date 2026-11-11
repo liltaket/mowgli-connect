@@ -25,20 +25,22 @@ const DefaultRelay = "https://connect.bronc.app"
 type Profile struct {
 	Dir   string
 	Relay string
-	// Account is the GitHub login this key asks access from (set by request).
-	Account string
-	Key     ed25519.PrivateKey
+	// Account is the GitHub login this key asks access from, and AccountID its immutable id (set by request).
+	Account   string
+	AccountID string
+	Key       ed25519.PrivateKey
 }
 
 type profileConfig struct {
-	Relay   string `json:"relay"`
-	Account string `json:"account,omitempty"`
+	Relay     string `json:"relay"`
+	Account   string `json:"account,omitempty"`
+	AccountID string `json:"account_id,omitempty"`
 }
 
 // SaveAccount remembers which account this key asks access from.
-func (p *Profile) SaveAccount(account string) error {
-	p.Account = account
-	cfg, _ := json.MarshalIndent(profileConfig{Relay: p.Relay, Account: account}, "", "  ")
+func (p *Profile) SaveAccount(account, id string) error {
+	p.Account, p.AccountID = account, id
+	cfg, _ := json.MarshalIndent(profileConfig{Relay: p.Relay, Account: account, AccountID: id}, "", "  ")
 	return os.WriteFile(filepath.Join(p.Dir, "config.json"), append(cfg, '\n'), 0o600)
 }
 
@@ -187,7 +189,7 @@ func Load(dir string) (*Profile, error) {
 	if b, err := os.ReadFile(filepath.Join(abs, "config.json")); err == nil {
 		var c profileConfig
 		if json.Unmarshal(b, &c) == nil && c.Relay != "" {
-			p.Relay, p.Account = c.Relay, c.Account
+			p.Relay, p.Account, p.AccountID = c.Relay, c.Account, c.AccountID
 		}
 	}
 	if err := validRelay(p.Relay); err != nil {

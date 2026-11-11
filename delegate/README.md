@@ -12,5 +12,6 @@ mc-delegate request --account <your GitHub login> --name "Claude (T3, laptop)" -
 claude mcp add --scope user mowgli-connect -- ~/.local/bin/mc-delegate mcp
 ```
 
-The key is kept in `~/.config/mowgli-connect-delegate/<profile>/key` (mode 600, never printed).
+`request` looks up the login's immutable account id on GitHub and signs that into the link, so
+only that account can approve it. The key is kept in `~/.config/mowgli-connect-delegate/<profile>/key` (mode 600, never printed).
 Standard library only; `go test ./...` runs the tests.

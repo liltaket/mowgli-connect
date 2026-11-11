@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { b64urlEncode, deriveRobotId, signJws } from "../src/crypto";
 import { b64urlDecode } from "../src/crypto";
 import { bodyHash, fingerprint, verifyDelegateAssertion } from "../src/delegateAuth";
@@ -53,8 +53,9 @@ interface ConsentOptions {
 /** The consent link's query, signed with the delegate key for `who`'s account, as the CLI does. */
 async function consentQuery(who: TestUser | string, dl: Delegate, scopes: string[], o: ConsentOptions = {}): Promise<URLSearchParams> {
   const account = typeof who === "string" ? who : await loginOf(who);
+  const uid = typeof who === "string" ? "gh:0" : who.id;
   const now = nowSeconds();
-  const claims = { iss: dl.id, aud: ORIGIN, account, name: o.name ?? "Test agent", scopes: scopes.join(" "), ttl: o.ttl ?? 86400, iat: now, exp: now + 1200, ...o.claims };
+  const claims = { iss: dl.id, aud: ORIGIN, account, uid, name: o.name ?? "Test agent", scopes: scopes.join(" "), ttl: o.ttl ?? 86400, iat: now, exp: now + 1200, ...o.claims };
   return new URLSearchParams({ key: dl.publicKey, req: await signJws({ alg: "EdDSA", typ: "mc-delegate-request+jwt" }, claims, o.signWith ?? dl.key) });
 }
 
@@ -119,6 +120,9 @@ describe("delegation off by default", () => {
     expect((await api(dl, "GET", "/v1/delegate/self", undefined, testEnv)).status).toBe(404);
     expect((await getPage(`/delegate/authorize?${await consentQuery(user, dl, ["robots:read"])}`, user, testEnv)).status).toBe(404);
     expect(await (await getPage("/", user, testEnv)).text()).not.toContain("AI agents");
+    const appOff: Env = { ...testEnv, APP_IOS_APP_IDS: "ABCDE12345.garden.mowgli.app" };
+    expect((await call("/v1/app/delegations", {}, appOff)).status).toBe(404);
+    expect((await call(`/v1/app/delegations/${dl.id}/revoke`, { method: "POST" }, appOff)).status).toBe(404);
   });
 
   it("is only for the people DELEGATION_USERS names", async () => {
@@ -720,6 +724,80 @@ describe("security review 14", () => {
     const auth = await signBytes(dl, "POST", path, invalid);
     const r3 = await call(path, { method: "POST", headers: { Authorization: auth, "Content-Type": "application/json" }, body: invalid }, env);
     expect(r3.status).toBe(400);
+  });
+});
+
+describe("final security review", () => {
+  const replayRecords = (id: string) =>
+    db.prepare("SELECT COUNT(*) AS n FROM jti_seen WHERE robot_id = ?").bind(`dlg:${id}`).first<{ n: number }>().then((r) => r!.n);
+
+  it("refusals by a per-action cap use up the call limit, so a key cannot write more than the limit", async () => {
+    const { dl, owned } = await delegated(["sessions:readonly"], 1);
+    const path = `/v1/delegate/robots/${owned[0]!.robotId}/grant`;
+    let last: Response | null = null;
+    for (let i = 0; i < CALLS_PER_HOUR + 5; i++) last = await api(dl, "POST", path, {});
+    expect(last!.status).toBe(429);
+    expect(await last!.json()).toEqual({ error: "rate_limited" });
+    expect((await events(dl.id)).filter((e) => e.actor === "agent").length).toBe(CALLS_PER_HOUR);
+    expect(await replayRecords(dl.id)).toBe(CALLS_PER_HOUR);
+  });
+
+  it("a person who lost access writes nothing", async () => {
+    const { user, dl } = await delegated(["robots:read"]);
+    const e = { ...env, DELEGATION_USERS: "gh:1" };
+    for (let i = 0; i < 3; i++) expect((await api(dl, "GET", "/v1/delegate/self", undefined, e)).status).toBe(403);
+    expect(await replayRecords(dl.id)).toBe(0);
+    expect(user.id).not.toBe("gh:1");
+  });
+
+  it("the consent link is bound to the account id, not its login, which GitHub hands on", async () => {
+    const alice = await newUser();
+    const mallory = await newUser();
+    const dl = await newDelegate();
+    // Mallory now has the login Alice's link names.
+    const q = await consentQuery(alice, dl, ["robots:claim"], { claims: { account: await loginOf(mallory) } });
+    const page = await getPage(`/delegate/authorize?${q}`, mallory);
+    expect(page.status).toBe(400);
+    expect(await page.text()).toContain(alice.id);
+    const noUid = await consentQuery(mallory, dl, ["robots:claim"], { claims: { uid: undefined } });
+    expect((await getPage(`/delegate/authorize?${noUid}`, mallory)).status).toBe(400);
+    await approve(alice, dl, ["robots:claim"]);
+    expect(await (await api(dl, "GET", "/v1/delegate/self")).json()).toMatchObject({ userId: alice.id });
+  });
+
+  it("a claim does not complete when the delegation expires while the robot is being added", async () => {
+    const { dl } = await delegated(["robots:claim"]);
+    const robot = await newRobot();
+    const { pairingCode } = (await (await register(robot)).json()) as { pairingCode: string };
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const DB = pauseAt(
+        (sql) => sql.startsWith("SELECT status, name, hostname FROM robots"),
+        async () => {
+          vi.setSystemTime(Date.now() + 86400 * 1000 + 5000); // past the 24 hours it was approved for
+        },
+      );
+      const res = await api(dl, "POST", "/v1/delegate/claim", { code: pairingCode, step: "confirm" }, { ...env, DB });
+      expect(res.status).toBe(403);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(await db.prepare("SELECT status FROM robots WHERE robot_id = ?").bind(robot.robotId).first()).toEqual({ status: "unclaimed" });
+    expect(await db.prepare("SELECT COUNT(*) AS n FROM delegation_robots WHERE delegation_id = ?").bind(dl.id).first()).toEqual({ n: 0 });
+  });
+
+  it("a label waiting while its delegation loses robots:manage is not written", async () => {
+    const { user, dl, owned } = await delegated(["robots:manage", "robots:read"], 1);
+    const robotId = owned[0]!.robotId;
+    const DB = pauseAt(
+      (sql) => sql.startsWith("UPDATE members SET label"),
+      async () => {
+        await approve(user, dl, ["robots:read"], [robotId]);
+      },
+    );
+    const res = await api(dl, "POST", `/v1/delegate/robots/${robotId}/label`, { label: "Renamed" }, { ...env, DB });
+    expect(res.status).toBe(404);
+    expect(await db.prepare("SELECT label FROM members WHERE robot_id = ? AND user_id = ?").bind(robotId, user.id).first()).not.toEqual({ label: "Renamed" });
   });
 });
 
