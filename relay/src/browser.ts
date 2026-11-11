@@ -6,6 +6,7 @@ import { claimRobot, limitMessage, planAddress, previewClaim, reachedLimit, unli
 import { addedByDelegate, delegationsHtml, handleDelegationBrowser, isDelegationPath } from "./delegation";
 import { HOMEPAGE, html, lawn, markSvg, page, type PageUser, type SafeHtml } from "./html";
 import { mintGrant } from "./grant";
+import { killSwitchSince } from "./killSwitch";
 import { finishLogin, startLogin } from "./oauth";
 import { formatPairingCode, normalizePairingCode } from "./pairing";
 import { createProvisioner } from "./provisioner";
@@ -472,6 +473,15 @@ ${help}${retry}</div>`,
         html`<div class="standby">${lawn()}<h1>Robot starting</h1><p>The robot is starting its tunnel. This usually takes a few seconds.</p><p class="actions"><a class="btn primary" href="/open/${robotId}">Try again</a> <a class="btn" href="/">Back to my robots</a></p></div>`,
         503,
         { "Retry-After": "10" },
+        pageUser(env, user),
+      );
+    }
+    if ((await killSwitchSince(env)) !== null) {
+      return page(
+        "Paused",
+        html`<div class="standby">${lawn(true)}<h1>Access is paused</h1><p>The operator has stopped all robot access for now.</p><p class="actions"><a class="btn" href="/">Back to my robots</a></p></div>`,
+        503,
+        { "Retry-After": "300" },
         pageUser(env, user),
       );
     }

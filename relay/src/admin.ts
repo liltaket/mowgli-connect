@@ -4,6 +4,7 @@ import { unlinkRobot } from "./claim";
 import { revokeAllStatements } from "./delegation";
 import { GITHUB_LOGIN, lookupGithubUser } from "./github";
 import { html, page } from "./html";
+import { engageKillSwitch, killSwitchSince, releaseKillSwitch } from "./killSwitch";
 import type { SessionUser } from "./session";
 import { createProvisioner } from "./provisioner";
 import { isRobotId, nowSeconds, readBodyText } from "./util";
@@ -24,9 +25,11 @@ const NOTICES: Record<string, string> = {
     "Invitation removed, but they can still sign in: the relay's configuration (ALLOWED_GITHUB_LOGINS) also lets them in. Remove them there to end their access.",
   limit: "Robot limit saved.",
   settings: "Default robot limit saved.",
+  killed: "Emergency stop is on. All sessions have ended and no new ones are issued. Robots stop accepting anyone at their next sync, within a few minutes.",
+  resumed: "Emergency stop is off. People can sign in again. Sessions that existed before it was turned on stay ended.",
 };
 
-const ADMIN_PATH = /^\/admin(?:\/invite|\/settings|\/people\/(gh:[1-9][0-9]{0,19})\/(limit|remove)|\/robots\/([a-z2-7]{16})\/unlink)?$/;
+const ADMIN_PATH = /^\/admin(?:\/invite|\/settings|\/kill|\/resume|\/people\/(gh:[1-9][0-9]{0,19})\/(limit|remove)|\/robots\/([a-z2-7]{16})\/unlink)?$/;
 
 export function isAdminPath(pathname: string): boolean {
   return ADMIN_PATH.test(pathname);
@@ -96,6 +99,7 @@ async function adminPage(env: Env, user: SessionUser, url: URL, error?: string, 
     .bind(user.id)
     .first<{ n: number }>();
   const orphans = await orphanedRobots(env);
+  const killedAt = await killSwitchSince(env);
   const key = url.searchParams.get("notice") ?? "";
   const notice = Object.hasOwn(NOTICES, key) ? NOTICES[key] : undefined;
   return page(
@@ -105,6 +109,17 @@ ${notice ? html`<p class="notice" role="status">${notice}</p>` : ""}
 ${error ? html`<p class="error" role="alert">${error}</p>` : ""}
 <h1>Admin</h1>
 <p class="muted">Who can sign in to Mowgli Connect, and how many robots each person can add.</p>
+
+${
+  killedAt !== null
+    ? html`<form class="panel" method="post" action="/admin/resume" role="alert">
+<p class="error"><strong>Emergency stop is on</strong> since ${new Date(killedAt * 1000).toISOString().slice(0, 16).replace("T", " ")} UTC. Nobody can open a robot, and the robots accept nobody.</p>
+<button class="primary">Turn off the emergency stop</button></form>`
+    : html`<details class="panel"><summary>Emergency stop</summary>
+<form method="post" action="/admin/kill"><p class="muted">Ends every session, refuses new ones (admins can still sign in, to turn it off) and tells every robot to accept nobody, within a few minutes. Use it if you suspect an account, the relay or an update has been taken over. It does not touch the robots' own firmware or its emergency stop.</p>
+<label class="check"><input type="checkbox" name="confirm" value="1" required> I want to stop all access now</label>
+<button class="danger">Emergency stop</button></form></details>`
+}
 
 <h2>Invite someone</h2>
 <form class="panel" method="post" action="/admin/invite">
@@ -223,6 +238,16 @@ export async function handleAdmin(request: Request, env: Env, url: URL, user: Se
     const userId = `gh:${res.user.id}`;
     const already = isAdmin(env, userId) || (await env.DB.prepare("SELECT 1 AS ok FROM invites WHERE user_id = ?").bind(userId).first()) !== null;
     return confirmInvite(user, res.user, already);
+  }
+
+  if (url.pathname === "/admin/kill") {
+    if (form.get("confirm") !== "1") return adminPage(env, user, url, "Tick the box to confirm the emergency stop.", 400);
+    await engageKillSwitch(env, user.id);
+    return redirect("/admin?notice=killed");
+  }
+  if (url.pathname === "/admin/resume") {
+    await releaseKillSwitch(env, user.id);
+    return redirect("/admin?notice=resumed");
   }
 
   if (url.pathname === "/admin/settings") {

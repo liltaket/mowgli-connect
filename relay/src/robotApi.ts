@@ -1,5 +1,6 @@
 import { isUserAllowed } from "./access";
 import { alert } from "./alerts";
+import { killSwitchSince } from "./killSwitch";
 import type { Env } from "./env";
 import { openToken } from "./tokenSeal";
 import { AssertionError, verifyRobotAssertion, type VerifiedAssertion } from "./assertion";
@@ -281,16 +282,19 @@ async function selfResponse(env: Env, robotId: string, robot: RobotRow): Promise
   // Delegates with read-only sessions on this robot are listed as viewers of their own
   // (docs/agent-delegation.md), so the robot caps their sessions and drops them when they end.
   const claimed = robot.status === "claimed";
-  const delegates = claimed ? await delegateMembers(env, robotId, new Set(members.map((m) => m.user_id))) : [];
+  // Emergency stop (killSwitch.ts): the robot is told to stop its tunnel and to accept nobody.
+  const paused = claimed && (await killSwitchSince(env)) !== null;
+  const delegates = claimed && !paused ? await delegateMembers(env, robotId, new Set(members.map((m) => m.user_id))) : [];
   const key = await loadRelayKey(env);
   return json({
     robotId: robot.robot_id,
     status: robot.status,
     hostname: claimed ? robot.hostname : null,
-    tunnelToken: claimed ? await openToken(env, robotId, robot.tunnel_token) : null,
+    tunnelToken: claimed && !paused ? await openToken(env, robotId, robot.tunnel_token) : null,
     relayKeys: [{ kid: key.kid, publicKey: key.publicKeyB64 }],
     sessionEpoch: robot.session_epoch,
-    members: claimed ? [...members.map((m) => ({ userId: m.user_id, role: m.role })), ...delegates] : [],
+    members: claimed && !paused ? [...members.map((m) => ({ userId: m.user_id, role: m.role })), ...delegates] : [],
+    ...(paused ? { paused: true } : {}),
   });
 }
 

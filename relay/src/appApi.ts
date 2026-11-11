@@ -5,6 +5,7 @@ import { delegationAllowed, delegationEnabled, revokeDelegation } from "./delega
 import { DEVICE_ID, DeviceAuthError, jwkThumbprint, parseDeviceJwk, verifyDeviceAssertion, type DeviceJwk } from "./deviceAuth";
 import type { Env } from "./env";
 import { mintGrant } from "./grant";
+import { killSwitchSince } from "./killSwitch";
 import { html, page, type PageUser } from "./html";
 import { createProvisioner } from "./provisioner";
 import { json } from "./robotApi";
@@ -403,6 +404,9 @@ export async function handleAppApi(request: Request, env: Env, url: URL): Promis
   const auth = await authenticate(request, env, url);
   if (auth instanceof Response) return auth;
   const { device, user } = auth;
+
+  // The emergency stop: only signing out still works.
+  if (path !== "/v1/app/sign-out" && (await killSwitchSince(env)) !== null) return json({ error: "paused" }, 503, { "Retry-After": "300" });
 
   if (path === "/v1/app/me") {
     return json({ login: user.login, name: user.name, robotLimit: await robotLimit(env, user.id), robots: await ownedRobots(env, user.id) });
