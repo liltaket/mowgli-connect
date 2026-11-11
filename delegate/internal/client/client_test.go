@@ -249,7 +249,7 @@ func TestKeyFiles(t *testing.T) {
 func TestConsentURLIsSignedForOneAccount(t *testing.T) {
 	k := testKey()
 	c := &Client{Relay: "https://connect.bronc.app", Key: k, Now: func() time.Time { return time.Unix(1794000000, 0) }}
-	u, err := url.Parse(c.ConsentURL("bruno", "Claude (T3)", []string{"robots:read", "robots:claim"}, 24*time.Hour))
+	u, err := url.Parse(c.ConsentURL("bruno", "gh:120603498", "Claude (T3)", []string{"robots:read", "robots:claim"}, 24*time.Hour))
 	if err != nil || u.Path != "/delegate/authorize" || u.Query().Get("key") != b64.EncodeToString(k.Public().(ed25519.PublicKey)) {
 		t.Fatalf("%v %s", err, u)
 	}
@@ -263,7 +263,7 @@ func TestConsentURLIsSignedForOneAccount(t *testing.T) {
 	pb, _ := b64.DecodeString(parts[1])
 	json.Unmarshal(hb, &h)
 	json.Unmarshal(pb, &claims)
-	want := map[string]any{"iss": "mw3am46w5weex4a4", "aud": "https://connect.bronc.app", "account": "bruno", "name": "Claude (T3)",
+	want := map[string]any{"iss": "mw3am46w5weex4a4", "aud": "https://connect.bronc.app", "account": "bruno", "uid": "gh:120603498", "name": "Claude (T3)",
 		"scopes": "robots:read robots:claim", "ttl": 86400.0, "iat": 1794000000.0, "exp": 1794001200.0}
 	if h["typ"] != "mc-delegate-request+jwt" || len(claims) != len(want) {
 		t.Fatalf("%v %v", h, claims)
@@ -276,6 +276,35 @@ func TestConsentURLIsSignedForOneAccount(t *testing.T) {
 	for _, bad := range []string{"", "-bruno", "a b", "bruno--x", strings.Repeat("a", 40)} {
 		if CheckAccount(bad) == nil {
 			t.Errorf("account %q accepted", bad)
+		}
+	}
+}
+
+func TestLookupAccountReturnsTheImmutableID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/users/bruno":
+			w.Write([]byte(`{"login":"Bruno","id":120603498,"type":"User"}`))
+		case "/users/acme":
+			w.Write([]byte(`{"login":"acme","id":7,"type":"Organization"}`))
+		case "/users/odd":
+			w.Write([]byte(`{"login":"x y","id":8,"type":"User"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	old := GitHubAPI
+	GitHubAPI = srv.URL
+	defer func() { GitHubAPI = old }()
+	c := &Client{}
+	uid, login, err := c.LookupAccount(context.Background(), "bruno")
+	if err != nil || uid != "gh:120603498" || login != "Bruno" {
+		t.Fatalf("%q %q %v", uid, login, err)
+	}
+	for _, l := range []string{"acme", "odd", "nobody", "../x"} {
+		if _, _, err := c.LookupAccount(context.Background(), l); err == nil {
+			t.Errorf("%s accepted", l)
 		}
 	}
 }

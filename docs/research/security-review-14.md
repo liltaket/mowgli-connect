@@ -33,6 +33,22 @@ consent tests), `delegate/internal/mcp/server_test.go` (`TestRobotHeadersStayIns
 The races are reproduced by pausing the request at a D1 statement and committing the competing
 change in between.
 
+## Final review before merging
+
+A third, independent review (GPT-6.1 Sol, on its own checkout at `12e7532`) checked the fixes
+above and the whole diff again. It confirmed each finding below with a probe. None gives an owner
+or operator session, and the fixes above held. All five are fixed with regression tests
+(`relay/test/delegation.test.ts`, "final security review", each failing without its fix;
+`delegate/internal/client/client_test.go`, `TestLookupAccountReturnsTheImmutableID`).
+
+| # | Finding | Severity | Status |
+|---|---|---|---|
+| 12 | Refusals by the grant and claim caps, and calls by a person who lost access, still wrote a replay record without being counted: six grants and 125 refusals wrote 131 replay records against six counted calls. | Medium | **Fixed**: access is checked before anything is written, the replay record is written under the call limit in the same statement, and a refusal by a cap writes one counted entry. |
+| 13 | A delegate's claim compared the delegation's expiry with the time the claim started, before seconds of provisioning, so it could complete after the delegation expired. | Medium | **Fixed**: the final statement compares with the time it runs. |
+| 14 | The consent link named a GitHub login. GitHub gives a login that was given up to whoever takes it next, so with several approvers the new holder of a login could approve a link meant for its old holder (the relay may still have the old login cached). | Medium (not reachable with one approver) | **Fixed**: the link names the immutable account id (`uid`); the CLI looks it up on GitHub, and `--wait` compares ids. |
+| 15 | A label waiting while its delegation was approved again without `robots:manage` was still written: the statement checked expiry and robot set, not the scope. | Low | **Fixed**: the statement requires `robots:manage`. |
+| 16 | With `DELEGATION_USERS` unset, the app's `GET /v1/app/delegations` answered 200 (an empty list) and wrote a replay record. | Low | **Fixed**: the app's delegation routes answer 404 before anything is verified. |
+
 ## Checked and held
 
 Scope and robot-set enforcement, canonical scope matching and unknown scopes; the robot capping a

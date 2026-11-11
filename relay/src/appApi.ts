@@ -397,6 +397,8 @@ export async function handleAppApi(request: Request, env: Env, url: URL): Promis
   if (!known) return json({ error: "not_found" }, 404);
   const wantPost = path !== "/v1/app/me" && path !== "/v1/app/robots" && path !== "/v1/app/delegations";
   if (method !== (wantPost ? "POST" : "GET")) return json({ error: "method_not_allowed" }, 405, { Allow: wantPost ? "POST" : "GET" });
+  // Off by default: unknown, before anything is verified or written.
+  if ((path === "/v1/app/delegations" || delegationPath) && !delegationEnabled(env)) return json({ error: "not_found" }, 404);
 
   const auth = await authenticate(request, env, url);
   if (auth instanceof Response) return auth;
@@ -414,7 +416,7 @@ export async function handleAppApi(request: Request, env: Env, url: URL): Promis
 
   // AI agents (docs/agent-delegation.md): the app can list and revoke them, never approve or renew.
   if (path === "/v1/app/delegations") {
-    if (!delegationEnabled(env) || !delegationAllowed(env, user.id)) return json({ delegations: [] });
+    if (!delegationAllowed(env, user.id)) return json({ delegations: [] });
     const rows = await env.DB.prepare(
       "SELECT delegation_id, name, scopes, expires_at, revoked_at, last_used_at FROM delegations WHERE user_id = ? ORDER BY created_at",
     )
@@ -433,7 +435,7 @@ export async function handleAppApi(request: Request, env: Env, url: URL): Promis
   }
   if (delegationPath) {
     const id = delegationPath[1]!;
-    if (!delegationEnabled(env) || !DELEGATE_ID.test(id)) return json({ error: "not_found" }, 404);
+    if (!DELEGATE_ID.test(id)) return json({ error: "not_found" }, 404);
     return (await revokeDelegation(env, id, user.id, "app")) ? json({ ok: true }) : json({ error: "not_found" }, 404);
   }
 

@@ -156,6 +156,7 @@ func (c *Client) Call(ctx context.Context, method, path string, body, out any) e
 type Self struct {
 	DelegateID string   `json:"delegateId"`
 	Name       string   `json:"name"`
+	UserID     string   `json:"userId"`
 	Login      string   `json:"login"`
 	Scopes     []string `json:"scopes"`
 	Robots     []string `json:"robots"`
@@ -377,13 +378,13 @@ func (c *Client) session(ctx context.Context, robot string) (robotSession, error
 const RequestValidity = 20 * time.Minute
 
 // ConsentURL is the link the person opens to approve this key. What it asks for, and the only
-// account that may approve it, are signed with the key, so nobody can change them or approve
-// the key for another account.
-func (c *Client) ConsentURL(account, name string, scopes []string, ttl time.Duration) string {
+// account that may approve it (uid, its immutable id; account, its login, is for messages), are
+// signed with the key, so nobody can change them or approve the key for another account.
+func (c *Client) ConsentURL(account, uid, name string, scopes []string, ttl time.Duration) string {
 	pub := c.Key.Public().(ed25519.PublicKey)
 	now := c.now().Unix()
 	req := signJWS(c.Key, "mc-delegate-request+jwt", map[string]any{
-		"iss": DelegateID(pub), "aud": c.Relay, "account": account, "name": name,
+		"iss": DelegateID(pub), "aud": c.Relay, "account": account, "uid": uid, "name": name,
 		"scopes": strings.Join(scopes, " "), "ttl": int64(ttl / time.Second),
 		"iat": now, "exp": now + int64(RequestValidity/time.Second),
 	})
@@ -394,6 +395,46 @@ func (c *Client) ConsentURL(account, name string, scopes []string, ttl time.Dura
 }
 
 var githubLogin = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9]|-(?:[A-Za-z0-9])){0,38}$`)
+
+// GitHubAPI is where LookupAccount asks (tests override it).
+var GitHubAPI = "https://api.github.com"
+
+// LookupAccount returns the immutable id ("gh:<number>", as the relay names accounts) and the
+// current login of a GitHub user. A consent link names the id: GitHub gives a login that was
+// given up to whoever takes it next.
+func (c *Client) LookupAccount(ctx context.Context, login string) (uid, current string, err error) {
+	if err := CheckAccount(login); err != nil {
+		return "", "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", GitHubAPI+"/users/"+url.PathEscape(login), nil)
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	res, err := c.httpClient().Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("looking up @%s on GitHub: %w", login, err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusNotFound {
+		return "", "", fmt.Errorf("there is no GitHub account @%s", login)
+	}
+	if res.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("looking up @%s on GitHub: answered %d", login, res.StatusCode)
+	}
+	var u struct {
+		ID    int64  `json:"id"`
+		Login string `json:"login"`
+		Type  string `json:"type"`
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, 64<<10)).Decode(&u); err != nil || u.ID <= 0 || CheckAccount(u.Login) != nil {
+		return "", "", fmt.Errorf("looking up @%s on GitHub: unexpected answer", login)
+	}
+	if u.Type != "User" {
+		return "", "", fmt.Errorf("@%s is not a person's GitHub account", u.Login)
+	}
+	return fmt.Sprintf("gh:%d", u.ID), u.Login, nil
+}
 
 // CheckAccount accepts a GitHub login.
 func CheckAccount(login string) error {

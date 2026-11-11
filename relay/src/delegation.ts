@@ -229,8 +229,10 @@ async function readConsentParams(env: Env, get: (k: string) => string | null, us
   if (typeof c.iat !== "number" || typeof c.exp !== "number" || c.exp - c.iat > REQUEST_MAX_AGE_SECONDS || c.iat > now + SKEW_SECONDS || c.exp + SKEW_SECONDS < now) {
     return "The link has expired. Run mc-delegate request again and use the new link.";
   }
-  if (typeof c.account !== "string" || c.account.toLowerCase() !== user.login.toLowerCase()) {
-    return `This link is for the account @${typeof c.account === "string" ? c.account.slice(0, 39) : "?"}, and you are signed in as @${user.login}. Only that account can approve it.`;
+  // Bound to the account's immutable id, not its login: GitHub gives a login that was given up to
+  // whoever takes it next (final security review). `account` is the login, for messages only.
+  if (typeof c.uid !== "string" || c.uid !== user.id) {
+    return `This link is for the account @${typeof c.account === "string" ? c.account.slice(0, 39) : "?"}${typeof c.uid === "string" ? ` (${c.uid.slice(0, 24)})` : ""}, and you are signed in as @${user.login} (${user.id}). Only that account can approve it.`;
   }
   const name = cleanLabel(c.name, 40);
   if (!name) return "The link does not name the agent.";
@@ -543,9 +545,9 @@ function authFailure(e: DelegateAuthError): Response {
 }
 
 /**
- * Verifies the signed call (over the exact body bytes), the delegation, the hourly call limit
- * (read only, so a delegation over its limit writes nothing more, its replay record included;
- * security review 14), the jti and its person's access.
+ * Verifies the signed call (over the exact body bytes), the delegation, its person's access, the
+ * hourly call limit and the jti. A call refused by any of them writes nothing, its replay record
+ * included (security review 14 and the final review).
  */
 async function authenticate(request: Request, env: Env, url: URL, opts: { skipLimit?: boolean } = {}): Promise<Auth | Response> {
   const body = await readBodyBytes(request, 4096);
@@ -574,18 +576,25 @@ async function authenticate(request: Request, env: Env, url: URL, opts: { skipLi
   const now = nowSeconds();
   if (d.revoked_at !== null) return json({ error: "delegation_revoked" }, 401);
   if (d.expires_at <= now) return json({ error: "delegation_expired" }, 401);
-  if (!opts.skipLimit) {
-    const calls = await env.DB.prepare("SELECT COUNT(*) AS n FROM delegation_events WHERE delegation_id = ? AND actor = 'agent' AND at > ?")
-      .bind(d.delegation_id, now - 3600)
-      .first<{ n: number }>();
-    if ((calls?.n ?? 0) >= CALLS_PER_HOUR) return RATE_LIMITED();
-  }
-  const seen = await env.DB.prepare("INSERT OR IGNORE INTO jti_seen (robot_id, jti, expires_at) VALUES (?, ?, ?)")
-    .bind(`dlg:${d.delegation_id}`, a.jti, a.exp + SKEW_SECONDS)
-    .run();
-  if (seen.meta.changes !== 1) return authFailure(new DelegateAuthError("replayed_jti"));
+  // Everything that can refuse the call reads before the first write (final security review).
   const user = await env.DB.prepare("SELECT id, login, name FROM users WHERE id = ?").bind(d.user_id).first<SessionUser>();
   if (!user || !delegationAllowed(env, user.id) || !(await isUserAllowed(env, user.id, user.login))) return json({ error: "no_access" }, 403);
+  const overLimit = async () =>
+    !opts.skipLimit &&
+    ((
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM delegation_events WHERE delegation_id = ? AND actor = 'agent' AND at > ?")
+        .bind(d.delegation_id, now - 3600)
+        .first<{ n: number }>()
+    )?.n ?? 0) >= CALLS_PER_HOUR;
+  if (await overLimit()) return RATE_LIMITED();
+  // The replay record is written under the same call limit, so calls over it write nothing.
+  const seen = await env.DB.prepare(
+    `INSERT OR IGNORE INTO jti_seen (robot_id, jti, expires_at) SELECT ?1, ?2, ?3
+     WHERE ?4 = 1 OR (SELECT COUNT(*) FROM delegation_events WHERE delegation_id = ?5 AND actor = 'agent' AND at > ?6 - 3600) < ${CALLS_PER_HOUR}`,
+  )
+    .bind(`dlg:${d.delegation_id}`, a.jti, a.exp + SKEW_SECONDS, opts.skipLimit ? 1 : 0, d.delegation_id, now)
+    .run();
+  if (seen.meta.changes !== 1) return (await overLimit()) ? RATE_LIMITED() : authFailure(new DelegateAuthError("replayed_jti"));
   if (d.last_used_at === null || now - d.last_used_at > LAST_USED_REFRESH_SECONDS) {
     await env.DB.prepare("UPDATE delegations SET last_used_at = ? WHERE delegation_id = ?").bind(now, d.delegation_id).run();
   }
@@ -713,6 +722,7 @@ export async function handleDelegateApi(request: Request, env: Env, url: URL): P
     return json({
       delegateId: a.d.delegation_id,
       name: a.d.name,
+      userId: a.user.id,
       login: a.user.login,
       scopes: a.d.scopes.split(" "),
       robots: [...set.keys()],
@@ -762,7 +772,7 @@ export async function handleDelegateApi(request: Request, env: Env, url: URL): P
     if (ev === null) return RATE_LIMITED();
     const upd = await env.DB.prepare(
       `UPDATE members SET label = ?1 WHERE robot_id = ?2 AND user_id = ?3
-         AND EXISTS (SELECT 1 FROM delegations WHERE delegation_id = ?4 AND revoked_at IS NULL AND expires_at > ?5)
+         AND EXISTS (SELECT 1 FROM delegations WHERE delegation_id = ?4 AND revoked_at IS NULL AND expires_at > ?5 AND ${scopeSql("delegations", "robots:manage")})
          AND EXISTS (SELECT 1 FROM delegation_robots WHERE delegation_id = ?4 AND robot_id = ?2)`,
     )
       .bind(label, robot.robot_id, a.user.id, a.d.delegation_id, nowSeconds())
@@ -795,6 +805,8 @@ export async function handleDelegateApi(request: Request, env: Env, url: URL): P
     `AND (SELECT COUNT(*) FROM delegation_events WHERE delegation_id = ?1 AND action = 'grant' AND robot_id = ?4 AND outcome IN ('ok', 'pending') AND at > ?2 - 3600) < ${GRANTS_PER_ROBOT_PER_HOUR}`,
   );
   if (ev === null) {
+    // Over the grant cap: still one counted entry, so refusals use up the call limit too.
+    if ((await record(env, a, "grant", robot.robot_id, "limited")) === null) return RATE_LIMITED();
     return json(
       { error: "grant_limit", message: `At most ${GRANTS_PER_ROBOT_PER_HOUR} read-only sessions an hour per robot. Reuse the session you have.` },
       429,
@@ -870,10 +882,8 @@ async function claim(env: Env, a: Auth, request: Request): Promise<Response> {
 
   const ev = await record(env, a, "claim", null, "pending", label, CLAIM_GATE);
   if (ev === null) {
-    const calls = await env.DB.prepare("SELECT COUNT(*) AS n FROM delegation_events WHERE delegation_id = ? AND actor = 'agent' AND at > ?")
-      .bind(a.d.delegation_id, a.now - 3600)
-      .first<{ n: number }>();
-    if ((calls?.n ?? 0) >= CALLS_PER_HOUR) return RATE_LIMITED();
+    // Over a claim cap: still one counted entry, so refusals use up the call limit too.
+    if ((await record(env, a, "claim", null, "limited", label)) === null) return RATE_LIMITED();
     return json(
       { error: "claim_limit", message: `This agent may add ${CLAIMS_PER_HOUR} robots an hour and have ${MAX_CLAIMED_ROBOTS} it added linked at a time. Unlink one, or try later.` },
       429,
