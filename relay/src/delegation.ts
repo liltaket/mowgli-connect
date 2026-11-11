@@ -5,7 +5,7 @@ import { DELEGATE_ID, DelegateAuthError, deriveDelegateId, fingerprint, verifyDe
 import type { Env } from "./env";
 import { GRANT_TTL_SECONDS, mintGrant } from "./grant";
 import { killSwitchSince } from "./killSwitch";
-import { html, page, type PageUser, type SafeHtml } from "./html";
+import { html, markSvg, page, simulatorBadge, type PageUser, type SafeHtml } from "./html";
 import { createProvisioner } from "./provisioner";
 import { json } from "./robotApi";
 import type { SessionUser } from "./session";
@@ -250,11 +250,12 @@ interface MemberRobot {
   name: string | null;
   label: string | null;
   role: string;
+  simulator: number;
 }
 
 function memberRobots(env: Env, userId: string): Promise<MemberRobot[]> {
   return env.DB.prepare(
-    `SELECT r.robot_id, r.name, m.label, m.role FROM members m JOIN robots r ON r.robot_id = m.robot_id
+    `SELECT r.robot_id, r.name, m.label, m.role, r.simulator FROM members m JOIN robots r ON r.robot_id = m.robot_id
      WHERE m.user_id = ? AND r.status = 'claimed' ORDER BY m.created_at`,
   )
     .bind(userId)
@@ -328,7 +329,36 @@ function revokedKeyPage(revokedAt: number, pu: PageUser): Response {
 }
 
 function errorPage(title: string, message: string, status: number, pu: PageUser): Response {
-  return page(title, html`<h1>${title}</h1><p class="error">${message}</p><p><a href="/">Back to my robots</a></p>`, status, {}, pu);
+  return outcomePage(title, "stop", html`<p>${message}</p>`, status, pu);
+}
+
+const OUTCOME_ICONS = {
+  ok: html`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12.5l4 4 8-9"/></svg>`,
+  stop: html`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7v6M12 16.5v.5"/></svg>`,
+  none: html`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 12h10"/></svg>`,
+};
+
+/** The result of a consent link: approved, not approved, or why it cannot be approved. */
+function outcomePage(title: string, kind: keyof typeof OUTCOME_ICONS, body: SafeHtml, status: number, pu: PageUser, actions?: SafeHtml): Response {
+  return page(
+    title,
+    html`<div class="outcome ${kind}"><span class="outcome-icon">${OUTCOME_ICONS[kind]}</span>
+<h1>${title}</h1>
+${body}
+<p class="actions">${actions ?? html`<a class="btn" href="/">Back to my robots</a>`}</p></div>`,
+    status,
+    {},
+    pu,
+  );
+}
+
+/** What an agent can never do, whatever is ticked: the consent page lists it, so nobody has to infer it. */
+const NEVER = ["Drive a robot or start mowing", "Change a robot's settings or maps", "Share robots or invite people", "Give itself more access"];
+
+const TTL_SHORT: Record<number, string> = { 3600: "1 hour", 28800: "8 hours", 86400: "1 day", 604800: "7 days", 2592000: "30 days" };
+
+function roleText(role: string): string {
+  return role === "owner" ? "You own it" : role === "operator" ? "Shared with you: can control" : "Shared with you: view only";
 }
 
 async function consentPage(env: Env, user: SessionUser, pu: PageUser, p: ConsentParams | string): Promise<Response> {
@@ -343,42 +373,54 @@ async function consentPage(env: Env, user: SessionUser, pu: PageUser, p: Consent
   const robots = await memberRobots(env, user.id);
   const set = existing ? await robotSet(env, p.delegateId) : new Map<string, "consent" | "claim">();
   const hidden = (k: string, v: string) => html`<input type="hidden" name="${k}" value="${v}">`;
-  const claimNote = p.requested.includes("robots:claim")
-    ? html`<p class="muted">At most ${CLAIMS_PER_HOUR} new robots an hour, and ${MAX_CLAIMED_ROBOTS} it added still linked at a time. Your own robot limit applies.</p>`
-    : "";
+  const manage = p.requested.includes("robots:manage");
   return page(
     "Let an AI agent act for you",
-    html`<h1>Let an AI agent act for you?</h1>
-<div class="panel invitee"><span class="avatar big" aria-hidden="true">${p.name.charAt(0).toUpperCase()}</span>
-<div><strong>${p.name}</strong><span class="muted">name chosen by the agent · acts as @${user.login}</span></div></div>
-<p>Key fingerprint: <code>${fingerprint(p.delegateId)}</code>. It must be exactly the fingerprint your terminal shows.</p>
+    html`<div class="consent-page">
+<div class="handshake" aria-hidden="true"><span class="agent-tile">${p.name.charAt(0).toUpperCase()}</span><svg class="handshake-path" viewBox="0 0 72 24"><path d="M4 12h64"/></svg>${markSvg("mark big-tile")}</div>
+<h1>Let an AI agent use your account?</h1>
+<p class="agent-line"><strong class="agent-name">${p.name}</strong> wants to act for you as <strong>@${user.login}</strong> on Mowgli Connect.</p>
+<p class="muted small-print">The agent chose this name itself. The key below is what identifies it.</p>
+
+<section class="check-first" aria-labelledby="fp-title">
+<h2 id="fp-title">Check that this is your agent</h2>
+<p class="fingerprint"><code>${fingerprint(p.delegateId)}</code></p>
+<p>This must match the fingerprint in your terminal exactly.</p>
+<p class="warn">Only continue if you ran <code>mc-delegate request</code> yourself, a moment ago. If someone sent you this link, close this page.</p>
+</section>
 ${existing ? html`<p class="notice" role="status">This key already has access (${stateText(existing, now)}: ${scopeTitles(existing.scopes)}). Approving replaces its rights, its robots and its expiry.</p>` : ""}
-<p class="error">Only continue if you started this yourself, a moment ago, in your own terminal. If someone sent you this link, close this page.</p>
-<form method="post" action="/delegate/authorize">
+
+<form method="post" action="/delegate/authorize" class="consent-form">
 ${hidden("key", p.publicKey)}${hidden("req", p.request)}
 <h2>What it may do</h2>
-<ul class="consent">${p.requested.map(
-      (s) => html`<li><label><input type="checkbox" name="scope" value="${s}" checked> <strong>${SCOPE_TEXT[s].title}</strong> <code>${s}</code></label><p class="muted">${SCOPE_TEXT[s].text}</p></li>`,
+<ul class="choices">${p.requested.map(
+      (s) => html`<li><label class="choice"><input type="checkbox" name="scope" value="${s}" checked><span class="choice-text"><span class="choice-title">${SCOPE_TEXT[s].title}</span><span class="choice-detail">${SCOPE_TEXT[s].text}</span>${s === "robots:claim" ? html`<span class="choice-detail">At most ${CLAIMS_PER_HOUR} new robots an hour, and ${MAX_CLAIMED_ROBOTS} it added linked at a time. Your own robot limit still applies.</span>` : ""}</span><code class="scope">${s}</code></label></li>`,
     )}</ul>
-${claimNote}
-<p class="muted">It can never drive a robot, mow, change robot settings, share robots, manage invitations or approve more access for itself.</p>
-<h2>Which robots</h2>
+<div class="never"><p class="never-title">It can never</p><ul>${NEVER.map((n) => html`<li>${n}</li>`)}</ul></div>
+
+<h2>Which robots it may see</h2>
 ${
   robots.length === 0
-    ? html`<p class="muted">You have no robots yet.</p>`
-    : html`<ul class="consent">${robots.map((r) =>
+    ? html`<p class="empty">You have no robots yet. Robots the agent adds itself are included automatically.</p>`
+    : html`<ul class="choices">${robots.map((r) =>
         set.get(r.robot_id) === "claim"
-          ? html`<li><span><strong>${r.label ?? r.name ?? r.robot_id}</strong> <span class="muted">added by this agent; stays until it is unlinked</span></span></li>`
-          : html`<li><label><input type="checkbox" name="robot" value="${r.robot_id}"${set.get(r.robot_id) === "consent" ? html` checked` : ""}> <strong>${r.label ?? r.name ?? r.robot_id}</strong> <span class="muted">${r.role === "owner" ? "Owner" : r.role === "operator" ? "Can control" : "View only"} · ${r.robot_id}</span></label></li>`,
-      )}</ul>`
+          ? html`<li><div class="choice fixed"><span class="tick-fixed" aria-hidden="true"></span><span class="choice-text"><span class="choice-title">${r.label ?? r.name ?? r.robot_id}${simulatorBadge(r.simulator)}</span><span class="choice-detail">Added by this agent. Stays included until it is unlinked.</span></span></div></li>`
+          : html`<li><label class="choice"><input type="checkbox" name="robot" value="${r.robot_id}"${set.get(r.robot_id) === "consent" ? html` checked` : ""}><span class="choice-text"><span class="choice-title">${r.label ?? r.name ?? r.robot_id}${simulatorBadge(r.simulator)}</span><span class="choice-detail">${roleText(r.role)}</span></span><code class="scope">${r.robot_id}</code></label></li>`,
+      )}</ul>
+<p class="muted small-print">Nothing is ticked unless you tick it.${manage ? " It may unlink every robot you tick that you own, so tick a real mower only if it needs one." : ""}</p>`
 }
-<p class="muted">None is ticked unless you tick it. Robots it adds itself are always included.${p.requested.includes("robots:manage") ? " With Rename and unlink robots, it can unlink every robot you tick that you own: only tick a real mower if you need to." : ""}</p>
-<h2>For how long</h2>
-<p><label for="ttl">Access ends after</label> <select id="ttl" name="ttl">${TTL_CHOICES.map((t) => html`<option value="${String(t)}"${t === p.ttl ? html` selected` : ""}>${ttlText(t)}</option>`)}</select></p>
-<p class="muted">You can renew it, or revoke it at any time, under AI agents on your robots page. Everything it does is listed there.</p>
-<p><label><input type="checkbox" name="confirm" value="yes" required> I started this myself, just now, and the fingerprint matches my terminal.</label></p>
-<p class="actions"><button class="primary" name="decision" value="allow">Approve</button> <button name="decision" value="deny" formnovalidate>Cancel</button></p>
-</form>`,
+
+<fieldset class="duration"><legend>Access ends after</legend>
+<div class="segments">${TTL_CHOICES.map((t) => html`<label class="segment"><input type="radio" name="ttl" value="${String(t)}"${t === p.ttl ? html` checked` : ""} required><span>${TTL_SHORT[t] ?? ttlText(t)}</span></label>`)}</div>
+<p class="muted small-print">Renew or revoke it at any time under AI agents on your robots page, where everything it does is listed.</p>
+</fieldset>
+
+<div class="decide">
+<label class="confirm"><input type="checkbox" name="confirm" value="yes" required><span>I ran this myself just now, and the fingerprint matches my terminal.</span></label>
+<p class="actions"><button name="decision" value="deny" formnovalidate>Cancel</button><button class="primary" name="decision" value="allow">Approve</button></p>
+</div>
+</form>
+</div>`,
     200,
     {},
     pu,
@@ -391,7 +433,7 @@ async function approve(env: Env, request: Request, user: SessionUser, pu: PageUs
   if (text === null) return errorPage("Not approved", "The form was not filled in correctly.", 400, pu);
   const form = new URLSearchParams(text);
   if (form.get("decision") !== "allow") {
-    return page("Not approved", html`<h1>Not approved</h1><p>Nothing was changed. The agent has no new access.</p><p><a href="/">Back to my robots</a></p>`, 200, {}, pu);
+    return outcomePage("Not approved", "none", html`<p>Nothing was changed. The agent has no new access. You can close this page.</p>`, 200, pu);
   }
   const p = await readConsentParams(env, (k) => form.get(k), user);
   if (typeof p === "string") return errorPage("Not approved", p, 400, pu);
@@ -404,7 +446,7 @@ async function approve(env: Env, request: Request, user: SessionUser, pu: PageUs
   if (scopes.length === 0) return errorPage("Not approved", "Tick at least one thing the agent may do, or press Cancel.", 400, pu);
   const robots = [...new Set(form.getAll("robot"))];
   if (robots.length > 100 || !robots.every(isRobotId)) return errorPage("Not approved", "The form was not filled in correctly.", 400, pu);
-  const mine = new Set((await memberRobots(env, user.id)).map((r) => r.robot_id));
+  const mine = new Map((await memberRobots(env, user.id)).map((r) => [r.robot_id, r.label ?? r.name ?? r.robot_id]));
   if (!robots.every((r) => mine.has(r))) return errorPage("Not approved", "One of the robots is not yours any more. Load the page again.", 409, pu);
 
   const now = nowSeconds();
@@ -444,13 +486,19 @@ async function approve(env: Env, request: Request, user: SessionUser, pu: PageUs
       : errorPage("Not approved", `You have ${MAX_ACTIVE_DELEGATIONS} active AI agents already. Revoke one on your robots page first.`, 403, pu);
   }
   console.log("delegation: approved", id, "for", user.id, scopes.join(" "));
-  return page(
+  return outcomePage(
     "Approved",
-    html`<h1>Approved</h1><p><strong>${p.name}</strong> may act for you until ${when(now + ttl)}: ${scopeTitles(scopes.join(" "))}.</p>
-<p>Go back to your terminal. You can revoke it at any time under AI agents on <a href="/">your robots page</a>.</p>`,
+    "ok",
+    html`<p><strong>${p.name}</strong> can now act for you. Go back to your terminal.</p>
+<dl class="summary">
+<div><dt>It may</dt><dd>${scopeTitles(scopes.join(" "))}</dd></div>
+<div><dt>Robots you ticked</dt><dd>${robots.length === 0 ? "None" : robots.map((r) => mine.get(r) ?? r).join(", ")}</dd></div>
+<div><dt>Access ends</dt><dd>${when(now + ttl)}</dd></div>
+<div><dt>Key</dt><dd><code>${fingerprint(id)}</code></dd></div>
+</dl>`,
     200,
-    {},
     pu,
+    html`<a class="btn" href="/delegations/${id}">See its activity</a><a class="btn primary" href="/">Back to my robots</a>`,
   );
 }
 

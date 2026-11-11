@@ -261,10 +261,71 @@ input[type=number]{width:9rem;font:inherit;padding:.6rem .7rem;border:1px solid 
 .person>.actions{grid-column:1/-1;margin:.4rem 0 0}
 .person>.actions form{display:inline}
 button.small{min-height:38px;padding:.4rem .9rem;font-size:.93rem}
-.consent{list-style:none;margin:0 0 1rem;padding:0;display:grid;gap:.5rem}
-.consent li{background:var(--fog);border:1px solid var(--line);border-radius:10px;padding:.6rem .8rem}
-.consent label{font-weight:400;margin:0}
-.consent p{margin:.2rem 0 0;font-size:.92rem}
+.consent-page,.outcome{max-width:34rem;margin:0 auto}
+.handshake{display:flex;align-items:center;gap:.4rem;margin:.25rem 0 1.5rem}
+.agent-tile{display:grid;place-items:center;width:48px;height:48px;border-radius:12px;background:var(--fog);border:1px solid var(--line-strong);font-weight:700;font-size:1.25rem;flex:none}
+.mark.big-tile{width:48px;height:48px}
+.handshake-path{width:72px;height:24px;flex:none}
+.handshake-path path{fill:none;stroke:var(--grass);stroke-width:2.4;stroke-linecap:round;stroke-dasharray:.5 6.5}
+@media (prefers-reduced-motion:no-preference){.handshake-path path{animation:handshake 1.6s linear .2s both}}
+@keyframes handshake{from{stroke-dashoffset:42}}
+.consent-page h1{font-size:1.6rem;margin-bottom:.75rem}
+.agent-line{font-size:1.08rem;margin-bottom:.35rem}
+.agent-name{overflow-wrap:anywhere}
+.small-print{font-size:.9rem}
+.check-first{border:1px solid var(--line-strong);border-radius:14px;padding:1.1rem 1.2rem 1.15rem;margin:1.5rem 0}
+.check-first h2{margin:0 0 .65rem;font-size:1rem}
+.check-first p{margin:0 0 .75rem}
+.fingerprint code{display:block;font-size:clamp(1.2rem,.95rem + 1.5vw,1.6rem);font-weight:650;letter-spacing:.05em;text-align:center;color:var(--grass-ink);background:var(--grass-wash);border-radius:10px;padding:.7rem .9rem}
+.check-first .warn{color:var(--danger);font-size:.95rem;margin:0;padding-top:.8rem;border-top:1px solid var(--line)}
+.consent-form h2{font-size:1.05rem;margin:2rem 0 .6rem}
+.choices{list-style:none;margin:0;padding:0;border:1px solid var(--line);border-radius:12px;background:var(--fog);overflow:hidden}
+.choices li+li{border-top:1px solid var(--line)}
+.choice{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:.15rem .8rem;align-items:start;padding:.8rem .95rem;margin:0;font-weight:400}
+label.choice{cursor:pointer}
+label.choice:hover{background:var(--grass-wash)}
+.choice input,.confirm input{width:1.15rem;height:1.15rem;margin:.2rem 0 0;accent-color:var(--grass);flex:none}
+.choice-text{display:grid;gap:.15rem;min-width:0}
+.choice-title{font-weight:650;overflow-wrap:anywhere}
+.choice-detail{font-size:.9rem;color:var(--muted)}
+.choice .scope{font-size:.78rem;color:var(--muted);padding-top:.2rem;white-space:nowrap}
+.tick-fixed{width:1.15rem;height:1.15rem;margin-top:.2rem;border-radius:4px;background:var(--grass);position:relative}
+.tick-fixed::after{content:"";position:absolute;left:.3rem;top:.2rem;width:.3rem;height:.55rem;border:solid var(--on-grass);border-width:0 2px 2px 0;transform:rotate(45deg)}
+@media (max-width:30rem){.choice{grid-template-columns:auto minmax(0,1fr)}.choice .scope{grid-column:2;padding:0}}
+.never{margin:.75rem 0 0;padding:.8rem .95rem;border-radius:12px;border:1px dashed var(--line-strong)}
+.never-title{font-weight:650;margin:0 0 .35rem}
+.never ul{list-style:none;margin:0;padding:0;display:grid;gap:.25rem;font-size:.92rem;color:var(--muted)}
+.never li{position:relative;padding-left:1.5rem}
+.never li::before,.never li::after{content:"";position:absolute;left:.15rem;top:.75em;width:.75rem;height:2px;border-radius:1px;background:var(--danger);transform:rotate(45deg)}
+.never li::after{transform:rotate(-45deg)}
+.consent-form .small-print{margin:.6rem 0 0}
+.duration{border:0;padding:0;margin:2rem 0 0;min-width:0}
+.duration legend{font-weight:650;font-size:1.05rem;padding:0;margin:0 0 .6rem}
+.segments{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));border:1px solid var(--line-strong);border-radius:10px;overflow:hidden}
+.segment{position:relative;margin:0;font-weight:500}
+.segment+.segment{border-left:1px solid var(--line-strong)}
+.segment input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+.segment span{display:grid;place-items:center;min-height:44px;padding:.4rem .25rem;font-size:.93rem;text-align:center}
+.segment:hover span{background:var(--fog)}
+.segment input:checked+span{background:var(--grass);color:var(--on-grass);font-weight:650}
+.segment input:focus-visible+span{outline:3px solid var(--focus);outline-offset:-4px;border-radius:8px}
+.decide{margin-top:2rem;padding-top:1.25rem;border-top:1px solid var(--line)}
+.confirm{display:flex;gap:.65rem;align-items:flex-start;font-weight:500;margin:0 0 1.1rem;cursor:pointer}
+.decide .actions{justify-content:flex-end;margin:0}
+@media (max-width:30rem){.decide .actions button{flex:1}}
+.outcome{padding-top:1rem}
+.outcome-icon{display:grid;place-items:center;width:52px;height:52px;border-radius:50%;margin-bottom:1.1rem}
+.outcome-icon svg{width:26px;height:26px;fill:none;stroke:currentColor;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}
+.outcome.ok .outcome-icon{background:var(--grass);color:var(--on-grass)}
+.outcome.stop .outcome-icon{background:var(--danger-wash);color:var(--danger);box-shadow:inset 0 0 0 1.5px var(--danger)}
+.outcome.none .outcome-icon{background:var(--fog);color:var(--muted);box-shadow:inset 0 0 0 1.5px var(--line-strong)}
+.outcome .actions{margin-top:1.5rem}
+.summary{margin:1.25rem 0 0;border:1px solid var(--line);border-radius:12px;background:var(--fog)}
+.summary div{display:grid;grid-template-columns:9.5rem minmax(0,1fr);gap:.25rem 1rem;padding:.65rem .95rem}
+.summary div+div{border-top:1px solid var(--line)}
+.summary dt{color:var(--muted);font-size:.92rem}
+.summary dd{margin:0;overflow-wrap:anywhere}
+@media (max-width:30rem){.summary div{grid-template-columns:1fr}}
 select{font:inherit;padding:.5rem .6rem;border:1px solid var(--line-strong);border-radius:8px;background:var(--paper);color:inherit}
 .table-wrap{overflow-x:auto}
 table.activity{border-collapse:collapse;width:100%;font-size:.9rem}
