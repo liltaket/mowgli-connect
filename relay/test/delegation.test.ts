@@ -155,6 +155,22 @@ describe("consent", () => {
     expect(await db.prepare("SELECT COUNT(*) AS n FROM delegations WHERE delegation_id = ?").bind(dl.id).first()).toEqual({ n: 0 });
   });
 
+  it("marks simulators, lists what it can never do, and names the ticked robots once approved", async () => {
+    const user = await newUser();
+    const { robot: mower } = await registerAndClaim(user, "Back Lawn");
+    const { robot: sim } = await registerAndClaim(user, "Farm robot");
+    await db.prepare("UPDATE robots SET simulator = 1 WHERE robot_id = ?").bind(sim.robotId).run();
+    const dl = await newDelegate();
+    const text = await (await getPage(`/delegate/authorize?${await consentQuery(user, dl, ["robots:read"])}`, user)).text();
+    expect(text).toContain('Farm robot<span class="sim">Simulator</span>');
+    expect(text).toContain('Back Lawn</span>');
+    expect(text).not.toContain('Back Lawn<span class="sim">');
+    expect(text).toContain("Drive a robot or start mowing");
+    const done = await (await postForm("/delegate/authorize", user, await approvalForm(user, dl, ["robots:read"], [sim.robotId]))).text();
+    expect(done).toContain("<dd>Farm robot</dd>");
+    expect(done).not.toContain(mower.robotId);
+  });
+
   it("sends a signed-out person through sign-in", async () => {
     const dl = await newDelegate();
     const res = await getPage(`/delegate/authorize?${await consentQuery("nobody", dl, ["robots:read"])}`, null);
@@ -195,7 +211,7 @@ describe("consent", () => {
     const user = await newUser();
     const dl = await newDelegate();
     const text = await (await getPage(`/delegate/authorize?${await consentQuery(user, dl, ["robots:read"], { ttl: 2 * 86400 })}`, user)).text();
-    expect(text).toContain('<option value="86400" selected>');
+    expect(text).toContain('name="ttl" value="86400" checked required>');
   });
 
   it("a key belongs to one person", async () => {
