@@ -10,7 +10,7 @@ import { createProvisioner } from "./provisioner";
 import { json } from "./robotApi";
 import type { SessionUser } from "./session";
 import { latestAgentSha, updateAvailable } from "./updates";
-import { cleanLabel, isRobotId, nowSeconds, readBodyBytes, readBodyText, SKEW_SECONDS } from "./util";
+import { cleanLabel, isRobotId, nowSeconds, randomToken, readBodyBytes, readBodyText, SKEW_SECONDS } from "./util";
 
 /**
  * Delegations to AI agents and automations (docs/agent-delegation.md): approved by the person on
@@ -508,9 +508,17 @@ interface Approved {
 
 /**
  * Approves a consent link with the person's choices, for the page and the app: validates every
- * field again and creates or replaces the delegation in one transaction.
+ * field again and creates or replaces the delegation in one transaction. From the app, `deviceId`
+ * is the signing device, which must still be signed in when the transaction commits.
  */
-async function approveConsent(env: Env, user: SessionUser, get: (k: string) => string | null, choice: ConsentChoice, actor: "person" | "app"): Promise<Approved | ConsentRefusal> {
+async function approveConsent(
+  env: Env,
+  user: SessionUser,
+  get: (k: string) => string | null,
+  choice: ConsentChoice,
+  actor: "person" | "app",
+  deviceId: string | null = null,
+): Promise<Approved | ConsentRefusal> {
   const p = await readConsentParams(env, get, user);
   if (isRefusal(p)) return p;
   const badForm = () => refused("bad_request", 400, "The form was not filled in correctly.");
@@ -528,37 +536,47 @@ async function approveConsent(env: Env, user: SessionUser, get: (k: string) => s
 
   const now = nowSeconds();
   const id = p.delegateId;
-  // Every statement after the first runs only if this approval was stored (the same approved_at).
-  const stored = "EXISTS (SELECT 1 FROM delegations WHERE delegation_id = ?1 AND user_id = ?2 AND approved_at = ?3 AND revoked_at IS NULL)";
+  // Every statement after the first runs only if this approval was stored: the second records a
+  // token for this call only when the first changed a row, and the rest require that token. An
+  // approval of the same key earlier in the same second therefore does not count (final review).
+  const token = randomToken(16);
+  const stored = `EXISTS (SELECT 1 FROM jti_seen WHERE robot_id = 'apv:' || ?1 AND jti = ?6)
+    AND EXISTS (SELECT 1 FROM delegations WHERE delegation_id = ?1 AND user_id = ?2 AND approved_at = ?3 AND revoked_at IS NULL)`;
   const approvalsThisHour = (u: string, t: string) => `SELECT COUNT(*) AS n FROM delegation_events e JOIN delegations o ON o.delegation_id = e.delegation_id
     WHERE o.user_id = ${u} AND e.action = 'approve' AND e.at > ${t} - 3600`;
   const steps = [
     // At most MAX_ACTIVE_DELEGATIONS active per person, and a key belongs to one person, in the
     // same statement. A revoked key is never approved again. At most APPROVALS_PER_HOUR approvals.
+    // From the app, only while the device that signed the call is still signed in (final review).
     env.DB.prepare(
       `INSERT INTO delegations (delegation_id, user_id, public_key, name, scopes, ttl_seconds, created_at, approved_at, expires_at)
        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8
        WHERE (SELECT COUNT(*) FROM delegations WHERE user_id = ?2 AND delegation_id != ?1 AND revoked_at IS NULL AND expires_at > ?7) < ?9
          AND (${approvalsThisHour("?2", "?7")}) < ?10
+         AND (?11 IS NULL OR EXISTS (SELECT 1 FROM devices WHERE device_id = ?11 AND user_id = ?2))
        ON CONFLICT(delegation_id) DO UPDATE SET name = excluded.name, scopes = excluded.scopes, ttl_seconds = excluded.ttl_seconds,
          approved_at = excluded.approved_at, expires_at = excluded.expires_at
        WHERE delegations.user_id = excluded.user_id AND delegations.public_key = excluded.public_key AND delegations.revoked_at IS NULL`,
-    ).bind(id, user.id, p.publicKey, p.name, scopes.join(" "), ttl, now, now + ttl, MAX_ACTIVE_DELEGATIONS, APPROVALS_PER_HOUR),
-    env.DB.prepare(`DELETE FROM delegation_robots WHERE delegation_id = ?1 AND via = 'consent' AND ${stored}`).bind(id, user.id, now),
+    ).bind(id, user.id, p.publicKey, p.name, scopes.join(" "), ttl, now, now + ttl, MAX_ACTIVE_DELEGATIONS, APPROVALS_PER_HOUR, deviceId),
+    env.DB.prepare("INSERT INTO jti_seen (robot_id, jti, expires_at) SELECT 'apv:' || ?1, ?2, ?3 WHERE changes() > 0").bind(id, token, now + 60),
+    env.DB.prepare(`DELETE FROM delegation_robots WHERE delegation_id = ?1 AND via = 'consent' AND ${stored}`).bind(id, user.id, now, null, null, token),
     ...robots.map((r) =>
       env.DB.prepare(
         `INSERT OR IGNORE INTO delegation_robots (delegation_id, robot_id, via, added_at)
          SELECT ?1, ?4, 'consent', ?3 WHERE ${stored}
            AND EXISTS (SELECT 1 FROM members m JOIN robots o ON o.robot_id = m.robot_id WHERE m.robot_id = ?4 AND m.user_id = ?2 AND o.status = 'claimed')`,
-      ).bind(id, user.id, now, r),
+      ).bind(id, user.id, now, r, null, token),
     ),
     env.DB.prepare(
       `INSERT INTO delegation_events (delegation_id, at, actor, action, outcome, detail)
        SELECT ?1, ?3, ?5, 'approve', 'ok', ?4 WHERE ${stored}`,
-    ).bind(id, user.id, now, `${scopes.join(" ")}; ${robots.length} robots ticked; ${ttlText(ttl)}`, actor),
+    ).bind(id, user.id, now, `${scopes.join(" ")}; ${robots.length} robots ticked; ${ttlText(ttl)}`, actor, token),
   ];
   const [ins] = await env.DB.batch(steps);
   if (ins?.meta.changes !== 1) {
+    if (deviceId !== null && !(await env.DB.prepare("SELECT 1 AS ok FROM devices WHERE device_id = ?").bind(deviceId).first())) {
+      return refused("unknown_device", 401, "This iPhone was signed out of Mowgli Connect.");
+    }
     const owner = await loadDelegation(env, id);
     if (owner?.user_id === user.id && owner.revoked_at) return revokedKey(owner.revoked_at);
     if (owner && owner.user_id !== user.id) return refused("key_other_account", 409, "This key belongs to another account.");
@@ -612,8 +630,12 @@ async function approve(env: Env, request: Request, user: SessionUser, pu: PageUs
  * same validation and transaction as the page, "decline" changes nothing. The caller has checked
  * the device signature, the person's access and the emergency stop.
  */
-export async function appConsent(env: Env, user: SessionUser, body: Record<string, unknown>): Promise<Response> {
-  const fail = (r: ConsentRefusal) => json({ error: r.error, message: r.message, ...(r.revokedAt ? { revokedAt: r.revokedAt } : {}) }, r.status);
+export async function appConsent(env: Env, user: SessionUser, deviceId: string, body: Record<string, unknown>): Promise<Response> {
+  const fail = (r: ConsentRefusal) =>
+    r.error === "unknown_device"
+      ? // Signed out while approving: answered like any call from a device the relay no longer knows.
+        json({ error: "invalid_assertion", detail: "unknown_device" }, 401)
+      : json({ error: r.error, message: r.message, ...(r.revokedAt ? { revokedAt: r.revokedAt } : {}) }, r.status);
   if (!delegationAllowed(env, user.id)) return json({ error: "not_found" }, 404);
   if (typeof body.key !== "string" || typeof body.req !== "string") return json({ error: "bad_request" }, 400);
   const link: Record<string, string> = { key: body.key, req: body.req };
@@ -658,7 +680,7 @@ export async function appConsent(env: Env, user: SessionUser, body: Record<strin
   if (body.step !== "approve") return json({ error: "bad_request" }, 400);
   const strings = (v: unknown): v is string[] => Array.isArray(v) && v.length <= 100 && v.every((s) => typeof s === "string");
   if (!strings(body.scopes) || !strings(body.robots) || typeof body.ttl !== "number" || typeof body.confirm !== "boolean") return json({ error: "bad_request" }, 400);
-  const a = await approveConsent(env, user, get, { confirm: body.confirm, ttl: body.ttl, scopes: body.scopes, robots: body.robots }, "app");
+  const a = await approveConsent(env, user, get, { confirm: body.confirm, ttl: body.ttl, scopes: body.scopes, robots: body.robots }, "app", deviceId);
   if (isRefusal(a)) return fail(a);
   return json({
     approved: true,

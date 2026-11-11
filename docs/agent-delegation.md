@@ -175,8 +175,11 @@ hourly approval limit. The activity log records an app approval as "you, in the 
 before the signed call, after the person has ticked "I ran this myself". It stands in for the
 signed-in browser session the page relies on, and guards against someone holding the unlocked
 phone and against approving by accident. The relay cannot verify it: the device key signs every
-app call, so it cannot itself require Face ID. A modified app or malware on the phone could skip
-it; it would still need the phone's device key and a link signed by the agent's key. A check the
+app call, so it cannot itself require Face ID. A modified app or malware that can sign with the
+device key could skip it and approve on its own: it can make an agent key itself and sign a link
+for the account's public id, so the agent's signature binds the request but proves no human
+approved it. Such a delegation still shows under AI agents and can be revoked, and the device must
+still be signed in when an approval commits, so signing it out stops one under way. A check the
 relay can verify (a second Secure Enclave key with `.userPresence` registered at sign-in, or a
 passkey) is a possible later addition, as for the page.
 

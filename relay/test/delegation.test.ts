@@ -299,7 +299,9 @@ describe("signed delegate calls", () => {
 
   it("an unknown or wrongly signed key writes nothing", async () => {
     const dl = await newDelegate();
-    const before = await db.prepare("SELECT COUNT(*) AS n FROM jti_seen").first<{ n: number }>();
+    // Replay records only: an approval's one-time token ('apv:') is not one.
+    const replayRecords = "SELECT COUNT(*) AS n FROM jti_seen WHERE robot_id NOT LIKE 'apv:%'";
+    const before = await db.prepare(replayRecords).first<{ n: number }>();
     const res = await api(dl, "GET", "/v1/delegate/self");
     expect(res.status).toBe(401);
     expect(await res.json()).toMatchObject({ detail: "unknown_delegate" });
@@ -307,7 +309,7 @@ describe("signed delegate calls", () => {
     const forged = await call("/v1/delegate/self", { headers: { Authorization: await sign(dl, "GET", "/v1/delegate/self", "", { iss: real.id }) } }, env);
     expect(await forged.json()).toMatchObject({ detail: "bad_signature" });
     expect(await events(real.id)).toEqual([expect.objectContaining({ actor: "person", action: "approve" })]);
-    expect((await db.prepare("SELECT COUNT(*) AS n FROM jti_seen").first<{ n: number }>())!.n).toBe(before!.n);
+    expect((await db.prepare(replayRecords).first<{ n: number }>())!.n).toBe(before!.n);
   });
 
   it("refuses a missing scope and logs the attempt", async () => {
@@ -562,15 +564,19 @@ describe("the app: list, approve and revoke delegations", () => {
     await db.prepare("INSERT INTO devices (device_id, user_id, name, public_jwk, created_at, last_used_at) VALUES (?, ?, 'Phone', ?, ?, ?)")
       .bind(tp, user.id, JSON.stringify(jwk), nowSeconds(), nowSeconds())
       .run();
-    return async (method: string, path: string, body?: unknown, e: Env = appEnv) => {
+    const sign = async (method: string, path: string) => {
       const now = nowSeconds();
       const h = b64urlEncode(enc.encode(JSON.stringify({ alg: "ES256", typ: "mc-device+jwt" })));
       const p = b64urlEncode(enc.encode(JSON.stringify({ iss: tp, aud: ORIGIN, htm: method, htu: `${ORIGIN}${path}`, iat: now, exp: now + 60, jti: randomToken(16) })));
       const sig = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, pair.privateKey, enc.encode(`${h}.${p}`)));
-      const headers: Record<string, string> = { Authorization: `MC-Device ${h}.${p}.${b64urlEncode(sig)}` };
+      return `MC-Device ${h}.${p}.${b64urlEncode(sig)}`;
+    };
+    const signed = async (method: string, path: string, body?: unknown, e: Env = appEnv, authorization?: string) => {
+      const headers: Record<string, string> = { Authorization: authorization ?? (await sign(method, path)) };
       if (body !== undefined) headers["Content-Type"] = "application/json";
       return call(path, { method, headers, body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body) }, e);
     };
+    return Object.assign(signed, { sign, deviceId: tp });
   }
 
   /** The consent link's two parameters, as the app reads them from the pasted or opened link. */
@@ -763,9 +769,58 @@ describe("the app: list, approve and revoke delegations", () => {
 
   it("needs a signed call that works once", async () => {
     const user = await newUser();
+    const signed = await appDevice(user);
     const dl = await newDelegate();
-    const body = JSON.stringify({ step: "preview", ...(await link(user, dl, ["robots:read"])) });
-    expect((await call(CONSENT, { method: "POST", headers: { "Content-Type": "application/json" }, body }, appEnv)).status).toBe(401);
+    const body = { step: "approve", ...(await link(user, dl, ["robots:read"])), scopes: ["robots:read"], robots: [], ttl: 3600, confirm: true };
+    expect((await call(CONSENT, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }, appEnv)).status).toBe(401);
+    const once = await signed.sign("POST", CONSENT);
+    expect((await signed("POST", CONSENT, body, appEnv, once)).status).toBe(200);
+    const before = await rows(dl.id);
+    const replay = await signed("POST", CONSENT, { ...body, ttl: 2592000 }, appEnv, once);
+    expect([replay.status, await replay.json()]).toEqual([401, { error: "invalid_assertion", detail: "replayed_jti" }]);
+    expect(await rows(dl.id)).toEqual(before);
+    expect((await db.prepare("SELECT ttl_seconds FROM delegations WHERE delegation_id = ?").bind(dl.id).first())).toEqual({ ttl_seconds: 3600 });
+  });
+
+  it("a refused approval changes nothing, even in the same second as an earlier one (final review)", async () => {
+    const user = await newUser();
+    const { robot: a } = await registerAndClaim(user, "A");
+    const { robot: b } = await registerAndClaim(user, "B");
+    const signed = await appDevice(user);
+    const dl = await newDelegate();
+    const at = nowSeconds();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(at * 1000);
+    try {
+      const approveWith = async (robots: string[]) =>
+        signed("POST", CONSENT, { step: "approve", ...(await link(user, dl, ["robots:read"])), scopes: ["robots:read"], robots, ttl: 3600, confirm: true });
+      expect((await approveWith([a.robotId])).status).toBe(200);
+      // The rest of the hour's approvals, in the same second.
+      for (let i = 1; i < APPROVALS_PER_HOUR; i++) {
+        await db.prepare("INSERT INTO delegation_events (delegation_id, at, actor, action, outcome) VALUES (?, ?, 'app', 'approve', 'ok')").bind(dl.id, at).run();
+      }
+      const before = await rows(dl.id);
+      const limited = await approveWith([b.robotId]);
+      expect([limited.status, ((await limited.json()) as { error: string }).error]).toEqual([429, "rate_limited"]);
+      expect(await rows(dl.id)).toEqual(before);
+      const set = await db.prepare("SELECT robot_id FROM delegation_robots WHERE delegation_id = ?").bind(dl.id).all<{ robot_id: string }>();
+      expect(set.results.map((r) => r.robot_id)).toEqual([a.robotId]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("an approval does not complete when its device is signed out meanwhile (final review)", async () => {
+    const user = await newUser();
+    const signed = await appDevice(user);
+    const dl = await newDelegate();
+    // The device is signed out after it was verified and the link was checked, before the batch.
+    const DB = pauseAt(
+      (sql) => sql.includes("SELECT r.robot_id, r.name, m.label, m.role, r.simulator"),
+      async () => void (await db.prepare("DELETE FROM devices WHERE device_id = ?").bind(signed.deviceId).run()),
+    );
+    const res = await signed("POST", CONSENT, { step: "approve", ...(await link(user, dl, ["robots:read"])), scopes: ["robots:read"], robots: [], ttl: 3600, confirm: true }, { ...appEnv, DB });
+    expect([res.status, await res.json()]).toEqual([401, { error: "invalid_assertion", detail: "unknown_device" }]);
+    expect(await rows(dl.id)).toEqual({ delegations: 0, events: 0 });
   });
 
   it("lists the consent link in apple-app-site-association only with delegation on", async () => {
@@ -790,6 +845,7 @@ function pauseAt(match: (sql: string) => boolean, before: () => Promise<void>): 
             bind: (...args: unknown[]) => ({
               first: async () => (await before(), st.bind(...args).first()),
               run: async () => (await before(), st.bind(...args).run()),
+              all: async () => (await before(), st.bind(...args).all()),
             }),
           };
         };

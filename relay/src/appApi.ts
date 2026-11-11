@@ -542,7 +542,7 @@ export async function handleAppApi(request: Request, env: Env, url: URL): Promis
   if (path === CONSENT_PATH) {
     // The signed request is up to about 1 KB and the robot list up to 100 ids.
     const body = await readJson(request, 8192);
-    return body ? appConsent(env, user, body) : json({ error: "bad_request" }, 400);
+    return body ? appConsent(env, user, device.device_id, body) : json({ error: "bad_request" }, 400);
   }
   if (path === "/v1/app/delegations") {
     if (!delegationAllowed(env, user.id)) return json({ delegations: [] });
