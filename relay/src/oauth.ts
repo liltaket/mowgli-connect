@@ -1,6 +1,7 @@
 import type { Env } from "./env";
 import { page, html, type SafeHtml } from "./html";
-import { isUserAllowed } from "./access";
+import { isAdmin, isUserAllowed } from "./access";
+import { killSwitchSince } from "./killSwitch";
 import { createSession, sessionCookie } from "./session";
 import { b64urlDecode, b64urlEncode } from "./crypto";
 import { nowSeconds, parseCookies, randomToken, safeReturnPath } from "./util";
@@ -131,6 +132,10 @@ export async function finishLogin(env: Env, url: URL, request: Request): Promise
       403,
       html`<p class="muted">Mowgli Connect is invite-only while it is a prototype. Ask the person who runs it to add your account. Signed in to GitHub with another account? Sign out on github.com first, then try again.</p>`,
     );
+  }
+
+  if (!isAdmin(env, userId) && (await killSwitchSince(env)) !== null) {
+    return fail("Mowgli Connect is paused.", 503, html`<p class="muted">The operator has stopped all access for now. Try again later.</p>`);
   }
 
   // Fail closed: a missing field (scope not granted, API change) is treated like "off".
