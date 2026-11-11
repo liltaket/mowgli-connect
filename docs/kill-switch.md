@@ -8,7 +8,8 @@ bug or a bad update, then look into it calmly.
 While it is on:
 
 - Nobody gets a new session or grant: `/open/<robot>` answers 503, the app API answers 503
-  `{"error":"paused"}` (signing out still works), and a GitHub sign-in by anyone but an admin is
+  `{"error":"paused"}` (signing out still works), AI-agent delegations get 503 on everything but
+  revoking themselves, and a GitHub sign-in by anyone but an admin is
   refused. Admins can sign in, to turn it off again.
 - Every robot's `GET /v1/robots/self` answers `tunnelToken: null`, `members: []` and
   `"paused": true`. The agent stops its tunnel (named tunnels) and accepts nobody, at its next
