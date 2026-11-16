@@ -318,7 +318,7 @@ revocation commits can still answer; the activity log records it.
 
 1. Bruno, on the relay: set `DELEGATION_USERS` to his GitHub id (`gh:<id>`), apply the migration
    and deploy (see the PR).
-2. On the agent's machine, build the client (Go 1.24 or later):
+2. On the agent's machine, build the client (Go 1.27.4 or later):
 
    ```sh
    cd delegate && go build -o ~/.local/bin/mc-delegate ./cmd/mc-delegate

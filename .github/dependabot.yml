@@ -1,0 +1,33 @@
+# Version updates for everything Mowgli Connect ships or builds with. Each merged agent update
+# becomes a signed image that robots pick up at night, so a fix reaches them without a manual
+# release. The cooldown waits a week before proposing a new release (most malicious package
+# versions are found and pulled within days); security updates (Dependabot security updates,
+# a repository setting) are not delayed. Review each pull request like any other change: an
+# update of a build image or an action changes what produces the signed release.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directories: [/agent, /delegate]
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+    groups:
+      go-modules: { patterns: ["*"] }
+
+  - package-ecosystem: docker
+    directory: /agent
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+
+  - package-ecosystem: npm
+    directory: /relay
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+    groups:
+      relay-dev-tools: { patterns: ["*"] }
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+    groups:
+      actions: { patterns: ["*"] }

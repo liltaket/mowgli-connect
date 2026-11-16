@@ -1,0 +1,41 @@
+name: Relay
+
+# Type-checks and tests the relay (relay/, the Cloudflare Worker that is the root of trust, see
+# SECURITY.md). Until now these tests only ran on the maintainer's machine before a deploy.
+# Dependencies are installed with --ignore-scripts: no package's install script runs here (the
+# tests do not need any), so a compromised dependency cannot run code at install time. Actions
+# are pinned by commit SHA.
+on:
+  push:
+    branches: [main]
+    paths: [relay/**, .github/workflows/relay.yml]
+  # Every pull request, not only relay changes, so "Relay tests" can be a required status check
+  # (a workflow skipped by a path filter never reports it, which would block the merge).
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: relay-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Relay tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: npm ci, typecheck and test
+        working-directory: relay
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run typecheck
+          npm test

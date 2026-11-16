@@ -1,0 +1,55 @@
+name: Vulnerability check
+
+# Known vulnerabilities in what we ship, also when our own code has not changed: new advisories
+# for the Go standard library and modules (govulncheck, which reports only code paths we actually
+# call) and for the relay's npm packages. Runs weekly and on changes to dependencies or the Go
+# version. A failure means: update the toolchain or the dependency, and let the signed image
+# reach the robots. Actions are pinned by commit SHA, govulncheck by version.
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  pull_request:
+    paths: ["**/go.mod", "**/go.sum", agent/Dockerfile, relay/package-lock.json, .github/workflows/vulncheck.yml]
+  push:
+    branches: [main]
+    paths: ["**/go.mod", "**/go.sum", agent/Dockerfile, relay/package-lock.json, .github/workflows/vulncheck.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: govulncheck (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [agent, delegate]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache: false
+      - name: govulncheck
+        working-directory: ${{ matrix.module }}
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  npm:
+    name: npm audit (relay)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: npm audit
+        working-directory: relay
+        run: npm audit --package-lock-only --audit-level=moderate
