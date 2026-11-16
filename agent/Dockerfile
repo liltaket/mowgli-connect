@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM --platform=$BUILDPLATFORM golang:1.24@sha256:d2d2bc1c84f7e60d7d2438a3836ae7d0c847f4888464e7ec9ba3a1339a1ee804 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.4@sha256:fe517acaa580cc7915457080f850c37e618b3c1e750f98b58fc6429b605147a1 AS build
 ARG TARGETOS TARGETARCH VERSION=dev
 WORKDIR /src
 COPY go.mod go.sum ./
