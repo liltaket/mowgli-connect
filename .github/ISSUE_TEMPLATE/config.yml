@@ -1,0 +1,6 @@
+# A security problem never belongs in a public issue: GitHub shows this link first.
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability (private)
+    url: https://github.com/liltaket/mowgli-connect/security/advisories/new
+    about: Opens a private security advisory that only you and the maintainer see. Please do not open a public issue for it. See SECURITY.md.

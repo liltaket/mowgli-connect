@@ -1,18 +1,32 @@
 # Security policy
 
-Mowgli Connect is an invite-only beta. It runs on a real mower and has been through ten security
-reviews, but it is young software from one maintainer: treat it accordingly and report anything that
-looks wrong.
+Mowgli Connect is an invite-only beta. It runs on a real mower and has been through fourteen
+security reviews, but it is young software from one maintainer: treat it accordingly and report
+anything that looks wrong.
 
 ## Reporting a vulnerability
 
-Use GitHub's private vulnerability reporting: open the repository's **Security** tab, choose
-**Report a vulnerability**, and describe the problem. This creates a private security advisory that
-only the maintainer can see.
+Report it privately: **[Report a vulnerability](https://github.com/liltaket/mowgli-connect/security/advisories/new)**
+(the repository's **Security** tab). This opens a private security advisory that only you and the
+maintainer can see. You need a GitHub account.
 
-There is no private email or other contact channel. Please do not open a public issue or pull
-request for a vulnerability before it is fixed. Include what you found, the affected component, how
-to reproduce it, and what an attacker could do with it.
+Please include:
+
+- the affected component (agent, relay, installer, container, app API, delegations, release chain);
+- what an attacker needs (their position: internet, a robot's tunnel, a member of a robot, a
+  relay account, the local network) and what they get;
+- steps to reproduce, or a test that fails;
+- whether you used AI tools to find or confirm it. That is fine, but say so, and check the finding
+  against the code yourself: reports that only repeat a model's guess cost time.
+
+What happens next: the maintainer confirms receipt within a week, fixes confirmed problems in
+private, and publishes the advisory with the fix, crediting you unless you prefer not to be named.
+If a robot may be at risk before a fix exists, the relay's emergency stop and update pause are used.
+This is a one-person, unpaid project: there is no bug bounty.
+
+Please do not open a public issue or pull request for a vulnerability before it is fixed, and do not
+test against robots or accounts that are not yours. There is no private email or other contact
+channel.
 
 ## In scope
 
@@ -33,6 +47,14 @@ Out of scope: vulnerabilities in MowgliNext itself, in Cloudflare or GitHub, and
 - The **relay and its Cloudflare account are the root of trust.** The relay decides who may open a
   robot, and the Cloudflare account owns the tunnels. Cloudflare also ends TLS for the tunnel, so it
   can see the traffic.
+- **The relay's domain is not.** The relay signs its answers to robots, and each robot pins the
+  relay's key at its first signed answer. Whoever controls the domain (its registration, renewal or
+  DNS) or a certificate for it can therefore stop robots from reaching the relay, but cannot hand
+  them other members, keys or a tunnel token. The relay can rotate its key and move to another
+  domain, and robots follow both. Robots that have not yet run an agent with signed answers still
+  trust the domain. Details: [docs/protocol.md](docs/protocol.md#signed-answers-and-the-relay-key).
+  How the system is kept up to date, the alerts and what to do during an incident:
+  [docs/security-maintenance.md](docs/security-maintenance.md).
 - Every request, including WebSockets, is checked by the agent on the robot. Each robot has its own
   Ed25519 key and its own tunnel.
 - The robot container limits what the **tunnel** can reach. Its network is locked so that someone
@@ -69,10 +91,13 @@ Out of scope: vulnerabilities in MowgliNext itself, in Cloudflare or GitHub, and
   `read:user` scope, reads `two_factor_authentication` from `GET /user` and refuses the sign-in
   unless it is `true` (a missing field also refuses). It checks the account setting, not that this
   particular sign-in used a second factor, and the token is discarded right after.
-- **Emergency stop.** The admin page has a switch that ends all sessions, refuses new ones and
-  tells every robot to accept nobody within a few minutes. It can also be set from outside the
-  relay. [docs/kill-switch.md](docs/kill-switch.md) lists what it does and does not cover (it does
-  not pause the nightly image update).
+- **Emergency stop and update pause.** The admin page has a switch that ends all sessions, refuses
+  new ones and tells every robot to accept nobody within a few minutes, and one that tells every
+  robot to keep the agent version it runs. Both can also be set from outside the relay.
+  [docs/kill-switch.md](docs/kill-switch.md) and [docs/updates.md](docs/updates.md#pausing-updates)
+  say what they do and do not cover. Every signed release is reported three ways (the release
+  workflow, the relay and a Rekor monitor), so one nobody made is noticed
+  ([docs/updates.md](docs/updates.md#release-alarms)).
 - **Updates are a root of trust too.** A malicious agent image could skip the network lock and the
   privilege drop, read the robot's key and tunnel token, and reach the robot's GUI and home
   network. So the robot runs an image only after cosign has verified a Sigstore keyless signature
@@ -123,8 +148,11 @@ or documented:
 - [security-review-10.md](docs/research/security-review-10.md) (whole system: components and attacker chains)
 - [security-review-11.md](docs/research/security-review-11.md) (native app API)
 - [security-review-13.md](docs/research/security-review-13.md) (app sign-out and its races)
+- [security-review-14.md](docs/research/security-review-14.md) (delegations to AI agents)
 - [security-review-gemini.md](docs/research/security-review-gemini.md)
 - [security-review-mistral.md](docs/research/security-review-mistral.md)
 
-Test results: [docs/test-report.md](docs/test-report.md). Design: [docs/architecture.md](docs/architecture.md)
+How the system is kept secure over time (dependencies, credentials, coding agents, alerts,
+incidents): [docs/security-maintenance.md](docs/security-maintenance.md). Test results:
+[docs/test-report.md](docs/test-report.md). Design: [docs/architecture.md](docs/architecture.md)
 and [docs/protocol.md](docs/protocol.md).
