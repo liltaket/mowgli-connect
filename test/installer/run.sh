@@ -303,6 +303,33 @@ t_update_ok() {
 	check "second run: no restart" eq "$(starts)" 2
 }
 
+t_update_paused() {
+	installed update-paused
+	release "$D2" 2
+	echo paused >"$FAKE/updates"
+	upd cron
+	check "paused: run succeeds quietly" eq "$?:$(cat "$T/update.out")" "0:"
+	check "paused: old agent keeps running" eq "$(running)" "$REPO@$D1"
+	check "paused: status says so" eq "$(result)" paused
+	check "paused: nothing verified or pulled" lacks "$FAKE/calls" "$D2"
+	echo active >"$FAKE/updates"
+	upd cron
+	check "resumed: updates" eq "$(running)" "$REPO@$D2"
+
+	installed update-pause-unknown
+	release "$D2" 2
+	echo old >"$FAKE/updates" # an agent that does not know the command
+	upd cron
+	check "agent cannot tell: updates anyway" eq "$(running)" "$REPO@$D2"
+
+	installed update-pause-no-agent
+	release "$D2" 2
+	echo paused >"$FAKE/updates"
+	rm -f "$FAKE/running" # the agent is not running: it cannot hold the update back
+	upd cron
+	check "no agent: updates anyway" eq "$(running)" "$REPO@$D2"
+}
+
 t_update_refused() {
 	installed registry-down
 	publish "$D2"
@@ -944,6 +971,7 @@ all)
 	t_refused_installs
 	t_release_tag_accepted
 	t_update_ok
+	t_update_paused
 	t_update_refused
 	t_rollback
 	t_settle

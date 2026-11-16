@@ -1,4 +1,5 @@
-import { canSignIn } from "./access";
+import { canSignIn, isAdmin } from "./access";
+import { securityAlert } from "./alerts";
 import { claimRobot, limitMessage, planAddress, previewClaim, reachedLimit, unlinkRobot } from "./claim";
 import { b64urlDecode, importEd25519Public, parseJws, verifyJws } from "./crypto";
 import { DELEGATE_ID, DelegateAuthError, deriveDelegateId, fingerprint, verifyDelegateAssertion } from "./delegateAuth";
@@ -585,6 +586,11 @@ async function approveConsent(
     return refused("too_many_agents", 403, `You have ${MAX_ACTIVE_DELEGATIONS} active AI agents already. Revoke one on your robots page first.`);
   }
   console.log("delegation: approved", id, "for", user.id, "in the", actor === "app" ? "app" : "browser", scopes.join(" "));
+  await securityAlert(
+    env,
+    "delegation_approved",
+    `An AI agent was approved for ${isAdmin(env, user.id) ? "the admin account" : "an account"} (${scopes.join(" ")}; ${robots.length} robots). If it was not expected, revoke it on the robots page.`,
+  );
   // Only robots the transaction stored (a robot unlinked meanwhile is left out).
   const set = await robotSet(env, id);
   return { delegateId: id, name: p.name, scopes, robots: robots.filter((r) => set.get(r) === "consent").map((r) => ({ robotId: r, name: mine.get(r) ?? r })), expiresAt: now + ttl };

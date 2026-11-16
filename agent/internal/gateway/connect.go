@@ -113,7 +113,7 @@ func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request, st State)
 		w.WriteHeader(http.StatusNoContent) // tunnel self-check; reveals nothing
 	case r.URL.Path == "/_connect/callback" && r.Method == http.MethodGet:
 		h.Set("Content-Type", "text/html; charset=utf-8")
-		io.WriteString(w, strings.Replace(callbackHTML, "{{RELAY}}", html.EscapeString(g.cfg.RelayOrigin+"/"), 1))
+		io.WriteString(w, strings.Replace(callbackHTML, "{{RELAY}}", html.EscapeString(g.relayOrigin(st)+"/"), 1))
 	case r.URL.Path == "/_connect/connect.css" && r.Method == http.MethodGet:
 		h.Set("Content-Type", "text/css; charset=utf-8")
 		io.WriteString(w, connectCSS)
@@ -146,7 +146,7 @@ func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request, st State)
 	case r.URL.Path == "/_connect/whoami" && r.Method == http.MethodGet:
 		s := g.sessionFrom(r)
 		if s == nil || g.effectiveRole(s) == "" {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated", "login": g.loginURL()})
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated", "login": g.loginURL(st)})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"sub": s.sub, "name": s.name, "role": g.effectiveRole(s), "expiresAt": s.expires.Unix()})

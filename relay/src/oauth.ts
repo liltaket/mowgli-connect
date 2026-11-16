@@ -3,6 +3,7 @@ import { page, html, type SafeHtml } from "./html";
 import { canSignIn, isAdmin } from "./access";
 import { killSwitchSince } from "./killSwitch";
 import { createSession, sessionCookie } from "./session";
+import { securityAlert } from "./alerts";
 import { b64urlDecode, b64urlEncode } from "./crypto";
 import { nowSeconds, parseCookies, randomToken, safeReturnPath } from "./util";
 
@@ -149,6 +150,7 @@ export async function finishLogin(env: Env, url: URL, request: Request): Promise
 
   const now = nowSeconds();
   const name = typeof gh.name === "string" ? gh.name.slice(0, 100) : null;
+  const before = await env.DB.prepare("SELECT last_login_at FROM users WHERE id = ?").bind(userId).first<{ last_login_at: number }>();
   await env.DB.prepare(
     `INSERT INTO users (id, login, name, created_at, last_login_at) VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET login = excluded.login, name = excluded.name, last_login_at = excluded.last_login_at`,
@@ -157,6 +159,11 @@ export async function finishLogin(env: Env, url: URL, request: Request): Promise
     .run();
 
   const token = await createSession(env, userId);
+  if (isAdmin(env, userId)) {
+    await securityAlert(env, "admin_signin", "The admin account signed in to the relay. If this was not you, sign out of GitHub everywhere, change its password and engage the emergency stop.");
+  } else if (!before?.last_login_at) {
+    await securityAlert(env, "first_signin", "An invited account signed in for the first time.");
+  }
   const headers = new Headers({ Location: safeReturnPath(row.return_to), "Cache-Control": "no-store" });
   headers.append("Set-Cookie", sessionCookie(token));
   headers.append("Set-Cookie", oauthCookie("", 0));

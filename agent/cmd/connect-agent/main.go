@@ -24,6 +24,7 @@ import (
 	"mowgli-connect/agent/internal/gateway"
 	"mowgli-connect/agent/internal/identity"
 	"mowgli-connect/agent/internal/jws"
+	"mowgli-connect/agent/internal/pin"
 	"mowgli-connect/agent/internal/relay"
 	"mowgli-connect/agent/internal/state"
 	"mowgli-connect/agent/internal/tunnel"
@@ -155,8 +156,12 @@ func main() {
 		err = status()
 	case "version":
 		fmt.Println(version)
+	case "updates":
+		err = updates()
+	case "forget-relay-key":
+		err = forgetRelayKey()
 	default:
-		err = fmt.Errorf("usage: connect-agent [run|status|version]")
+		err = fmt.Errorf("usage: connect-agent [run|status|version|updates|forget-relay-key]")
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "connect-agent:", err)
@@ -168,8 +173,8 @@ func paths(dataDir string) (key, st, pairing string) {
 	return filepath.Join(dataDir, "robot.key"), filepath.Join(dataDir, "state.json"), filepath.Join(dataDir, "pairing.json")
 }
 
-func toGatewayState(s *relay.Self, log *slog.Logger) gateway.State {
-	gs := gateway.State{Status: s.Status, Hostname: s.Hostname, Epoch: s.SessionEpoch,
+func toGatewayState(s *relay.Self, issuer string, log *slog.Logger) gateway.State {
+	gs := gateway.State{Status: s.Status, Hostname: s.Hostname, Epoch: s.SessionEpoch, Issuer: issuer,
 		RelayKeys: map[string]ed25519.PublicKey{}, Members: map[string]string{}}
 	for _, k := range s.RelayKeys {
 		pub, err := jws.DecodeKey(k.PublicKey)
@@ -197,7 +202,13 @@ func run() error {
 		return err
 	}
 	robotID := identity.RobotID(key.Public().(ed25519.PublicKey))
-	log.Info("mowgli connect agent", "version", version, "robotId", robotID, "relay", cfg.relayURL, "upstream", cfg.upstream)
+	trust, err := loadTrust(cfg.dataDir, cfg.relayURL, envBool("MC_INSECURE_RELAY", false), log)
+	if err != nil {
+		return err
+	}
+	relayOrigin := trust.origin()
+	log.Info("mowgli connect agent", "version", version, "robotId", robotID, "relay", relayOrigin, "upstream", cfg.upstream,
+		"relayKeys", kids(trust.keys()))
 
 	upstream, err := url.Parse(cfg.upstream)
 	if err != nil || upstream.Host == "" {
@@ -214,7 +225,7 @@ func run() error {
 	// Resync requests from the gateway; each carries a channel closed after the next sync.
 	syncReq := make(chan chan struct{}, 8)
 	gwCfg := gateway.Config{
-		RelayOrigin: cfg.relayURL, RobotID: robotID, Upstream: upstream, Policy: policy,
+		RelayOrigin: relayOrigin, RobotID: robotID, Upstream: upstream, Policy: policy,
 		MaxBodyBytes: cfg.maxBodyMB << 20, WSCompression: cfg.wsCompression, MaxStale: cfg.maxStale, Logger: log,
 		SessionFile: filepath.Join(cfg.dataDir, "sessions.json"),
 		Resync: func() {
@@ -251,12 +262,13 @@ func run() error {
 	quick := cfg.tunnelMode == "quick"
 
 	var current *relay.Self
+	issuer, appliedIssuer := trust.issuer(), ""
 	apply := func(s *relay.Self) {
-		if current != nil && reflect.DeepEqual(current, s) {
+		if current != nil && reflect.DeepEqual(current, s) && issuer == appliedIssuer {
 			return
 		}
-		current = s
-		gw.UpdateState(toGatewayState(s, log))
+		current, appliedIssuer = s, issuer
+		gw.UpdateState(toGatewayState(s, issuer, log))
 		if s.Status == "claimed" && (quick || s.TunnelToken != "") {
 			if quick {
 				sup.Set(tunnel.Spec{QuickURL: "http://" + cfg.listen})
@@ -292,8 +304,19 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	client := &relay.Client{Origin: cfg.relayURL, Key: key, RobotID: robotID,
+	client := &relay.Client{Origin: relayOrigin, Key: key, RobotID: robotID, Pinned: trust.keys(),
 		Agent: agentHeader(version, cfg.allowTeleop, cfg.simulator)}
+	// synced handles every successful relay answer: pinned keys, a domain move, the issuer the
+	// gateway accepts and the update pause.
+	synced := func(s *relay.Self, sg *relay.Signed) *relay.Self {
+		s, sg = trust.afterSync(ctx, client, s, sg)
+		issuer = ""
+		if sg != nil {
+			issuer = sg.Origin
+		}
+		setUpdateHold(cfg.dataDir, s.UpdatesPaused, log)
+		return s
+	}
 	if !quick && cfg.listen != "127.0.0.1:4007" {
 		log.Warn("named tunnels deliver to 127.0.0.1:4007 (the relay's AGENT_ORIGIN); with another MC_LISTEN they answer 502", "listen", cfg.listen)
 	}
@@ -311,13 +334,13 @@ func run() error {
 	var nextPoll, nextReport time.Time
 	for {
 		if pendingHost != "" && current != nil && current.Status == "claimed" && !time.Now().Before(nextReport) {
-			if s, err := client.ReportHostname(ctx, pendingHost); err != nil {
+			if s, sg, err := client.ReportHostname(ctx, pendingHost); err != nil {
 				log.Warn("reporting quick-tunnel hostname", "err", err)
 				nextReport = time.Now().Add(10 * time.Second)
 			} else {
 				log.Info("quick tunnel ready", "url", "https://"+pendingHost+"/")
 				pendingHost, healthFails = "", 0
-				apply(s)
+				apply(synced(s, sg))
 				gw.MarkFresh()
 			}
 		}
@@ -327,7 +350,10 @@ func run() error {
 			if time.Since(started) < unclaimedFastFor {
 				unclaimedWait = unclaimedFastPoll
 			}
-			self, err := client.Self(ctx)
+			self, signed, err := client.Self(ctx)
+			if err == nil {
+				self = synced(self, signed)
+			}
 			if err == nil && !unreachableSince.IsZero() {
 				log.Info("relay reachable again", "after", time.Since(unreachableSince).Round(time.Second))
 				unreachableSince = time.Time{}
@@ -372,7 +398,13 @@ func run() error {
 				if unreachableSince.IsZero() {
 					unreachableSince = time.Now()
 				}
-				log.Warn("relay unreachable; keeping last known state", "err", err, "retry", backoff)
+				if errors.Is(err, relay.ErrNotSigned) {
+					// Not the relay (a lost domain, a DNS change), or the relay lost its key: see
+					// docs/install.md, Troubleshooting.
+					log.Error("ignoring an answer not signed by the pinned relay key; keeping last known state", "relay", client.Origin, "retry", backoff)
+				} else {
+					log.Warn("relay unreachable; keeping last known state", "err", err, "retry", backoff)
+				}
 				wait = backoff
 				// At most a minute: after a long outage remote access is suspended (MC_MAX_STALE)
 				// until the next successful sync, so the robot should notice the relay is back soon.
@@ -503,6 +535,16 @@ func status() error {
 		return err
 	}
 	fmt.Println("robot id:", identity.RobotID(key.Public().(ed25519.PublicKey)))
+	if p, err := pin.Load(filepath.Join(dataDir, pinFile)); err != nil {
+		fmt.Println("relay:   ", err)
+	} else if p != nil {
+		fmt.Printf("relay:    %s (keys pinned: %s)\n", p.Origin, strings.Join(kids(p.Keys), ", "))
+	} else {
+		fmt.Println("relay:    no relay key pinned yet")
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, holdFile)); err == nil {
+		fmt.Println("updates:  paused by the relay operator")
+	}
 	if s, err := state.Load(statePath); err == nil && s != nil {
 		fmt.Printf("status:   %s\nurl:      https://%s/\nmembers:  %d\n", s.Status, s.Hostname, len(s.Members))
 		return nil
@@ -513,5 +555,34 @@ func status() error {
 		return nil
 	}
 	fmt.Println("status:   not paired (no valid pairing code; check agent logs)")
+	return nil
+}
+
+// updates prints "paused" while the relay's operator holds back agent updates, else "active".
+// The robot's update.sh runs it (docker exec) before each automatic update.
+func updates() error {
+	_, err := os.Stat(filepath.Join(env("MC_DATA_DIR", "/data"), holdFile))
+	switch { // an error (root without capabilities cannot see /data) makes update.sh go ahead
+	case err == nil:
+		fmt.Println("paused")
+	case errors.Is(err, os.ErrNotExist):
+		fmt.Println("active")
+	default:
+		return err
+	}
+	return nil
+}
+
+// forgetRelayKey removes the pinned relay keys, so the agent trusts the key of the next relay
+// answer again (after the relay lost its key, or to move a robot to another relay on purpose).
+func forgetRelayKey() error {
+	path := filepath.Join(env("MC_DATA_DIR", "/data"), pinFile)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, os.ErrPermission) {
+			return fmt.Errorf("%w (run it as the agent's user: docker exec -u 65532:65532 mowgli-connect connect-agent forget-relay-key)", err)
+		}
+		return err
+	}
+	fmt.Println("The pinned relay key is forgotten. Restart the agent (docker restart mowgli-connect): it pins the key of the relay's next answer.")
 	return nil
 }

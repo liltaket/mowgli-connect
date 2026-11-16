@@ -1,5 +1,5 @@
-import { afterSharesEnded, canOwn, ownedRobots, robotLimit } from "./access";
-import { alert } from "./alerts";
+import { afterSharesEnded, canOwn, isAdmin, ownedRobots, robotLimit } from "./access";
+import { alert, securityAlert } from "./alerts";
 import type { Env } from "./env";
 import { sealToken, tokenKeyUsable } from "./tokenSeal";
 import { normalizePairingCode, pairingCodeHashes } from "./pairing";
@@ -294,6 +294,11 @@ async function claimWithCode(
     await unlinkRobot(env, provisioner, robotId);
     return { ok: false, status: 403, message: "Your account no longer has access." };
   }
+  await securityAlert(
+    env,
+    "robot_claimed",
+    `A robot was paired to ${isAdmin(env, userId) ? "the admin account" : "an account"}${delegationId !== null ? " by an AI agent" : ""}. If nobody you know just added a robot, check the admin page.`,
+  );
   return { ok: true, robotId };
 }
 
@@ -398,6 +403,57 @@ export async function retryPendingCleanups(env: Env, provisioner: TunnelProvisio
     "SELECT robot_id, hostname, tunnel_id, dns_record_id FROM robots WHERE status = 'revoked' AND tunnel_id IS NOT NULL LIMIT 20",
   ).all<{ robot_id: string; hostname: string | null; tunnel_id: string | null; dns_record_id: string | null }>();
   for (const r of rows.results) await cleanupRevoked(env, provisioner, r.robot_id, { robotId: r.robot_id, ...camel(r) });
+}
+
+/** Robots moved to a new ROBOT_ZONE per cron run (each move is about five Cloudflare API calls). */
+const ZONE_MOVES_PER_RUN = 3;
+
+/**
+ * A domain move for robot hostnames (docs/security-maintenance.md, "Changing the domain"): when
+ * ROBOT_ZONE (and CF_ZONE_ID) name a new zone, every claimed robot whose hostname is still under
+ * another zone gets the same name under the new one. The robot keeps its tunnel and token; its
+ * ingress and a new DNS record point the new name at it, and the robot learns the name at its
+ * next sync. The old name stops working at once (the ingress names only the new one); its DNS
+ * record in the old zone is left for the operator to delete with that zone. A name another robot
+ * holds or recently released in the new zone falls back to the robot id.
+ */
+export async function moveRobotsToZone(env: Env, provisioner: TunnelProvisioner): Promise<number> {
+  const zone = zoneOf(env);
+  if (!provisioner.assignsHostnames || !zone) return 0;
+  const rows = await env.DB.prepare(
+    `SELECT robot_id, hostname FROM robots WHERE status = 'claimed' AND tunnel_id IS NOT NULL AND hostname IS NOT NULL
+       AND hostname NOT LIKE ? ESCAPE '\\' LIMIT ?`,
+  )
+    .bind(`%.${zone.replace(/[\\%_]/g, (c) => `\\${c}`)}`, ZONE_MOVES_PER_RUN)
+    .all<{ robot_id: string; hostname: string }>();
+  let moved = 0;
+  for (const r of rows.results) {
+    const first = r.hostname.split(".")[0] ?? "";
+    let label: string | undefined = robotSubdomain(first) === first ? first : undefined;
+    if (label) {
+      const taken = await env.DB.prepare(
+        `SELECT 1 AS ok FROM robots WHERE hostname = ?1 AND robot_id != ?2
+         UNION ALL SELECT 1 FROM released_hostnames WHERE hostname = ?1 AND robot_id != ?2 AND released_at > ?3`,
+      )
+        .bind(robotHostname(label, zone), r.robot_id, nowSeconds() - NAME_QUARANTINE_SECONDS)
+        .first();
+      if (taken) label = undefined;
+    }
+    let p;
+    try {
+      p = await provisioner.provision(r.robot_id, label);
+    } catch (e) {
+      if (!(e instanceof HostnameInUseError) || label === undefined) throw e;
+      p = await provisioner.provision(r.robot_id);
+    }
+    if (!p.hostname) continue;
+    await env.DB.prepare("UPDATE robots SET hostname = ?, dns_record_id = ?, updated_at = ? WHERE robot_id = ? AND status = 'claimed'")
+      .bind(p.hostname, p.dnsRecordId, nowSeconds(), r.robot_id)
+      .run();
+    console.log("zone move:", r.robot_id, "now at", p.hostname);
+    moved++;
+  }
+  return moved;
 }
 
 /** Reserves the first free readable name for the robot and provisions its tunnel under it. */

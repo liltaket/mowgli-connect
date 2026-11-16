@@ -119,9 +119,13 @@ Assertion auth. Response `200`:
   "relayKeys": [{"kid":"k1","publicKey":"<b64url>"}],
   "sessionEpoch": 1,
   "members": [{"userId":"gh:123","role":"owner"}, {"userId":"gh:456","role":"operator"}],
-  "paused": true            // only while the emergency stop is on
+  "paused": true,           // only while the emergency stop is on
+  "updatesPaused": true,    // only while the operator holds back agent updates (docs/updates.md)
+  "signatures": ["<compact JWS, typ mc-self+jwt>", "…"]
 }
 ```
+Everything but `signatures` is also inside each signature, and an agent that pinned the relay's
+key uses only that signed copy: see "Signed answers and the relay key" below.
 `members` lists everyone who may open the robot now, with their role: the owner and the people it
 is shared with, by GitHub id. It is empty unless the robot is `claimed`, and also while the owner
 may no longer own robots (removed by the admin): access to a robot follows its owner's.
@@ -140,6 +144,70 @@ a newer epoch, a user the agent does not know yet, or a higher role than the mem
 that user, it syncs at once (at most every 10 s) before deciding, so new members and upgraded
 shares do not wait for the next poll. It applies changes: new epoch → drop all sessions; member removed or
 downgraded → drop/adjust their sessions; `revoked` → drop sessions, stop cloudflared.
+
+### Signed answers and the relay key
+
+Robots used to trust whoever answered at `MC_RELAY_URL` with a valid TLS certificate. Whoever
+controlled the relay's domain (its registration or renewal, its DNS) or got a certificate for it
+could hand every robot another relay key, member list and tunnel token, which is control of the
+robots. So the relay signs its answers to `/v1/robots/self` and `/v1/robots/hostname`, and the
+robot pins the relay's key.
+
+Each answer carries `signatures`: one compact JWS per relay signing key (`alg: EdDSA`,
+`typ: mc-self+jwt`, `kid`), all over the same claims:
+
+```json
+{
+  "aud": "mc-robot:<robotId>",
+  "req": "<jti of the robot's assertion for this request>",
+  "iat": 1731760000,
+  "relayOrigin": "https://connect.example.com",
+  "self": { "robotId": "…", "status": "claimed", "relayKeys": […], "members": […], … }
+}
+```
+
+The agent:
+
+1. Sends its assertion and remembers its `jti`. It accepts a signature only if `aud` names this
+   robot and `req` is that `jti`, so an older answer (members before a removal, say) cannot be
+   replayed. It uses only `self` from the verified payload; the unsigned copy next to it is for
+   agents from before signed answers.
+2. **Pins the keys on first contact.** Nothing pinned yet: a signed answer must verify under a key
+   it lists itself, and the agent then pins `self.relayKeys` in `/data/relay-pin.json` (0600). An
+   unsigned answer is accepted only while nothing is pinned (a relay from before signed answers).
+   This is trust on first use, like pairing.
+3. **Afterwards accepts only answers signed by a pinned key.** Anything else (unsigned, another
+   key, another robot, another request) counts as "relay unreachable": the agent keeps its last
+   state, and after `MC_MAX_STALE` accepts nobody. Local access is unaffected.
+4. **Follows a key rotation.** When a verified answer lists other keys, the agent pins those. To
+   rotate, the operator makes the new key `RELAY_SIGNING_KEY` and keeps the old one as
+   `RELAY_PREVIOUS_SIGNING_KEY` (with `RELAY_PREVIOUS_KEY_ID`). Answers are then signed by both
+   and list both, so a robot that only knows the old key learns the new one. Grants are signed by
+   the new key only. Keep the previous key until every robot has synced (the admin page lists the
+   agent versions of paired robots and how many the relay saw in the last hour). Robots that stayed offline longer must re-pin by hand (below).
+5. **Follows a signed domain move.** When `relayOrigin` differs from the origin the agent calls, it
+   asks the new origin for `/v1/robots/self` too. Only if that answer verifies under a pinned key
+   and names the same origin does the agent move there. It records the new origin in the pin file
+   and keeps using it after restarts. Otherwise it stays and tries again at the next sync.
+   Meanwhile it already accepts grants whose `iss` is the signed `relayOrigin`, and sends people
+   there to sign in. If the owner sets another `MC_RELAY_URL` on the robot, that wins again (the
+   keys stay pinned).
+
+The robot then no longer depends on the domain, DNS or a TLS certificate: they decide whether it
+can reach the relay, not what it accepts. What remains trusted is the relay's signing key, which
+is held in the Worker's secrets, so the Cloudflare account is still a root of trust
+([SECURITY.md](../SECURITY.md)).
+
+Re-pinning by hand (the relay lost its key, or the robot moves to another relay on purpose):
+`docker exec -u 65532:65532 mowgli-connect connect-agent forget-relay-key`, then
+`docker restart mowgli-connect`. `connect-agent status` shows the relay origin and the pinned key
+ids.
+
+**Domain move, relay side.** Set the new origin as `RELAY_ORIGIN` and list the old one in
+`RELAY_LEGACY_ORIGINS`. On an old origin the relay serves only the robot API, whose assertions
+must name the origin the robot actually called. Browsers get a `301` to the new origin, and any
+other request gets `421`. The procedure is in
+[security-maintenance.md](security-maintenance.md#changing-the-domain).
 
 ## Relay HTTP API (browser-facing)
 

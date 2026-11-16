@@ -173,6 +173,18 @@ If the relay stays unreachable for longer than `MC_MAX_STALE` (10
 minutes by default), remote sessions stop working until it is reachable again. Access on your home
 network is not affected.
 
+**Logs say "answer not signed by the pinned relay key".** The robot pinned the relay's key
+([protocol](protocol.md#signed-answers-and-the-relay-key)), and what answers at the relay's address
+now is not signed by it. Either someone else answers there (a lost domain, a DNS change), or the
+relay lost its key. The robot accepts nobody new from that relay, and after `MC_MAX_STALE` nobody
+at all; access at home is not affected. Do not work around it before you know which it is. If the
+relay's operator confirms a new key, re-pin: `docker exec -u 65532:65532 mowgli-connect connect-agent forget-relay-key`,
+then `docker restart mowgli-connect`.
+
+**Updates say "paused".** The relay's operator holds back agent updates for every robot
+([updates.md](updates.md#pausing-updates)). Nothing to do: the robot updates again once the pause
+ends.
+
 **You lost the pairing code.** Run `docker logs mowgli-connect` to see it again.
 
 **An update failed, or the status says it rolled back.** Run `sh ~/mowgli-connect/update.sh status`.

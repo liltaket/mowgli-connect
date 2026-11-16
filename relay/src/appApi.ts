@@ -1,4 +1,5 @@
-import { canSignIn, GITHUB_USER_ID, ownedRobots, robotLimit } from "./access";
+import { canSignIn, GITHUB_USER_ID, isAdmin, ownedRobots, robotLimit } from "./access";
+import { securityAlert } from "./alerts";
 import { cleanGithubLogin } from "./admin";
 import { claimRobot, planAddress, previewClaim, reachedLimit, limitMessage, unlinkRobot } from "./claim";
 import { DELEGATE_ID } from "./delegateAuth";
@@ -308,6 +309,11 @@ async function token(request: Request, env: Env, url: URL): Promise<Response> {
       : json({ error: "too_many_devices" }, 403);
   }
   console.log("app: device signed in", thumbprint.slice(0, 8), "for", user.id);
+  await securityAlert(
+    env,
+    "app_device",
+    `A new app device signed in to ${isAdmin(env, user.id) ? "the admin account" : "an account"}. If it was not expected, sign it out on the robots page and, for the admin account, engage the emergency stop.`,
+  );
   return json({ deviceId: thumbprint, login: user.login, name: user.name });
 }
 

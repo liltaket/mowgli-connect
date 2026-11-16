@@ -1,6 +1,6 @@
 import type { Env } from "./env";
 import { handleBrowser } from "./browser";
-import { NAME_QUARANTINE_SECONDS, retryPendingCleanups } from "./claim";
+import { moveRobotsToZone, NAME_QUARANTINE_SECONDS, retryPendingCleanups } from "./claim";
 import { page, html, PAIR_JS, SECURITY_HEADERS, STYLE_CSS } from "./html";
 import { APPLE_TOUCH_PNG_B64, FAVICON_ICO_B64, ICON_SVG } from "./icons";
 import { alert, checkHealth } from "./alerts";
@@ -20,11 +20,45 @@ const ICONS: Record<string, { body: string | Uint8Array; type: string }> = {
   "/apple-touch-icon.png": { body: fromB64(APPLE_TOUCH_PNG_B64), type: "image/png" },
 };
 
+const ROBOT_API = new Set(["/v1/robots/register", "/v1/robots/self", "/v1/robots/hostname"]);
+
+/** Robot API (assertion-authenticated JSON; no cookies, no Origin semantics). */
+function robotApi(request: Request, env: Env, url: URL): Promise<Response> | Response {
+  if (url.pathname === "/v1/robots/register") {
+    return request.method === "POST" ? registerRobot(env, request, url) : json({ error: "method_not_allowed" }, 405, { Allow: "POST" });
+  }
+  if (url.pathname === "/v1/robots/self") {
+    return request.method === "GET" ? robotSelf(env, request, url) : json({ error: "method_not_allowed" }, 405, { Allow: "GET" });
+  }
+  return request.method === "POST" ? reportHostname(env, request, url) : json({ error: "method_not_allowed" }, 405, { Allow: "POST" });
+}
+
+/** RELAY_LEGACY_ORIGINS: exact origins (https://host), comma separated; anything else is ignored. */
+export function legacyOrigins(env: Env): string[] {
+  return (env.RELAY_LEGACY_ORIGINS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => /^https:\/\/[a-z0-9.-]+(:[0-9]{1,5})?$/.test(s) && s !== env.RELAY_ORIGIN);
+}
+
+function misdirected(): Response {
+  return new Response("Misdirected Request", { status: 421, headers: SECURITY_HEADERS });
+}
+
 async function route(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
 
   if (url.origin !== env.RELAY_ORIGIN) {
-    return new Response("Misdirected Request", { status: 421, headers: SECURITY_HEADERS });
+    // After a domain move (RELAY_LEGACY_ORIGINS), robots that still call an old address keep
+    // working: their signed answer names the new origin, and they move there themselves once it
+    // answers with the same relay keys. Browsers are sent to the new address. Nothing else is
+    // served on an old origin.
+    if (!legacyOrigins(env).includes(url.origin)) return misdirected();
+    if (ROBOT_API.has(url.pathname)) return robotApi(request, env, url);
+    if (request.method === "GET" || request.method === "HEAD") {
+      return new Response(null, { status: 301, headers: { ...SECURITY_HEADERS, Location: `${env.RELAY_ORIGIN}${url.pathname}${url.search}`, "Cache-Control": "no-store" } });
+    }
+    return misdirected();
   }
 
   if (url.pathname === "/style.css" && request.method === "GET") {
@@ -42,16 +76,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     return new Response(icon.body, { headers: { ...SECURITY_HEADERS, "Content-Type": icon.type, "Cache-Control": "public, max-age=86400" } });
   }
 
-  // Robot API (assertion-authenticated JSON; no cookies, no Origin semantics).
-  if (url.pathname === "/v1/robots/register") {
-    return request.method === "POST" ? registerRobot(env, request, url) : json({ error: "method_not_allowed" }, 405, { Allow: "POST" });
-  }
-  if (url.pathname === "/v1/robots/self") {
-    return request.method === "GET" ? robotSelf(env, request, url) : json({ error: "method_not_allowed" }, 405, { Allow: "GET" });
-  }
-  if (url.pathname === "/v1/robots/hostname") {
-    return request.method === "POST" ? reportHostname(env, request, url) : json({ error: "method_not_allowed" }, 405, { Allow: "POST" });
-  }
+  if (ROBOT_API.has(url.pathname)) return robotApi(request, env, url);
   const app = await handleAppApi(request, env, url);
   if (app) return app;
   const delegate = await handleDelegateApi(request, env, url);
@@ -102,6 +127,12 @@ export default {
         } catch (e) {
           console.error("cleanup retry skipped", e instanceof Error ? e.message : "unknown");
           await alert(env, "cleanup_error", "Cleaning up unlinked robots failed. Check the Worker logs and the Cloudflare API token.");
+        }
+        try {
+          await moveRobotsToZone(env, createProvisioner(env));
+        } catch (e) {
+          console.error("moving robots to the new zone skipped", e instanceof Error ? e.message : "unknown");
+          await alert(env, "zone_move_error", "Moving robot hostnames to the new ROBOT_ZONE failed. Check the Worker logs and the Cloudflare API token.");
         }
         try {
           await sealStoredTokens(env);

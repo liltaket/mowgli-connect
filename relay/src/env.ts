@@ -4,6 +4,10 @@ export interface RelayEnv {
   // Plain vars
   RELAY_ORIGIN: string;
   RELAY_KEY_ID: string;
+  RELAY_PREVIOUS_KEY_ID?: string; // kid of RELAY_PREVIOUS_SIGNING_KEY, during a key rotation
+  // Comma list of origins the relay used to have (a domain move): robots that still call one are
+  // served and told the new RELAY_ORIGIN in a signed answer; browsers are redirected there.
+  RELAY_LEGACY_ORIGINS?: string;
   PROVISIONER?: string; // "cloudflare" (default) | "quick" | "fake"
   CF_ACCOUNT_ID?: string;
   CF_ZONE_ID?: string;
@@ -15,6 +19,7 @@ export interface RelayEnv {
 
   // Secrets
   RELAY_SIGNING_KEY: string;
+  RELAY_PREVIOUS_SIGNING_KEY?: string; // the replaced key during a rotation (docs/protocol.md)
   GITHUB_CLIENT_ID: string;
   GITHUB_CLIENT_SECRET: string;
   CF_API_TOKEN?: string;

@@ -736,6 +736,18 @@ if [ "$MODE" != install ] && is_digest "$REF"; then
 	exit 0
 fi
 
+# The relay's operator can hold back updates on every robot (docs/updates.md, "Pausing updates").
+# The running agent knows (it is in its signed relay answer). If it cannot be asked (not running,
+# or an agent from before this command), the update goes ahead: a pause must never keep a fix
+# away from a robot whose agent is broken. Installing (install.sh) is never held back. It runs as
+# the agent's user: root in the container has no capabilities (cap_drop: ALL), so it could not
+# read the agent's /data.
+if [ "$MODE" != install ] && hold=$(tmo 20 "$DOCKER" exec --user 65532:65532 "$NAME" connect-agent updates 2>/dev/null) && [ "$hold" = paused ]; then
+	set_status paused "agent updates are paused by the relay's operator; the running version stays"
+	log "update paused by the relay's operator"
+	exit 0
+fi
+
 log "checking $TARGET"
 verify "$TARGET" || fail "$VERIFY_ERR"
 new=$REPO@$VERIFIED

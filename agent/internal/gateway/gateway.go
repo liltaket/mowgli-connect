@@ -41,6 +41,11 @@ type State struct {
 	RelayKeys map[string]ed25519.PublicKey
 	Epoch     int64
 	Members   map[string]string // userId -> role
+	// Issuer is the relay origin named in a relay answer whose signature verified under the
+	// pinned relay key ("" for an unsigned answer). After a domain move the relay issues grants
+	// and signs people in at its new origin; this lets the robot accept them before it has moved
+	// its own polling there. See docs/protocol.md, "Signed answers and the relay key".
+	Issuer string
 }
 
 type Config struct {
@@ -256,10 +261,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	isWS := websocket.IsWebSocketUpgrade(r)
 	if role == "" {
 		if r.Method == http.MethodGet && !isWS && strings.Contains(r.Header.Get("Accept"), "text/html") {
-			http.Redirect(w, r, g.loginURL(), http.StatusFound)
+			http.Redirect(w, r, g.loginURL(st), http.StatusFound)
 			return
 		}
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated", "login": g.loginURL()})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated", "login": g.loginURL(st)})
 		return
 	}
 	if (isWS || !safeMethod(r.Method)) && !sameOrigin(r, st.Hostname) {
@@ -293,8 +298,17 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.proxy.ServeHTTP(w, r)
 }
 
-func (g *Gateway) loginURL() string {
-	return g.cfg.RelayOrigin + "/open/" + url.PathEscape(g.cfg.RobotID)
+// relayOrigin is where people sign in: the origin a signed relay answer named, else the
+// configured one.
+func (g *Gateway) relayOrigin(st State) string {
+	if st.Issuer != "" {
+		return st.Issuer
+	}
+	return g.cfg.RelayOrigin
+}
+
+func (g *Gateway) loginURL(st State) string {
+	return g.relayOrigin(st) + "/open/" + url.PathEscape(g.cfg.RobotID)
 }
 
 func (g *Gateway) sessionFrom(r *http.Request) *session {
@@ -345,7 +359,7 @@ func (g *Gateway) redeemGrant(token string) (string, *session, error) {
 	now := g.cfg.Now()
 	iat, exp := time.Unix(c.Iat, 0), time.Unix(c.Exp, 0)
 	switch {
-	case c.Iss != g.cfg.RelayOrigin:
+	case c.Iss != g.cfg.RelayOrigin && (st.Issuer == "" || c.Iss != st.Issuer):
 		return "", nil, grantError("wrong issuer")
 	case c.Aud != "mc-robot:"+g.cfg.RobotID:
 		return "", nil, grantError("wrong audience")
