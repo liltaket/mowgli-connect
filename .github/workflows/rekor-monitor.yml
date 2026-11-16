@@ -1,0 +1,95 @@
+name: Rekor monitor
+
+# Watches Sigstore's public transparency log (Rekor) every hour for signatures made with this
+# repository's GitHub Actions identity: every signed agent release and its provenance attestation
+# shows up there, and so would a signature someone made with a stolen token or a changed
+# workflow. Rekor entries cannot be removed afterwards, so whoever signed something cannot hide
+# it by deleting tags or images. A match sends a ntfy alert (NTFY_URL) and opens an issue.
+# Expected after each release (docs/security-maintenance.md); if not, pause agent updates.
+#
+# Runs Sigstore's own monitor (github.com/sigstore/rekor-monitor, pinned by commit) in this job,
+# not as a reusable workflow, so this file decides what gets the token and the secret. The last
+# checkpoint is kept in the Actions cache; without one the monitor starts at the log's current
+# end. The relay watches the image robots install (:latest) on its own, outside GitHub. Actions
+# are pinned by commit SHA.
+on:
+  schedule:
+    - cron: "41 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rekor-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read # the previous run's result, so a lasting failure alerts once
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: sigstore/rekor-monitor
+          ref: fbc5fc49d94db706999e29ac53acac8ec8e1fdea # main, 2026-11-13
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Restore the last checkpoint
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: checkpoint_log.txt
+          key: rekor-checkpoint-${{ github.run_id }}
+          restore-keys: rekor-checkpoint-
+      - name: Search the log since the last checkpoint
+        id: search
+        env:
+          CONFIG: |
+            monitoredValues:
+              certIdentities:
+                - certSubject: ^https://github\.com/liltaket/mowgli-connect/
+                  issuers:
+                    - ^https://token\.actions\.githubusercontent\.com$
+            outputIdentities: identities.txt
+            outputIdentitiesFormat: text
+        run: go run ./cmd/rekor_monitor --file checkpoint_log.txt --once=true --user-agent mowgli-connect-rekor-monitor --config "$CONFIG"
+      - name: Save the checkpoint
+        if: always() && hashFiles('checkpoint_log.txt') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: checkpoint_log.txt
+          key: rekor-checkpoint-${{ github.run_id }}
+      - name: Alert on signatures
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NTFY_URL: ${{ secrets.NTFY_URL }}
+          OUTCOME: ${{ steps.search.outcome }}
+        run: |
+          send() { [ -z "$NTFY_URL" ] || curl -s -o /dev/null --max-time 15 -H "Title: Mowgli Connect release chain" -H "Tags: rotating_light" -H "Priority: high" -d "$1" "$NTFY_URL" || true; }
+          if [ -s identities.txt ]; then
+            n=$(grep -c . identities.txt || true)
+            send "Rekor: $n new entries signed with this repository's GitHub Actions identity. Expected right after an agent release. If you did not release, pause agent updates on the relay's admin page now."
+            {
+              echo "The Rekor monitor found entries signed with this repository's GitHub Actions identity (\`^https://github.com/liltaket/mowgli-connect/\`)."
+              echo
+              echo "Expected after an agent release (one signature and one provenance attestation). If nobody released, follow \"During an incident\" in docs/security-maintenance.md."
+              echo
+              echo '```'
+              head -c 60000 identities.txt
+              echo '```'
+            } >issue.md
+            gh issue create -R "$GITHUB_REPOSITORY" --title "Rekor monitor: $n new entries with this repository's signing identity" --body-file issue.md
+          fi
+          if [ "$OUTCOME" != success ]; then
+            prev=$(gh run list -R "$GITHUB_REPOSITORY" -w rekor-monitor.yml -s completed -L 1 --json conclusion -q '.[0].conclusion' || true)
+            [ "$prev" = failure ] || send "The Rekor monitor could not run ($OUTCOME). Releases are not being watched in the transparency log until it works again."
+            exit 1
+          fi

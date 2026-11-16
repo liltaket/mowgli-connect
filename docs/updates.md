@@ -232,6 +232,51 @@ the same rule applies to the protocol: a new agent must not make the relay depen
 - The MowgliNext `stack-overrides.yaml` integration ([docker-compose.example.yaml](../agent/docker-compose.example.yaml)):
   that file runs whatever image it names; verify and pin a digest by hand.
 
+## Pausing updates
+
+The relay's operator can hold back agent updates on every robot at once: **Pause agent updates** on
+the admin page, for when a release may be bad or the release chain may be in someone else's hands
+(an alert about a release nobody made). The relay then sends `"updatesPaused": true` in its signed
+answer to every robot ([protocol.md](protocol.md#signed-answers-and-the-relay-key)). The agent
+records it in `/data/updates-paused`, and before each automatic update `update.sh` asks the running
+agent (`docker exec -u 65532:65532 mowgli-connect connect-agent updates`, which prints `paused` or
+`active`; as the agent's user, because root in the container has no capabilities and cannot read
+`/data`). While
+it is paused, the update is skipped and the status says `paused`. `install.sh` is never held back.
+
+The pause only ever holds back. A relay that someone took over can therefore do no more with it
+than delay a fix. For the same reason it fails open: if the agent cannot be asked (it is not
+running, or it is from before this command), the update goes ahead, so a broken agent can still be
+fixed. A robot learns of the pause at its next sync (3 minutes), so press it as soon as an alert
+arrives: the nightly update runs at a fixed time on each robot.
+
+Without signing in to the relay, the pause is one row in `settings`, like the emergency stop:
+
+```sh
+npx wrangler d1 execute mowgli-connect-relay --remote -c wrangler.prod.jsonc --command \
+  "INSERT INTO settings (key, value) VALUES ('updates_paused', strftime('%s','now')) ON CONFLICT(key) DO NOTHING"
+# and to resume: DELETE FROM settings WHERE key = 'updates_paused'
+```
+
+## Release alarms
+
+A release nobody expected should be noticed within the hour, by three channels that do not
+depend on each other:
+
+- **The release workflow** sends a ntfy message (`NTFY_URL`) for every signed release, with its
+  number, commit, digest and who started it. It is the fastest of the three, but it runs on GitHub,
+  so it is the one an attacker with the repository could switch off.
+- **The relay** checks every hour which digest `:latest` points to in GHCR (anonymously, from
+  Cloudflare), and sends a security alert when it changes.
+- **The Rekor monitor** (`rekor-monitor.yml`, Sigstore's own monitor) searches the public
+  transparency log every hour for entries signed with this repository's GitHub Actions identity.
+  It sends a ntfy message and opens an issue. Rekor entries cannot be deleted, so a signature made
+  with a stolen token stays visible even if the image and tag are removed afterwards.
+
+Each real release therefore causes all three. One that comes without a release you made means:
+pause agent updates, engage the emergency stop and follow
+[security-maintenance.md](security-maintenance.md#during-an-incident).
+
 ## Repository settings (not in code)
 
 The workflow identity is only as strong as the control over the repository. **None of the
@@ -240,8 +285,8 @@ no rulesets, Actions allow all actions and do not require SHA pinning; default w
 permissions are already read-only). The maintainer has to set and keep these:
 
 - [ ] Protect `main`: pull requests only, no force pushes, no deletion, required status checks
-      `Agent tests` and `Installer tests` (both run on every pull request, so requiring them
-      cannot block one), and the rule applies to administrators too.
+      `Agent tests`, `Installer tests` and `Relay tests` (all run on every pull request, so
+      requiring them cannot block one), and the rule applies to administrators too.
 - [ ] Protect `agent-v*` tags with a tag ruleset (only the maintainer may create them; no update or
       deletion).
 - [ ] Two-factor authentication on the maintainer account. No long-lived personal access tokens

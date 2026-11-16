@@ -3,6 +3,8 @@ import { nowSeconds } from "./util";
 
 /** At most one alert of each kind per this many seconds, so a lasting problem does not spam. */
 const ALERT_GAP_SECONDS = 6 * 3600;
+/** Security events are each worth knowing about; this only stops a flood of one kind. */
+const SECURITY_GAP_SECONDS = 60;
 
 /**
  * Sends a short operator alert to ALERT_NTFY_URL (a secret, e.g. https://ntfy.sh/<topic>), at most
@@ -10,6 +12,21 @@ const ALERT_GAP_SECONDS = 6 * 3600;
  * throws: alerting must not break the request or job that noticed the problem.
  */
 export async function alert(env: Env, kind: string, message: string): Promise<void> {
+  await send(env, kind, message, ALERT_GAP_SECONDS, "warning", "default");
+}
+
+/**
+ * A security event the operator should see as it happens (docs/security-maintenance.md): an admin
+ * sign-in, a new app device or AI-agent delegation, a robot paired, an invite changed, a new agent
+ * release, the emergency stop or the update pause. Each event is sent, at most one per kind a
+ * minute, with high priority. Like alert(), it names no people or tokens, so the message says
+ * what happened and what to do if it was not expected.
+ */
+export async function securityAlert(env: Env, kind: string, message: string): Promise<void> {
+  await send(env, `sec:${kind}`, message, SECURITY_GAP_SECONDS, "rotating_light", "high");
+}
+
+async function send(env: Env, kind: string, message: string, gap: number, tags: string, priority: string): Promise<void> {
   const url = env.ALERT_NTFY_URL;
   if (!url || !url.startsWith("https://")) return;
   try {
@@ -19,12 +36,12 @@ export async function alert(env: Env, kind: string, message: string): Promise<vo
       `INSERT INTO settings (key, value) VALUES (?1, ?2)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE CAST(settings.value AS INTEGER) <= ?3`,
     )
-      .bind(`alert:${kind}`, String(now), now - ALERT_GAP_SECONDS)
+      .bind(`alert:${kind}`, String(now), now - gap)
       .run();
     if (slot.meta.changes !== 1) return;
     await fetch(url, {
       method: "POST",
-      headers: { Title: "Mowgli Connect relay", Tags: "warning", "Content-Type": "text/plain; charset=utf-8" },
+      headers: { Title: "Mowgli Connect relay", Tags: tags, Priority: priority, "Content-Type": "text/plain; charset=utf-8" },
       body: message,
       redirect: "manual",
       signal: AbortSignal.timeout(5_000),

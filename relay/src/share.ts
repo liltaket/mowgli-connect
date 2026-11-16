@@ -1,4 +1,5 @@
 import { afterShareEnded, canOwn, GITHUB_USER_ID } from "./access";
+import { securityAlert } from "./alerts";
 import { cleanGithubLogin, lookupError } from "./admin";
 import type { Env } from "./env";
 import type { GithubProfile } from "./github";
@@ -237,6 +238,7 @@ export async function addShare(env: Env, owner: SessionUser, robotId: string, gh
   ]);
   if (ins?.meta.changes === 1) {
     console.log("share: added", robotId, role);
+    await securityAlert(env, "robot_shared", `A robot was shared with another account (${role === "operator" ? "Can control" : "View only"}).`);
     return { ok: true };
   }
   // Nothing was written; say why.

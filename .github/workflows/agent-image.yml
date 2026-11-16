@@ -124,3 +124,20 @@ jobs:
           subject-name: ghcr.io/${{ github.repository_owner }}/mowgli-connect-agent
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+      # Release alarm (docs/security-maintenance.md): every signed release is announced, so one
+      # nobody expected is noticed. Rekor (rekor-monitor.yml) and the relay (the image :latest
+      # points to) report it independently of this step.
+      - name: Announce the release
+        if: github.event_name != 'pull_request'
+        env:
+          NTFY_URL: ${{ secrets.NTFY_URL }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          SEQ: ${{ github.run_number }}
+          REF: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          [ -n "$NTFY_URL" ] || exit 0
+          curl -s -o /dev/null --max-time 15 -H "Title: Mowgli Connect release" -H "Tags: package" -H "Priority: high" \
+            -d "Signed agent release $SEQ from $REF (commit ${SHA:0:7}, started by $ACTOR): $DIGEST. Robots with automatic updates install it tonight. Not expected? Pause agent updates on the relay's admin page." \
+            "$NTFY_URL" || true

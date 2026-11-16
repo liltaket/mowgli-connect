@@ -4,7 +4,8 @@ import { revokeRobot, unlinkRobot } from "./claim";
 import { revokeAllStatements } from "./delegation";
 import { GITHUB_LOGIN, lookupGithubUser } from "./github";
 import { html, page, simulatorBadge } from "./html";
-import { engageKillSwitch, killSwitchSince, releaseKillSwitch } from "./killSwitch";
+import { engageKillSwitch, killSwitchSince, pauseUpdates, releaseKillSwitch, resumeUpdates, updatesPausedSince } from "./killSwitch";
+import { securityAlert } from "./alerts";
 import type { SessionUser } from "./session";
 import { createProvisioner } from "./provisioner";
 import { isRobotId, nowSeconds, readBodyText } from "./util";
@@ -27,9 +28,11 @@ const NOTICES: Record<string, string> = {
   settings: "Default robot limit saved.",
   killed: "Emergency stop is on. All sessions have ended and no new ones are issued. Robots stop accepting anyone at their next sync, within a few minutes.",
   resumed: "Emergency stop is off. People can sign in again. Sessions that existed before it was turned on stay ended.",
+  updates_paused: "Agent updates are paused. Robots keep the version they run, from their next sync on (within a few minutes).",
+  updates_resumed: "Agent updates are on again. Robots install the newest signed release at their next nightly update.",
 };
 
-const ADMIN_PATH = /^\/admin(?:\/invite|\/settings|\/kill|\/resume|\/people\/(gh:[1-9][0-9]{0,19})\/(limit|remove)|\/robots\/([a-z2-7]{16})\/unlink)?$/;
+const ADMIN_PATH = /^\/admin(?:\/invite|\/settings|\/kill|\/resume|\/updates\/(?:pause|resume)|\/people\/(gh:[1-9][0-9]{0,19})\/(limit|remove)|\/robots\/([a-z2-7]{16})\/unlink)?$/;
 
 export function isAdminPath(pathname: string): boolean {
   return ADMIN_PATH.test(pathname);
@@ -100,6 +103,16 @@ async function adminPage(env: Env, user: SessionUser, url: URL, error?: string, 
     .first<{ n: number }>();
   const orphans = await orphanedRobots(env);
   const killedAt = await killSwitchSince(env);
+  const updatesPausedAt = await updatesPausedSince(env);
+  // Which agents the robots run and whether they synced lately: before a relay key rotation or a
+  // domain move, every robot should run an agent that knows signed answers and have synced
+  // (docs/security-maintenance.md, "Changing the domain").
+  const agents = await env.DB.prepare(
+    `SELECT COALESCE(agent_version, 'unknown') AS version, COUNT(*) AS n, SUM(CASE WHEN last_seen_at > ? THEN 1 ELSE 0 END) AS recent
+     FROM robots WHERE status = 'claimed' GROUP BY COALESCE(agent_version, 'unknown') ORDER BY n DESC, version LIMIT 20`,
+  )
+    .bind(nowSeconds() - 3600)
+    .all<{ version: string; n: number; recent: number }>();
   const key = url.searchParams.get("notice") ?? "";
   const notice = Object.hasOwn(NOTICES, key) ? NOTICES[key] : undefined;
   return page(
@@ -119,6 +132,16 @@ ${
 <form method="post" action="/admin/kill"><p class="muted">Ends every session, refuses new ones (admins can still sign in, to turn it off) and tells every robot to accept nobody, within a few minutes. Use it if you suspect an account, the relay or an update has been taken over. It does not touch the robots' own firmware or its emergency stop.</p>
 <label class="check"><input type="checkbox" name="confirm" value="1" required> I want to stop all access now</label>
 <button class="danger">Emergency stop</button></form></details>`
+}
+
+${
+  updatesPausedAt !== null
+    ? html`<form class="panel" method="post" action="/admin/updates/resume" role="status">
+<p><strong>Agent updates are paused</strong> since ${new Date(updatesPausedAt * 1000).toISOString().slice(0, 16).replace("T", " ")} UTC. Robots keep the version they run.</p>
+<button class="primary">Resume agent updates</button></form>`
+    : html`<details class="panel"><summary>Pause agent updates</summary>
+<form method="post" action="/admin/updates/pause"><p class="muted">Tells every robot to keep the agent version it runs: the nightly update is skipped until you resume. Use it when a release may be bad or the release chain may have been taken over (an alert about a release you did not make). Robots that already installed a release keep it; a robot whose agent does not answer updates anyway, so a fix can still reach it.</p>
+<button class="danger">Pause agent updates</button></form></details>`
 }
 
 <h2>Invite someone</h2>
@@ -163,6 +186,17 @@ ${
 <div class="person-main"><span class="person-name">${o.label ?? o.name ?? o.robot_id}${simulatorBadge(o.simulator)}</span>
 <span class="meta"><span>${o.hostname ?? o.robot_id}</span><span>Owner @${o.login ?? o.user_id}</span></span></div>
 <form class="orphan-unlink" method="post" action="/admin/robots/${o.robot_id}/unlink"><button class="danger">Unlink</button></form></li>`,
+      )}</ul>`
+    : ""
+}
+
+${
+  agents.results.length
+    ? html`<h2>Robot agents</h2>
+<p class="muted">The agent version paired robots report, and how many of them were seen by the relay in the last hour (a robot checks in about every 15 minutes).</p>
+<ul class="people">${agents.results.map(
+        (a) => html`<li class="person"><div class="person-main"><span class="person-name"><code>${a.version}</code></span>
+<span class="meta"><span>${a.n} ${a.n === 1 ? "robot" : "robots"}</span><span>${a.recent} seen in the last hour</span></span></div></li>`,
       )}</ul>`
     : ""
 }
@@ -228,6 +262,7 @@ export async function handleAdmin(request: Request, env: Env, url: URL, user: Se
         .bind(userId, res.user.login, res.user.name, user.id, nowSeconds())
         .run();
       console.log("admin: invited", userId, "by", user.id);
+      if (ins.meta.changes === 1) await securityAlert(env, "invite_added", "Admin page: an account was invited to Mowgli Connect. If you did not do this, engage the emergency stop and sign out of GitHub everywhere.");
       return redirect(ins.meta.changes === 1 ? "/admin?notice=invited" : "/admin?notice=already");
     }
     // Step 1: find the account and show it.
@@ -244,6 +279,14 @@ export async function handleAdmin(request: Request, env: Env, url: URL, user: Se
     if (form.get("confirm") !== "1") return adminPage(env, user, url, "Tick the box to confirm the emergency stop.", 400);
     await engageKillSwitch(env, user.id);
     return redirect("/admin?notice=killed");
+  }
+  if (url.pathname === "/admin/updates/pause") {
+    await pauseUpdates(env, user.id);
+    return redirect("/admin?notice=updates_paused");
+  }
+  if (url.pathname === "/admin/updates/resume") {
+    await resumeUpdates(env, user.id);
+    return redirect("/admin?notice=updates_resumed");
   }
   if (url.pathname === "/admin/resume") {
     await releaseKillSwitch(env, user.id);
@@ -268,6 +311,7 @@ export async function handleAdmin(request: Request, env: Env, url: URL, user: Se
     if (!isRobotId(robotId) || !(await orphanedRobots(env)).some((o) => o.robot_id === robotId)) return notFound();
     if (!(await unlinkRobot(env, createProvisioner(env), robotId, { onlyIfOwnerNotInvited: true }))) return notFound();
     console.log("admin: unlinked orphaned robot", robotId, "by", user.id);
+    await securityAlert(env, "admin_unlink", "Admin page: a robot was unlinked.");
     return redirect("/admin?notice=unlinked");
   }
 
@@ -296,6 +340,7 @@ export async function handleAdmin(request: Request, env: Env, url: URL, user: Se
     ...revokeAllStatements(env, target, nowSeconds()), // and their AI agents
   ]);
   console.log("admin: removed", target, "by", user.id);
+  await securityAlert(env, "invite_removed", "Admin page: an account's access was removed.");
   // Say so when the configuration still lets them in, instead of promising what did not happen.
   if (still) return redirect("/admin?notice=removed_config");
   if (form.get("unlink") === "1") {

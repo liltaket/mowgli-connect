@@ -45,3 +45,27 @@ export function loadRelayKey(env: Env): Promise<RelayKey> {
   }
   return p;
 }
+
+/**
+ * Every key the relay signs its answers to robots with: the current one first, then
+ * RELAY_PREVIOUS_SIGNING_KEY during a key rotation. Robots pin the relay's keys and accept an
+ * answer signed by any key they pinned, then pin the keys that answer lists, so a robot that only
+ * knows the old key still learns the new one (docs/protocol.md, "Signed answers and the relay
+ * key"). Grants are signed with the current key only.
+ */
+export async function loadSigningKeys(env: Env): Promise<RelayKey[]> {
+  const keys = [await loadRelayKey(env)];
+  const prev = env.RELAY_PREVIOUS_SIGNING_KEY;
+  const kid = env.RELAY_PREVIOUS_KEY_ID;
+  if (prev && kid && kid !== env.RELAY_KEY_ID) {
+    const id = `${kid}\n${prev}`;
+    let p = cache.get(id);
+    if (!p) {
+      p = parseKey(prev, kid);
+      p.catch(() => cache.delete(id));
+      cache.set(id, p);
+    }
+    keys.push(await p);
+  }
+  return keys;
+}

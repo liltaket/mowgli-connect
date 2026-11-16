@@ -159,12 +159,14 @@ touching Cloudflare.
 | `DB` | D1 binding | yes | state |
 | `RELAY_ORIGIN` | var | yes | exact public origin, e.g. `https://connect.example.com` (no trailing slash). Used for `aud`, `htu`, grant `iss`, OAuth redirect, CSRF `Origin` check. Requests with any other host get `421`. |
 | `RELAY_KEY_ID` | var | yes | `kid` of the relay signing key |
-| `RELAY_SIGNING_KEY` | **secret** | yes | Ed25519 private key (JWK or PKCS#8 b64) |
+| `RELAY_SIGNING_KEY` | **secret** | yes | Ed25519 private key (JWK or PKCS#8 b64). Signs grants and the answers to robots; robots pin its public key ([protocol](../docs/protocol.md#signed-answers-and-the-relay-key)), so keep a backup: losing it means re-pinning every robot by hand. |
+| `RELAY_PREVIOUS_SIGNING_KEY` / `RELAY_PREVIOUS_KEY_ID` | **secret** / var | no | only during a key rotation: the replaced key and its kid. Answers to robots are signed by both keys and list both, so robots that pinned the old key learn the new one. Remove once every robot has synced. |
+| `RELAY_LEGACY_ORIGINS` | var | no | only during a domain move: comma list of the relay's old origins (`https://…`). On those the relay serves the robot API (robots learn the new `RELAY_ORIGIN` from a signed answer and move), sends browsers to `RELAY_ORIGIN` (`301`) and refuses everything else (`421`). See [docs/security-maintenance.md](../docs/security-maintenance.md#changing-the-domain). |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | **secret** | yes | GitHub OAuth app |
 | `ADMIN_GITHUB_IDS` | var | recommended | comma list of `gh:<numeric id>` (ids only, never logins). These accounts can always sign in, own any number of robots, and use `/admin` to invite people by GitHub username (stored by id), remove access and set robot limits (default 3 per person). |
 | `ALLOWED_GITHUB_LOGINS` | var | no | extra sign-in allowlist for hand-configured relays: comma list of GitHub logins (case-insensitive) and/or `gh:<numeric id>`, or `*` for any GitHub account. Empty and no admins/invites = nobody (fail closed). Applies at login **and** on every session lookup. Prefer `gh:<id>`: logins can be renamed and re-registered by someone else. |
 | `TUNNEL_TOKEN_KEY` | **secret** | recommended | 32 random bytes, base64url (`node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`). Tunnel tokens are then stored AES-256-GCM encrypted and bound to their robot id; plain rows from before are sealed by the cron. Keep a copy: without it robots cannot get their token (unlink and pair again to recover). |
-| `ALERT_NTFY_URL` | **secret** | no | e.g. `https://ntfy.sh/<topic>`: operator alerts (cleanup failing or stuck, tunnel creation failing, registration cap hit, token key missing), at most one per kind every 6 hours. No personal data. |
+| `ALERT_NTFY_URL` | **secret** | no | e.g. `https://ntfy.sh/<topic>`: operator alerts (cleanup failing or stuck, tunnel creation failing, registration cap hit, token key missing), at most one per kind every 6 hours; and security alerts with high priority, each one (at most one per kind a minute): admin sign-in, an account's first sign-in, a robot paired or shared, a new app device or AI-agent delegation, invites added or removed, the emergency stop and the update pause, and a new agent release (`:latest` changed in GHCR). No personal data. |
 | `APP_REDIRECT_URIS` | var | no | private-use scheme callbacks `<bundle id>:/<path>` for free Apple teams (weaker; see docs/app-api.md). |
 | `DELEGATION_USERS` | var | no | comma list of `gh:<id>` (or `*`) who may let AI agents act for them ([docs/agent-delegation.md](../docs/agent-delegation.md)). Unset = off (404). |
 | `APP_IOS_APP_IDS` | var | no | comma list of `<TeamID>.<bundle id>`: turns on the native app API and serves `/.well-known/apple-app-site-association` for them ([docs/app-api.md](../docs/app-api.md)). Unset = off (404). |
@@ -175,7 +177,9 @@ touching Cloudflare.
 | `AGENT_ORIGIN` | var | no | tunnel ingress service, default `http://127.0.0.1:4007`. Operator-set only. |
 
 Cron (`*/15 * * * *`): deletes expired jti/sessions/OAuth states/pairing codes/claim failures,
-forgets unclaimed robots silent for 7 days, retries pending Cloudflare cleanups of unlinked robots.
+forgets unclaimed robots silent for 7 days, retries pending Cloudflare cleanups of unlinked robots,
+moves claimed robots to a new `ROBOT_ZONE` after a domain change (three per run), and hourly checks
+the latest agent build and the digest of `:latest` (release alarm).
 
 ## Tests
 
@@ -203,6 +207,12 @@ Independent check: `python3 -c "import hashlib,base64;print(base64.b32encode(has
 
 ## Security notes
 
+- **Answers to robots are signed, and robots pin the key.** `/v1/robots/self` and
+  `/v1/robots/hostname` carry `signatures` (one per signing key) over the robot id, the jti of the
+  robot's request and the answer ([protocol](../docs/protocol.md#signed-answers-and-the-relay-key)).
+  A robot that pinned the key ignores anything else. Never deploy a relay from before signed
+  answers once robots run an agent that pins, and back up `RELAY_SIGNING_KEY`: robots that pinned it
+  accept no other key except through a rotation.
 - **Tunnel token is a sensitive secret.** Anyone with it can run that robot's tunnel. With
   `TUNNEL_TOKEN_KEY` set, `robots.tunnel_token` holds it AES-256-GCM encrypted (`v1.<iv>.<ct>`,
   additional data = the robot id, so a sealed token cannot be moved to another row); without the

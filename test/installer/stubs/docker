@@ -10,6 +10,8 @@
 #   repodigests        RepoDigests of the image a container runs by tag (images present locally)
 #   calls              every invocation, one per line
 #   compose-env        MC_*/COMPOSE_* variables compose saw in its environment (they override .env)
+#   updates            what "docker exec mowgli-connect connect-agent updates" prints (default active;
+#                      "old" makes it fail like an agent from before that command)
 # "docker run <cosign image> verify ..." runs $FAKE_COSIGN (or $MC_TEST_COSIGN, a real cosign).
 set -eu
 echo "docker $*" >>"$FAKE/calls"
@@ -107,6 +109,16 @@ image) # image inspect -f FORMAT ID: the RepoDigests of what runs
 	*@sha256:*) cat "$FAKE/running" ;;
 	?*) cat "$FAKE/repodigests" 2>/dev/null || true ;;
 	*) exit 1 ;;
+	esac
+	;;
+exec) # exec --user 65532:65532 NAME connect-agent updates: what the agent says ($FAKE/updates)
+	[ -f "$FAKE/running" ] || { echo "Error: No such container: mowgli-connect" >&2; exit 1; }
+	# As root the command could not read /data (no capabilities in the container): require the agent's user.
+	[ "${2:-} ${3:-} ${4:-} ${5:-} ${6:-}" = "--user 65532:65532 mowgli-connect connect-agent updates" ] ||
+		{ echo "fake docker: unexpected exec $*" >&2; exit 97; }
+	case $(cat "$FAKE/updates" 2>/dev/null || echo active) in
+	old) echo "connect-agent: usage: connect-agent [run|status|version]" >&2; exit 1 ;;
+	*) cat "$FAKE/updates" 2>/dev/null || echo active ;;
 	esac
 	;;
 logs)

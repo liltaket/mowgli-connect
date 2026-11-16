@@ -18,12 +18,14 @@ While it is on:
 - Turning it on also ends what exists: every robot's session epoch goes up, so sessions and grants
   from before stay dead after it is turned off, and every non-admin browser session is deleted.
   App devices stay paired but get nothing until it is off.
-- An alert goes to `ALERT_NTFY_URL` if it is set.
+- A security alert goes to `ALERT_NTFY_URL` if it is set.
 
 It does not touch the robot's own firmware, its emergency stop button or anything running on the
-robot itself. It also does not pause the nightly image update: the robot's cron job runs
-`docker compose pull` on the host and the relay cannot reach it. If you suspect the image itself,
-stop updates on the robots by hand (`crontab -e`, or reinstall with `--auto-update no`).
+robot itself. It also does not pause the nightly image update. If you suspect an update or the
+release chain, also press **Pause agent updates** on the admin page
+([updates.md](updates.md#pausing-updates)): robots then keep the version they run. A robot whose
+agent does not answer (or runs an agent from before the pause existed) still updates; for those,
+stop updates by hand (`crontab -e`, or reinstall with `--auto-update no`).
 
 ## Turning it on and off
 

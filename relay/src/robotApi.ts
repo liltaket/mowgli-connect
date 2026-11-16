@@ -1,11 +1,11 @@
 import { canOwn } from "./access";
 import { alert } from "./alerts";
-import { killSwitchSince } from "./killSwitch";
+import { killSwitchSince, updatesPausedSince } from "./killSwitch";
 import type { Env } from "./env";
 import { openToken } from "./tokenSeal";
 import { AssertionError, verifyRobotAssertion, type VerifiedAssertion } from "./assertion";
-import { b64urlDecode, deriveRobotId } from "./crypto";
-import { loadRelayKey } from "./relayKey";
+import { b64urlDecode, deriveRobotId, signJws } from "./crypto";
+import { loadSigningKeys } from "./relayKey";
 import { formatPairingCode, generatePairingCode, hashPairingCode, PAIRING_TTL_SECONDS } from "./pairing";
 import { SECURITY_HEADERS } from "./html";
 import { delegateMembers } from "./delegation";
@@ -39,11 +39,13 @@ function verifyAssertion(
   url: URL,
   resolveKey: (iss: string) => Promise<Uint8Array | null>,
 ): Promise<VerifiedAssertion> {
+  // The origin the robot called: RELAY_ORIGIN, or during a domain move one of
+  // RELAY_LEGACY_ORIGINS (index.ts lets nothing else reach the robot API).
   return verifyRobotAssertion({
     authorization: request.headers.get("Authorization"),
     method: request.method,
-    htu: `${env.RELAY_ORIGIN}${url.pathname}`,
-    aud: env.RELAY_ORIGIN,
+    htu: `${url.origin}${url.pathname}`,
+    aud: url.origin,
     now: nowSeconds(),
     resolveKey,
   });
@@ -249,7 +251,7 @@ export async function robotSelf(env: Env, request: Request, url: URL): Promise<R
       .bind(now, info?.version ?? robot.agent_version, info ? info.teleop : robot.allow_teleop, info ? info.sim : robot.simulator, a.robotId)
       .run();
   }
-  return selfResponse(env, a.robotId, robot);
+  return selfResponse(env, a, robot);
 }
 
 const LAST_SEEN_REFRESH_SECONDS = 15 * 60;
@@ -271,7 +273,8 @@ function loadRobot(env: Env, robotId: string): Promise<RobotRow | null> {
     .first<RobotRow>();
 }
 
-async function selfResponse(env: Env, robotId: string, robot: RobotRow): Promise<Response> {
+async function selfResponse(env: Env, a: VerifiedAssertion, robot: RobotRow): Promise<Response> {
+  const robotId = a.robotId;
   const rows = await env.DB.prepare(
     `SELECT m.user_id, m.role, u.login FROM members m LEFT JOIN users u ON u.id = m.user_id
      WHERE m.robot_id = ? ORDER BY m.created_at, m.user_id`,
@@ -291,17 +294,28 @@ async function selfResponse(env: Env, robotId: string, robot: RobotRow): Promise
   // Emergency stop (killSwitch.ts): the robot is told to stop its tunnel and to accept nobody.
   const paused = claimed && (await killSwitchSince(env)) !== null;
   const delegates = claimed && !paused ? await delegateMembers(env, robotId, new Set(members.map((m) => m.user_id))) : [];
-  const key = await loadRelayKey(env);
-  return json({
+  const keys = await loadSigningKeys(env);
+  const updatesPaused = (await updatesPausedSince(env)) !== null;
+  const self = {
     robotId: robot.robot_id,
     status: robot.status,
     hostname: claimed ? robot.hostname : null,
     tunnelToken: claimed && !paused ? await openToken(env, robotId, robot.tunnel_token) : null,
-    relayKeys: [{ kid: key.kid, publicKey: key.publicKeyB64 }],
+    relayKeys: keys.map((k) => ({ kid: k.kid, publicKey: k.publicKeyB64 })),
     sessionEpoch: robot.session_epoch,
     members: claimed && !paused ? [...members.map((m) => ({ userId: m.user_id, role: m.role })), ...delegates] : [],
     ...(paused ? { paused: true } : {}),
-  });
+    ...(updatesPaused ? { updatesPaused: true } : {}),
+  };
+  // Signed with every relay key (docs/protocol.md, "Signed answers and the relay key"): a robot
+  // that pinned the relay's key trusts only what these signatures cover, so whoever answers at the
+  // relay's address (its domain, DNS or TLS certificate) cannot hand it other members, keys or a
+  // tunnel token. `req` is the jti of the robot's own assertion (no replay of an older answer),
+  // `aud` the robot, and `relayOrigin` where the relay lives now: a robot that called an old
+  // address moves to it after checking that the new address answers with the same keys.
+  const claims = { aud: `mc-robot:${robotId}`, req: a.jti, iat: nowSeconds(), relayOrigin: env.RELAY_ORIGIN, self };
+  const signatures = await Promise.all(keys.map((k) => signJws({ alg: "EdDSA", typ: "mc-self+jwt", kid: k.kid }, claims, k.privateKey)));
+  return json({ ...self, signatures });
 }
 
 // Quick Tunnel hostnames only (docs/protocol.md, "Quick-tunnel mode"); input is lowercased first.
@@ -341,5 +355,5 @@ export async function reportHostname(env: Env, request: Request, url: URL): Prom
     throw e;
   }
   const fresh = await loadRobot(env, a.robotId);
-  return fresh ? selfResponse(env, a.robotId, fresh) : json({ error: "unknown_robot" }, 404);
+  return fresh ? selfResponse(env, a, fresh) : json({ error: "unknown_robot" }, 404);
 }
