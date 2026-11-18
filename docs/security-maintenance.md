@@ -101,7 +101,7 @@ All of them go to the operator's ntfy topic. The relay's alerts name no people:
 | Emergency stop or update pause on or off | relay | Someone has the admin session or the database |
 | New agent release (`:latest` changed in GHCR) | relay, every hour | Pause agent updates, then emergency stop |
 | Signed agent release | release workflow | Same |
-| New entries with the repository's signing identity | Rekor monitor, every hour | Same |
+| New entries with the repository's signing identity | Rekor monitor (**paused**, see [updates.md](updates.md#release-alarms)) | Same |
 | Relay or site down | uptime workflow | Check Cloudflare and the domain |
 
 Security alerts have high priority. Each event is sent, except that at most one alert per kind is
@@ -155,8 +155,9 @@ In order of value for the effort:
    update or the release chain may be involved ([updates.md](updates.md#pausing-updates)). Both
    are on the admin page, and both reach robots within a few minutes.
 2. If GitHub may be compromised, revoke all sessions, tokens, OAuth app grants and SSH keys on the
-   account. Check the recent signatures for the release identity in Rekor (the Rekor monitor's
-   issues). Tell the owners of robots whose agent does not honour the pause to turn off automatic
+   account. Check the recent signatures for the release identity in Rekor (the paused
+   Rekor monitor has no issues to read; run it by hand, or look up the digests you know about at
+   search.sigstore.dev). Tell the owners of robots whose agent does not honour the pause to turn off automatic
    updates (`crontab -e`, or reinstall with `--auto-update no`).
 3. If Cloudflare may be compromised, revoke all API tokens, rotate the Worker secrets
    (`RELAY_SIGNING_KEY`, `TUNNEL_TOKEN_KEY`, the GitHub OAuth secret) and read the audit log.

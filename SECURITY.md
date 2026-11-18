@@ -95,8 +95,8 @@ Out of scope: vulnerabilities in MowgliNext itself, in Cloudflare or GitHub, and
   new ones and tells every robot to accept nobody within a few minutes, and one that tells every
   robot to keep the agent version it runs. Both can also be set from outside the relay.
   [docs/kill-switch.md](docs/kill-switch.md) and [docs/updates.md](docs/updates.md#pausing-updates)
-  say what they do and do not cover. Every signed release is reported three ways (the release
-  workflow, the relay and a Rekor monitor), so one nobody made is noticed
+  say what they do and do not cover. Every signed release is reported two ways (the release
+  workflow and the relay; a Rekor monitor is paused for now), so one nobody made is noticed
   ([docs/updates.md](docs/updates.md#release-alarms)).
 - **Updates are a root of trust too.** A malicious agent image could skip the network lock and the
   privilege drop, read the robot's key and tunnel token, and reach the robot's GUI and home

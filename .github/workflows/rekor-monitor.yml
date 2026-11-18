@@ -1,5 +1,16 @@
 name: Rekor monitor
 
+# PAUSED (2026-11-18): the hourly schedule is off because this monitor cannot keep up with the
+# public Rekor (v1) log. The log grows by about 0.9 million entries an hour, and Sigstore's
+# monitor reads it one request at a time, 10 entries per request. Rekor answered a 10-entry
+# request in 14 s when measured, so one hour of log takes days to read. The hourly run never got
+# further than the first checkpoint, was cancelled at the 30-minute timeout, and saw each run's
+# gap grow (3.81 to 3.85 billion). Rekor has no search by certificate identity (its index only
+# accepts email addresses), so there is no cheaper way to look for this repository's signatures.
+# Run it by hand (workflow_dispatch) to try again; the release workflow and the relay still
+# announce every release (docs/security-maintenance.md). Enable the schedule again when Sigstore's
+# monitor can read the log in parallel, or releases are signed into a Rekor v2 (tiles) log.
+#
 # Watches Sigstore's public transparency log (Rekor) every hour for signatures made with this
 # repository's GitHub Actions identity: every signed agent release and its provenance attestation
 # shows up there, and so would a signature someone made with a stolen token or a changed
@@ -13,8 +24,8 @@ name: Rekor monitor
 # end. The relay watches the image robots install (:latest) on its own, outside GitHub. Actions
 # are pinned by commit SHA.
 on:
-  schedule:
-    - cron: "41 * * * *"
+  # schedule:
+  #   - cron: "41 * * * *"
   workflow_dispatch:
 
 permissions:
