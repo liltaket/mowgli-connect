@@ -260,20 +260,26 @@ npx wrangler d1 execute mowgli-connect-relay --remote -c wrangler.prod.jsonc --c
 
 ## Release alarms
 
-A release nobody expected should be noticed within the hour, by three channels that do not
-depend on each other:
+A release nobody expected should be noticed within the hour, by two channels that do not
+depend on each other (a third, the Rekor monitor, is paused, see below):
 
 - **The release workflow** sends a ntfy message (`NTFY_URL`) for every signed release, with its
   number, commit, digest and who started it. It is the fastest of the three, but it runs on GitHub,
   so it is the one an attacker with the repository could switch off.
 - **The relay** checks every hour which digest `:latest` points to in GHCR (anonymously, from
   Cloudflare), and sends a security alert when it changes.
-- **The Rekor monitor** (`rekor-monitor.yml`, Sigstore's own monitor) searches the public
-  transparency log every hour for entries signed with this repository's GitHub Actions identity.
-  It sends a ntfy message and opens an issue. Rekor entries cannot be deleted, so a signature made
-  with a stolen token stays visible even if the image and tag are removed afterwards.
+- **The Rekor monitor** (`rekor-monitor.yml`, Sigstore's own monitor) is meant to search the
+  public transparency log every hour for entries signed with this repository's GitHub Actions
+  identity, send a ntfy message and open an issue. Rekor entries cannot be deleted, so a signature
+  made with a stolen token would stay visible even if the image and tag are removed afterwards.
+  **It is paused since 2026-11-18**: the public Rekor (v1) log grows by about 0.9 million entries
+  an hour, Sigstore's monitor reads it one request at a time, and Rekor can only be searched by
+  index, not by certificate identity. Every run was cancelled at its timeout without finishing.
+  Until it can be run again (see the comment at the top of the workflow), the one thing that is
+  lost is noticing a signature that was made with the repository's identity and then removed
+  (tag and image deleted) before the relay's hourly check saw it.
 
-Each real release therefore causes all three. One that comes without a release you made means:
+Each real release therefore causes both active channels. One that comes without a release you made means:
 pause agent updates, engage the emergency stop and follow
 [security-maintenance.md](security-maintenance.md#during-an-incident).
 

@@ -125,8 +125,8 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
       # Release alarm (docs/security-maintenance.md): every signed release is announced, so one
-      # nobody expected is noticed. Rekor (rekor-monitor.yml) and the relay (the image :latest
-      # points to) report it independently of this step.
+      # nobody expected is noticed. The relay (the image :latest points to) reports it
+      # independently of this step (rekor-monitor.yml is paused).
       - name: Announce the release
         if: github.event_name != 'pull_request'
         env:
